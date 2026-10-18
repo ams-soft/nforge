@@ -52,7 +52,7 @@ application gets, from one `config.yaml`:
   monetary amounts in integer cents with exact display formatting.
 
 Framework version: `version` in the **module root** `config.yaml`
-(currently `0.1.1`), embedded at build time and exposed as `nforge.Version`
+(currently `0.1.2`), embedded at build time and exposed as `nforge.Version`
 (`version.go`). This file is *not* the application's config. Releases are
 git tags `vX.Y.Z` on `main` (published on pkg.go.dev through the Go module
 proxy); bump this `version` in the commit that gets tagged, so
@@ -955,8 +955,16 @@ r, err := codec.New(codec.Config{
 - Post-decode validation: type's `Validate() error` (the `Validator`
   interface — usually pointer receiver), then `Config.Validate`; failures are
   wrapped in `ValidationError` (`ErrValidation` → 422).
-- Strict mode / required fields cost a second pass (generic tree walk) for
-  JSON/CBOR.
+- Strict mode / required fields need to know which keys the payload had.
+  JSON (`presence_json.go`) walks the payload's tokens with
+  `encoding/json/jsontext` alongside the target type, skipping values whose
+  type cannot fail the check, with no per-value allocation; required fields
+  cost about the same as none. It falls back to the generic-tree walk
+  (`presence.go`) for invalid syntax (so syntax errors keep their form),
+  duplicate names, one field matched by two spellings and names with invalid
+  UTF-8. The two must report identical errors: `TestPresenceJSONMatchesTree`
+  and `FuzzPresenceJSON` compare them. CBOR still decodes a generic tree
+  (a second pass).
 - Process default: initialized in `init()` with json+cbor+xml, permissive,
   5 MiB; replaced once by `deps.NewDeps` via `SetDefault`.
 
@@ -1616,6 +1624,9 @@ go test -race $EXAMPLES
 # jose fuzzers (smoke runs) and benchmarks:
 for f in FuzzValidateJWT FuzzStrictJSON FuzzParseCompact FuzzKeyImport; do
   go test ./jose -run '^$' -fuzz "^$f\$" -fuzztime 15s; done
+# codec: streaming JSON presence check vs the tree reference (run after any
+# change to codec/presence*.go):
+go test ./codec -run '^$' -fuzz '^FuzzPresenceJSON$' -fuzztime 60s
 go test ./jose -run '^$' -bench . -benchmem
 
 govulncheck ./...                # required before changing security dependencies

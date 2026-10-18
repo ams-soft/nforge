@@ -51,11 +51,7 @@ func (c *jsonCodec) Decode(data []byte, v any) error {
 		return err
 	}
 	if c.strict || hasRequired(t) {
-		var tree any
-		if err := jsonDecodeAll(bytes.NewReader(data), &tree); err != nil {
-			return err
-		}
-		if err := checkPresence(fmtJSON, t, tree, "", c.strict); err != nil {
+		if err := checkPresenceJSON(data, t, c.strict); err != nil {
 			return err
 		}
 	}

@@ -290,7 +290,7 @@ func (u *User) Validate() error { … } // codec.Validator: runs after decode �
 ```
 
 - Tag resolution: json → `json` tag else Go name; cbor → `cbor`, else `json`, else Go name; xml → `xml`, else `json`, else Go name. `omitempty`/`omitzero` must be identical in every tag present (`ErrInvalidTags`).
-- `codec:"required"`: present and non-null on decode (`MissingFieldError` with the full path, e.g. `user.address.zip`); present and non-empty on typed-route responses (`codec.CheckRequired`).
+- `codec:"required"`: present and non-null on decode (`MissingFieldError` with the full path, e.g. `user.address.zip`); present and non-empty on typed-route responses (`codec.CheckRequired`). For JSON the check streams the payload's tokens (no generic tree, no per-value allocation), so required fields cost about the same as none; CBOR still decodes a generic tree first.
 - Types with their own (un)marshalers (`time.Time`, `TextMarshaler`, `json.Marshaler`) are opaque. Reflection is cached per type.
 - JSON: stdlib with `UseNumber`; trailing data is an error. CBOR (`fxamacker/cbor/v2`): `time.Time` as RFC 3339 with nanoseconds, duplicate map keys rejected. XML: custom mapping over `encoding/xml` tokens; output starts with `xml.Header`; slices are repeated elements; maps are `<field><entry key="k">v</entry></field>`; `[]byte` base64; `<!DOCTYPE>` → `ErrDTDNotAllowed` unless allowed; external entities are never resolved; `innerxml`, `any`, `comment` and `a>b` options are rejected.
 - Registry: `codec.New(codec.Config{Formats, Default, StrictUnknownFields, MaxPayloadBytes, AllowDTD, Validate}, extra ...Codec)`; methods `EncodeAs(format, v)`, `DecodeAs(format, data, v)`, `EncodeTo(format, w, v)` (streams for `StreamCodec`), `DecodeFrom(format, r, v)` (limit-enforced, `ErrPayloadTooLarge` without reading the rest), `Lookup`, `Formats`, `DefaultFormat`, `Register` (init time only), `Validate`. Format names: `json`, `application/json`, `application/json; charset=utf-8`, `text/xml`; unknown short names become `application/<name>`. Constructors `NewJSON/NewCBOR/NewXML(codec.Options{StrictUnknownFields, AllowDTD})`. Constants `codec.JSON`, `codec.DefaultMaxPayloadBytes` (5 MiB).
@@ -572,6 +572,7 @@ go vet $EXAMPLES && go test -race $EXAMPLES      # ./... skips directories start
 
 for f in FuzzValidateJWT FuzzStrictJSON FuzzParseCompact FuzzKeyImport; do
   go test ./jose -run '^$' -fuzz "^$f\$" -fuzztime 15s; done
+go test ./codec -run '^$' -fuzz '^FuzzPresenceJSON$' -fuzztime 60s   # JSON presence walker vs tree reference
 
 NFORGE_TEST_DATABASE_URL='postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable' go test -tags integration ./database/...
 NFORGE_TEST_REDIS_URL='redis://localhost:6379/15' go test -race -tags integration ./cache/

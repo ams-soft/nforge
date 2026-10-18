@@ -142,6 +142,24 @@ func send(w stdhttp.ResponseWriter, r *stdhttp.Request, status int, format strin
 	return write(w, r, status, format, message)
 }
 
+// Constant so the per-response header costs no concatenation.
+const (
+	jsonUTF8 = codec.JSON + "; charset=utf-8"
+	xmlUTF8  = codec.XML + "; charset=utf-8"
+)
+
+// responseContentType adds the charset to the text formats; it only makes
+// sense for them.
+func responseContentType(contentType string) string {
+	switch contentType {
+	case codec.JSON:
+		return jsonUTF8
+	case codec.XML:
+		return xmlUTF8
+	}
+	return contentType
+}
+
 // write serializes before writing anything: if encoding fails nothing has
 // been sent and the caller can still respond with an error.
 func write(w stdhttp.ResponseWriter, r *stdhttp.Request, status int, format string, message any) error {
@@ -158,11 +176,7 @@ func write(w stdhttp.ResponseWriter, r *stdhttp.Request, status int, format stri
 	if err != nil {
 		return err
 	}
-	contentType := c.ContentType()
-	if contentType == codec.JSON || contentType == codec.XML {
-		contentType += "; charset=utf-8" // charset only makes sense for text formats
-	}
-	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Type", responseContentType(c.ContentType()))
 	w.WriteHeader(status)
 	_, err = w.Write(data) //nolint:gosec // G705: encoded envelope with an explicit non-HTML Content-Type
 	return err
