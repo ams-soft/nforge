@@ -11,7 +11,7 @@ Important notes for code generation:
 - Register every route and middleware **before** the server serves its first request; go-ams-router panics afterwards.
 - Programmer errors detected at startup or route registration panic; request-time errors are returned. Startup failures of enabled modules are fatal (`os.Exit(1)`).
 - Everything in the codebase (comments, logs, errors, API texts, tests) is English.
-- Build with Go 1.27.2+ (the repository pins `toolchain go1.27.2`); run golangci-lint as `GOTOOLCHAIN=local golangci-lint run ./...` until the binary is rebuilt with 1.27.2.
+- Build with Go 1.27.2+ (the repository pins `toolchain go1.27.2`); lint with golangci-lint v2.15.0+ (older releases cannot read go1.27.2 export data) and the repo's `.golangci.yml`.
 
 ## Docs
 
@@ -153,6 +153,10 @@ http:
     host: ""                  # "" = all interfaces
     port: 8080                # REQUIRED, 1..65535
     header: true              # print the nForge banner (zero value: false)
+    read_header_timeout: 10s  # http.Server timeouts: 0 = default, never "none" (Slowloris);
+    read_timeout: 30s         #   negative → error; read_header_timeout <= read_timeout
+    write_timeout: 30s
+    idle_timeout: 120s
   docs:
     enabled: false
     path: /docs               # normalized to "/x" (leading slash, no trailing)
@@ -298,7 +302,7 @@ func (u *User) Validate() error { … } // codec.Validator: runs after decode �
 
 ### 6.1 Server
 
-`type ServerHttp struct { Deps deps.Deps; Srv *http.Server; ShutdownFunc []func(); TypedRoutes []TypedRoute }`. Methods: `NewHTTPServer(deps)`, `Router() router.Router`, `Typed() *TypedRouter`, `AddGlobalMiddleware(mw)`, `LoadGlobalMiddleware()`, `AddDocRoute(TypedRoute)`, `TenantMiddleware(opts...)`, `AddShutdownFunc(fn)`, `Shutdown()`, `Start() error`.
+`type ServerHttp struct { Deps deps.Deps; Srv *http.Server; ShutdownFunc []func(); TypedRoutes []TypedRoute }`. Methods: `NewHTTPServer(deps)`, `Router() router.Router`, `Typed() *TypedRouter`, `AddGlobalMiddleware(mw)`, `LoadGlobalMiddleware()`, `AddDocRoute(TypedRoute)`, `TenantMiddleware(opts...)`, `AddShutdownFunc(fn)`, `Shutdown()`, `Start() error`. `NewHTTPServer` sets the `Srv` read-header/read/write/idle timeouts from `http.server` (defaults 10s/30s/30s/120s; `config.ApplyServerDefaults` also fills them for a `Config` built by hand). Streaming or long handlers extend their own deadline with `http.NewResponseController(w).SetWriteDeadline`.
 
 ### 6.2 Response envelope and plain handlers
 
@@ -560,7 +564,7 @@ go run ./_examples/database -config _examples/database/config.yaml [-envfile _ex
 go build ./... && go vet ./...
 go test -race ./...
 gofmt -l .
-GOTOOLCHAIN=local golangci-lint run ./...
+golangci-lint run ./... $EXAMPLES   # v2.15.0+, repo .golangci.yml
 govulncheck ./...
 
 EXAMPLES='./_examples/basic/... ./_examples/jose/... ./_examples/cache/... ./_examples/database/...'
@@ -583,7 +587,7 @@ Tests are standard `testing`, white-box (same package), table-driven where it fi
 - Errors: wrap with `%w` and context; exported sentinels plus typed errors for anything callers branch on; lowercase messages, no trailing punctuation, package prefix (`codec: …`, `nhttp: …`).
 - Doc comments on every exported identifier, explaining why and constraints.
 - Configuration keys are `snake_case`; document defaults in a trailing comment on the struct field; new fields follow config → defaults → validation → env-file support → tests → example `config.yaml`.
-- Security defaults stay on: DTD blocked, payload limits, no `WithProcess()` resource, redacted secrets, validated docs accent, per-render docs CSP nonce, anchored CORS patterns, no DB error details to clients; JOSE restricted suite, allowlists from config, mandatory `kid`/`typ`, strict JSON, minimum secret sizes, owner-only key files, no key generation at startup, static auth responses, tokens never logged or stored; tenancy transaction-local settings, fail-closed `TenantEq`/`ForContext`, startup `CheckTenancy`, tenant values never logged; cache: no mutation replay, no driver fallback, tenant before I/O, bounded memory and loads, TLS verification; `ncrypto`: AEAD only with random nonces, bounded password-hash verification.
+- Security defaults stay on: HTTP server timeouts (never zero), DTD blocked, payload limits, no `WithProcess()` resource, redacted secrets, validated docs accent, per-render docs CSP nonce, anchored CORS patterns, no DB error details to clients; JOSE restricted suite, allowlists from config, mandatory `kid`/`typ`, strict JSON, minimum secret sizes, owner-only key files, no key generation at startup, static auth responses, tokens never logged or stored; tenancy transaction-local settings, fail-closed `TenantEq`/`ForContext`, startup `CheckTenancy`, tenant values never logged; cache: no mutation replay, no driver fallback, tenant before I/O, bounded memory and loads, TLS verification; `ncrypto`: AEAD only with random nonces, bounded password-hash verification.
 - Don't add dependencies without a strong reason. Keep examples focused on their module. Update AGENTS.md, this file and the affected READMEs with every change to architecture, configuration, public API or documented behavior.
 
 ## 15. Gotchas
@@ -608,3 +612,4 @@ Tests are standard `testing`, white-box (same package), table-driven where it fi
 18. `GetOrLoad` does not cache loader errors, and a Redis read failure does not call the loader.
 19. `ncrypto` ranges take `(max, min)`; `ChaCha20` is XChaCha20.
 20. `safecalc` values are cents; floats enter only through `NewFromFloat`.
+21. `http.server.write_timeout` (30s) cuts long or streaming responses: raise it or call `http.NewResponseController(w).SetWriteDeadline` in the handler; timeouts cannot be disabled.

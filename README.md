@@ -39,7 +39,8 @@ _ = server.Start()                 // graceful shutdown on SIGINT/SIGTERM
 | Helpers | `helper/safecalc` | Money as integer cents: exact formatting (BRL by default, any separators), float input rounded half-to-even |
 | Bootstrap | `deps` | Builds every module from the config and shuts them down in reverse order |
 
-Security defaults stay on: DTD/XXE blocked, payload limits, a restricted
+Security defaults stay on: HTTP server timeouts (no Slowloris), DTD/XXE
+blocked, payload limits, a restricted
 JOSE suite (never `none`, algorithms only from config, mandatory `kid`/`typ`),
 sanitized errors that never leak tokens, keys, SQL or Redis details,
 transaction-local tenant settings, and in `ncrypto` AEAD-only encryption with
@@ -125,12 +126,13 @@ NFORGE_TEST_DATABASE_URL='postgres://postgres:postgres@localhost:5432/postgres?s
 NFORGE_TEST_REDIS_URL='redis://localhost:6379/15' go test -race -tags integration ./cache/
 
 gofmt -l .
-GOTOOLCHAIN=local golangci-lint run ./...   # see AGENTS.md §15 for why GOTOOLCHAIN=local
+golangci-lint run ./...   # v2.15.0+ (older releases cannot read go1.27.2 export data)
 govulncheck ./...
 ```
 
 See [AGENTS.md §15](AGENTS.md#15-building-and-testing) for the examples,
-fuzzers and benchmarks, and §16 for the code conventions.
+fuzzers and benchmarks, and §16 for the code conventions. Release notes are
+in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

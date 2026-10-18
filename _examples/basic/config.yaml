@@ -18,6 +18,11 @@ http:
     host: 127.0.0.1 # optional, default: "" (all interfaces)
     port: 8080
     header: true # optional, show the framework banner, default: false
+    # optional http.Server timeouts (0 = default; they cannot be disabled):
+    read_header_timeout: 10s # default: 10s, must be <= read_timeout
+    read_timeout: 30s # default: 30s, whole request including the body
+    write_timeout: 30s # default: 30s, raise it for slow handlers
+    idle_timeout: 120s # default: 120s, keep-alive
   docs:
     enabled: true # default: false
     path: /docs # optional, default: /docs (spec at /docs/swagger.json and /docs/swagger.yaml)

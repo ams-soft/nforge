@@ -343,7 +343,7 @@ func defaultPrincipalMapper(_ context.Context, _ jose.RegisteredClaims, custom a
 func checkPrincipal(p *Principal) error {
 	scopes, err := authn.NormalizeScopes(p.Scopes)
 	if err != nil {
-		return fmt.Errorf("%w: %v", jose.ErrClaimsRejected, err)
+		return fmt.Errorf("%w: %v", jose.ErrClaimsRejected, err) //nolint:errorlint // only ErrClaimsRejected is part of the contract
 	}
 	p.Scopes = scopes
 	if authn.HasControl(p.TenantID) {

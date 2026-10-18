@@ -131,7 +131,7 @@ func (b *redisBackend) read(ctx context.Context, fn func(context.Context) error)
 		if attempt >= b.retries || !retryable(cerr) || ctx.Err() != nil {
 			return cerr
 		}
-		wait := backoff/2 + rand.N(backoff/2+1)
+		wait := backoff/2 + rand.N(backoff/2+1) //nolint:gosec // retry jitter, not a secret
 		if dl, ok := ctx.Deadline(); ok && time.Until(dl) <= wait {
 			return cerr // no time left for another attempt
 		}
@@ -158,7 +158,21 @@ func (b *redisBackend) write(ctx context.Context, fn func(context.Context) error
 
 func retryable(err error) bool {
 	var ce *Error
-	return errors.As(err, &ce) && ce.Kind == ErrUnavailable && ce.Reason != "auth" && ce.Reason != "server"
+	return errors.As(err, &ce) && errors.Is(ce.Kind, ErrUnavailable) && ce.Reason != "auth" && ce.Reason != "server"
+}
+
+// contextCause is ctx.Err(), or context.DeadlineExceeded when the deadline has
+// passed but the context's timer has not fired yet: go-redis uses the context
+// deadline as the socket deadline, so the read can time out a few
+// microseconds before ctx.Err() reports it, and the cause would be lost.
+func contextCause(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if dl, ok := ctx.Deadline(); ok && !time.Now().Before(dl) {
+		return context.DeadlineExceeded
+	}
+	return nil
 }
 
 // classify converts a go-redis error into a sanitized cache error. The
@@ -202,10 +216,7 @@ func classify(ctx context.Context, err error, mutation bool) error {
 	case errors.As(err, &opErr) && opErr.Op == "dial":
 		unsent = "connect"
 	}
-	var cause error
-	if cerr := ctx.Err(); cerr != nil {
-		cause = cerr
-	}
+	cause := contextCause(ctx)
 	if unsent != "" {
 		return &Error{Kind: ErrUnavailable, Reason: unsent, cause: cause}
 	}

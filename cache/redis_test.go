@@ -280,6 +280,32 @@ func (f *fakeRedis) stop() {
 	}
 }
 
+// expiredCtx is the window TestRedisOperationDeadline used to hit: the
+// deadline has passed (the socket timed out) but the timer has not fired.
+type expiredCtx struct{ context.Context }
+
+func (expiredCtx) Deadline() (time.Time, bool) { return time.Now().Add(-time.Millisecond), true }
+func (expiredCtx) Err() error                  { return nil }
+
+func TestClassifyTimeoutBeforeContextTimer(t *testing.T) {
+	timeout := &net.OpError{Op: "read", Net: "tcp", Err: &timeoutErr{}}
+	for _, mutation := range []bool{false, true} {
+		err := classify(expiredCtx{bg}, timeout, mutation)
+		mustIs(t, err, ErrUnavailable)
+		mustIs(t, err, context.DeadlineExceeded)
+	}
+	// Without a passed deadline a socket timeout keeps no context cause.
+	if err := classify(bg, timeout, false); errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want no context cause", err)
+	}
+}
+
+type timeoutErr struct{}
+
+func (*timeoutErr) Error() string   { return "i/o timeout" }
+func (*timeoutErr) Timeout() bool   { return true }
+func (*timeoutErr) Temporary() bool { return true }
+
 func TestRedisOperationDeadline(t *testing.T) {
 	block := make(chan struct{})
 	f := newFakeRedis(t, func(cmd []string) string { <-block; return "+OK\r\n" })

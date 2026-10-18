@@ -265,7 +265,7 @@ func TestErrorsDoNotLeakKeysOrTenants(t *testing.T) {
 		t.Fatalf("error leaks data: %s", msg)
 	}
 	var ce *Error
-	if !errors.As(err, &ce) || ce.Op != "increment" || ce.Driver != DriverMemory || ce.Kind != ErrNotInteger {
+	if !errors.As(err, &ce) || ce.Op != "increment" || ce.Driver != DriverMemory || !errors.Is(ce.Kind, ErrNotInteger) {
 		t.Fatalf("typed error = %+v", ce)
 	}
 }

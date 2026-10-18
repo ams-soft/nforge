@@ -52,11 +52,13 @@ application gets, from one `config.yaml`:
   monetary amounts in integer cents with exact display formatting.
 
 Framework version: `version` in the **module root** `config.yaml`
-(currently `0.1.0`), embedded at build time and exposed as `nforge.Version`
+(currently `0.1.1`), embedded at build time and exposed as `nforge.Version`
 (`version.go`). This file is *not* the application's config. Releases are
 git tags `vX.Y.Z` on `main` (published on pkg.go.dev through the Go module
 proxy); bump this `version` in the commit that gets tagged, so
-`nforge.Version` matches the tag.
+`nforge.Version` matches the tag, and add the release to `CHANGELOG.md`.
+Never move or recreate a published tag: the module proxy keeps the first
+content it saw for a version forever; fix forward with a new patch release.
 
 Toolchain: **Go 1.27**, pinned to `toolchain go1.27.2` in `go.mod` (stdlib
 security fixes; `GOTOOLCHAIN=auto` downloads it; go-ams-router v1.1.0 itself
@@ -72,6 +74,8 @@ generics, `errors.Join`, `math/rand/v2`, `maps`/`slices` iterators.
 .
 ├── version.go          # package nforge: Version, read from the embedded root config.yaml
 ├── config.yaml         # FRAMEWORK metadata only (version). Not an app config.
+├── CHANGELOG.md        # release notes, one section per tag
+├── .golangci.yml       # golangci-lint v2 configuration (§15)
 ├── config/             # app configuration: types, loading, env file, defaults, validation, ByteSize
 ├── deps/               # dependency container (Deps) + bootstrap (NewDeps) + LIFO shutdown
 ├── logs/               # slog setup: terminal (tint) + OTel handlers, multi/leveled/context handlers
@@ -308,6 +312,10 @@ http:
     host: ""                  # "" = all interfaces
     port: 8080                # REQUIRED, 1..65535
     header: true              # print the nForge banner (zero value: false)
+    read_header_timeout: 10s  # http.Server timeouts: 0 = default, never "none"
+    read_timeout: 30s         #   (Slowloris); negative → error;
+    write_timeout: 30s        #   read_header_timeout <= read_timeout
+    idle_timeout: 120s        #   (config/server.go, also applied by NewHTTPServer)
   docs:
     enabled: false
     path: /docs               # normalized to "/x" (leading slash, no trailing)
@@ -550,6 +558,15 @@ type ServerHttp struct {
 Methods: `NewHTTPServer(deps)`, `Router()`, `Typed()`,
 `AddGlobalMiddleware`, `LoadGlobalMiddleware`, `AddDocRoute`,
 `TenantMiddleware(opts...)` (§7.10), `AddShutdownFunc`, `Shutdown`, `Start`.
+
+`NewHTTPServer` sets `Srv.ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout`
+and `IdleTimeout` from `http.server` (defaults 10s/30s/30s/120s). It applies
+`config.ApplyServerDefaults` to a copy of the section, so a `Config` built
+by hand (tests, embedding) also gets them while `Deps.Config` is unchanged.
+A handler that streams or runs longer than `write_timeout` extends its own
+deadline with `http.NewResponseController(w).SetWriteDeadline(...)`;
+`Srv` stays exported for anything else, as long as it is changed before
+`Start`.
 
 ### 7.2 Response envelope
 
@@ -1603,10 +1620,11 @@ go test ./jose -run '^$' -bench . -benchmem
 
 govulncheck ./...                # required before changing security dependencies
 
-# golangci-lint (no repo config, defaults); a binary built with an older Go
-# cannot read go1.27.2 export data (typecheck errors), so run it on the local
-# toolchain until it is rebuilt:
-GOTOOLCHAIN=local golangci-lint run ./... $EXAMPLES
+# golangci-lint v2.15.0+ with the repo's .golangci.yml; older releases
+# (v2.13.x) cannot read go1.27.2 export data and fail every package with
+# typecheck "export data version" errors, which GOTOOLCHAIN=local or
+# rebuilding the same release does not fix:
+golangci-lint run ./... $EXAMPLES
 
 # integration tests against a real PostgreSQL (build tag `integration`); the
 # tenancy tests create/drop a role, so the URL's user must be able to CREATE ROLE:
@@ -1654,6 +1672,9 @@ algorithm/kid/typ, boundaries), not only round trips.
 - Idiomatic, modern Go; `gofmt`. Doc comments on every exported identifier,
   written as full sentences explaining **why/constraints**, not restating the
   code. Match the existing comment density.
+- Lint findings that are safe on purpose get a line-level
+  `//nolint:<linter> // <why>`; never a bare `//nolint`, never file-wide,
+  and `.golangci.yml` is not loosened to silence one case.
 - Errors: wrap with `%w` and context (`"parse postgres pool config: %w"`);
   exported sentinel errors + typed errors with `Is` methods for anything a
   caller needs to branch on. Lowercase messages, no trailing punctuation,
@@ -1667,7 +1688,8 @@ algorithm/kid/typ, boundaries), not only round trips.
 - Inside `nhttp`, import `net/http` as `stdhttp`; the router as `router`.
 - Configuration is YAML with `snake_case` keys; document the default in a
   trailing comment on the struct field.
-- Security defaults are on and must stay on: DTD blocked, payload limit,
+- Security defaults are on and must stay on: HTTP server timeouts (never
+  zero), DTD blocked, payload limit,
   no `WithProcess()` resource, redacted DB config, validated docs accent,
   per-render docs CSP nonce, anchored CORS patterns and no credentials with
   a wildcard origin,
@@ -1779,3 +1801,7 @@ algorithm/kid/typ, boundaries), not only round trips.
 25. **`ncrypto` ranges are `(max, min)`**: `ncrypto.Int(10, 1)` is 1..10;
     `Int(1, 10)` returns `ErrBounds`. `ChaCha20` is the X variant (24-byte
     nonce), so other ChaCha20-Poly1305 implementations cannot read its output.
+26. **Long or streaming responses cut at 30 s**: `http.server.write_timeout`
+    (default 30s) bounds every response. Raise it in the config, or extend the
+    deadline per request with `http.NewResponseController(w).SetWriteDeadline`.
+    A timeout cannot be disabled (0 means the default).

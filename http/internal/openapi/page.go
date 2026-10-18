@@ -62,7 +62,7 @@ func RenderPage(p Page) (page []byte, csp string, err error) {
 		SpecURL:  p.SpecURL,
 		YAMLURL:  p.YAMLURL,
 		NumRoute: p.Routes,
-		Accent:   template.CSS(p.Accent), // validated as hex in config.validateRequiredConfig
+		Accent:   template.CSS(p.Accent), //nolint:gosec // validated as hex in config.validateRequiredConfig
 		Nonce:    nonce,
 	})
 	if err != nil {

@@ -1,0 +1,46 @@
+# golangci-lint v2 configuration (the AMS default set). Run with
+# golangci-lint v2.15.0 or newer: older releases cannot read Go 1.27.2 export data.
+# A finding that is safe gets a line-level //nolint:<linter> // <why>.
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - bodyclose # unclosed HTTP response bodies leak connections
+    - errorlint # errors.Is/As and %w instead of == and %v
+    - gosec # security issues
+    - misspell
+    - nilerr # returning nil after checking err != nil
+    - noctx # HTTP requests and SQL calls without a context
+    - rowserrcheck # rows.Err() not checked
+    - sloglint # consistent log/slog usage
+    - sqlclosecheck # sql.Rows/Stmt not closed
+    - unconvert
+    - usestdlibvars # http.MethodGet, http.StatusOK, ...
+  settings:
+    gosec:
+      excludes:
+        - G115 # integer conversion overflow: mostly false positives on checked conversions
+    sloglint:
+      no-mixed-args: true
+      context: scope # use the *Context methods when a context is in scope
+  exclusions:
+    presets:
+      - common-false-positives
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters:
+          - bodyclose
+          - gosec
+          - noctx
+          - usestdlibvars
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

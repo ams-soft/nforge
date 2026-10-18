@@ -85,6 +85,7 @@ func feedDefaults(cfg *Config) *Config {
 		disallow := true
 		cfg.Codec.XML.DisallowDTD = &disallow
 	}
+	ApplyServerDefaults(&cfg.HTTP.Server)
 	feedRoutesDefaults(cfg)
 	feedDocsDefaults(cfg)
 	if cfg.HTTP.Auth.Realm == "" {
@@ -153,6 +154,9 @@ func validateRequiredConfig(cfg *Config) (bool, error) {
 	}
 	if cfg.HTTP.Server.Port <= 0 || cfg.HTTP.Server.Port > 65535 {
 		return false, fmt.Errorf("http.server.port must be between 1 and 65535")
+	}
+	if err := validateServer(cfg.HTTP.Server); err != nil {
+		return false, err
 	}
 	if auth := cfg.HTTP.Docs.Auth; auth != "bearer" && auth != "none" {
 		return false, fmt.Errorf("http.docs.auth must be bearer or none, got %q", auth)

@@ -133,10 +133,19 @@ type DocsConfig struct {
 	Accent  string   `yaml:"accent"`  // page accent color (hex #RGB[A] or #RRGGBB[AA]); default: "#007d9cbf"
 }
 
+// ServerConfig configures the http.Server. The timeouts are never zero after
+// load: a server without them keeps connections of slow or idle clients
+// open indefinitely (Slowloris).
 type ServerConfig struct {
 	Host   string `yaml:"host"`
 	Port   int    `yaml:"port"`
 	Header bool   `yaml:"header"`
+	// Handlers that stream or need longer than WriteTimeout extend their own
+	// deadline with http.NewResponseController(w).SetWriteDeadline.
+	ReadHeaderTimeout time.Duration `yaml:"read_header_timeout"` // time to read the request headers; default: 10s; <= read_timeout
+	ReadTimeout       time.Duration `yaml:"read_timeout"`        // time to read the whole request, body included; default: 30s
+	WriteTimeout      time.Duration `yaml:"write_timeout"`       // from the end of the request headers to the end of the response; default: 30s
+	IdleTimeout       time.Duration `yaml:"idle_timeout"`        // keep-alive wait for the next request; default: 120s
 }
 
 type LoggingConfig struct {

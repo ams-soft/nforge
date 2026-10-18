@@ -3,6 +3,7 @@ package jose
 import (
 	"crypto/ed25519"
 	"encoding/base64"
+	"errors"
 	"os"
 	"strings"
 	"sync"
@@ -87,7 +88,7 @@ func FuzzStrictJSON(f *testing.F) {
 		err := strictjson.Check(data, 8)
 		if err == nil {
 			// anything accepted must be valid for encoding/json too
-			if _, err := strictjson.Object(data, 8); err != nil && err != strictjson.ErrNotObject {
+			if _, err := strictjson.Object(data, 8); err != nil && !errors.Is(err, strictjson.ErrNotObject) {
 				t.Fatalf("inconsistent: %v", err)
 			}
 		}

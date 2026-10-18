@@ -110,7 +110,7 @@ func (d *Deps) setupLogger(ctx context.Context, config config.Config) bool {
 	if config.IsLoggingEnabled() {
 		logger, shutdown, err := logs.Setup(ctx, config)
 		if err != nil {
-			slog.Error("[Fatal ERROR] unable to setup logger", "error", err)
+			slog.ErrorContext(ctx, "[Fatal ERROR] unable to setup logger", "error", err)
 			os.Exit(1)
 		}
 		d.addShutdownFunc(shutdown)
@@ -118,7 +118,7 @@ func (d *Deps) setupLogger(ctx context.Context, config config.Config) bool {
 		if config.IsTracingEnabled() {
 			shutdownTracing, err := telemetry.SetupTracing(ctx, config)
 			if err != nil {
-				slog.Error("[Fatal ERROR] unable to setup tracing", "error", err)
+				slog.ErrorContext(ctx, "[Fatal ERROR] unable to setup tracing", "error", err)
 				panic(err)
 			}
 			d.addShutdownFunc(shutdownTracing)

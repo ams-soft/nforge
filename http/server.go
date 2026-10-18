@@ -12,6 +12,7 @@ import (
 
 	router "github.com/ams-soft/go-ams-router"
 	"github.com/ams-soft/go-ams-router/middleware"
+	"github.com/ams-soft/nforge/config"
 	"github.com/ams-soft/nforge/deps"
 )
 
@@ -29,13 +30,17 @@ func NewHTTPServer(deps deps.Deps) *ServerHttp {
 
 	deps.Logger.Info(" [HTTPModule] Starting HTTP server")
 
-	port := strconv.Itoa(deps.Config.HTTP.Server.Port)
-	addr := deps.Config.HTTP.Server.Host + ":" + port
+	cfg := deps.Config.HTTP.Server
+	config.ApplyServerDefaults(&cfg) // a Config built without config.Load has zero timeouts
 
 	server := &ServerHttp{
 		Deps: deps,
 		Srv: &stdhttp.Server{
-			Addr: addr,
+			Addr:              cfg.Host + ":" + strconv.Itoa(cfg.Port),
+			ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+			ReadTimeout:       cfg.ReadTimeout,
+			WriteTimeout:      cfg.WriteTimeout,
+			IdleTimeout:       cfg.IdleTimeout,
 		},
 	}
 	server.setStandardHandler()

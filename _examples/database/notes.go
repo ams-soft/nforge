@@ -185,7 +185,7 @@ func registerNoteRoutes(api *nhttp.TypedRouter, db *database.DB, logger *slog.Lo
 		id, err := strconv.ParseInt(router.URLParam(req, "id"), 10, 64)
 		if err != nil || id < 1 {
 			_ = nhttp.SendJSON(w, req, stdhttp.StatusBadRequest, "invalid id")
-			return nil
+			return nil //nolint:nilerr // the 400 above is the response
 		}
 		n, err := getNote(req.Context(), tdb, id)
 		if err == nil {

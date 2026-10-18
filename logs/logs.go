@@ -53,7 +53,7 @@ func Setup(ctx context.Context, config config.Config) (*slog.Logger, func(contex
 		// the exporter that is failing would just feed it more records.
 		terminal := slog.New(&leveledHandler{Handler: prettyHandler, level: loglevel})
 		otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
-			terminal.Warn(" [LoggerModule] Telemetry export failed", "err", err)
+			terminal.Warn(" [LoggerModule] Telemetry export failed", "err", err) //nolint:sloglint // runs later, outside the setup ctx
 		}))
 	}
 

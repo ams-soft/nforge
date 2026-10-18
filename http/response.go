@@ -164,6 +164,6 @@ func write(w stdhttp.ResponseWriter, r *stdhttp.Request, status int, format stri
 	}
 	w.Header().Set("Content-Type", contentType)
 	w.WriteHeader(status)
-	_, err = w.Write(data)
+	_, err = w.Write(data) //nolint:gosec // G705: encoded envelope with an explicit non-HTML Content-Type
 	return err
 }

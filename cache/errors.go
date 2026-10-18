@@ -111,7 +111,7 @@ func ctxError(err error) *Error {
 // copying it so shared values (flight results) are never mutated.
 func withOp(err error, op, driver string) error {
 	var ce *Error
-	if !errors.As(err, &ce) || err != error(ce) {
+	if !errors.As(err, &ce) || err != error(ce) { //nolint:errorlint // identity on purpose: only an unwrapped *Error gets the op
 		return err // loader errors and anything already wrapped pass through
 	}
 	cp := *ce

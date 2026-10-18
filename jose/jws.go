@@ -108,7 +108,7 @@ func (s *Service) verifyCompact(ctx context.Context, p *profile, input string) (
 	}
 
 	// cheap structural prechecks before any cryptography
-	if int64(len(c.segments[1])) > int64(b64Len(s.cfg.Limits.MaxPayloadBytes)) {
+	if int64(len(c.segments[1])) > b64Len(s.cfg.Limits.MaxPayloadBytes) {
 		return nil, Header{}, newError(ErrPayloadTooLarge, "", "", "", "payload exceeds limits.max_payload_bytes")
 	}
 	sig, err := c.segment(2)

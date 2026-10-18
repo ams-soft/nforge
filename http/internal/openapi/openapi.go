@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"maps"
+	stdhttp "net/http"
 	"reflect"
 	"regexp"
 	"slices"
@@ -187,7 +188,7 @@ func Build(cfg config.DocsConfig, routes []Route) *Doc {
 		}
 
 		if reqType := reflect.TypeOf(rt.Schema); reqType != nil {
-			if rt.Method == "GET" {
+			if rt.Method == stdhttp.MethodGet {
 				op.Parameters = append(op.Parameters, g.queryParams(reqType)...)
 			} else {
 				op.RequestBody = &requestBody{Required: true, Content: content(g.schemaOf(reqType, false))}
