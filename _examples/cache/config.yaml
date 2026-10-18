@@ -1,0 +1,63 @@
+# Cache example: deps.Cache on Redis (docker compose) or in process memory.
+# No database, no JOSE.
+#
+#   docker compose -f _examples/docker-compose.yml up -d redis
+#   go run ./_examples/cache -config _examples/cache/config.yaml
+#   go run ./_examples/cache -config _examples/cache/config.yaml -envfile _examples/cache/standalone.env   # memory, no Docker
+env: local
+
+app:
+  name: cache-example
+  version: 1.0.0
+
+http:
+  server:
+    host: 127.0.0.1
+    port: 8080
+    header: true
+  docs:
+    enabled: true
+    title: Cache Example API
+    auth: none # no private routes here
+  routes:
+    health:
+      enabled: true # liveness: never touches the cache
+    readiness:
+      enabled: true # pings the cache on every probe: 503 while Redis is down
+
+codec:
+  formats:
+    enabled: [json, cbor] # cache.codec must be one of these
+  default: json
+
+logging:
+  output:
+    terminal:
+      enabled: true
+
+cache: # deps.Cache; objects use the codec registry above, bytes and counters are stored as is
+  enabled: true # default: false (deps.Cache is nil)
+  driver: redis # redis (default) | memory (in-process, see standalone.env)
+  codec: json # optional, default: json | cbor. Values carry no format marker:
+              # after changing it, let old entries expire or change the prefix.
+#  prefix: cache-example:v1 # optional, default: nforge:<env>:<app.name>:
+#  load_timeout: 5s # optional; bounds a shared GetOrLoad loader (there is no default entry TTL)
+#  limits: # optional; defaults shown
+#    max_key_bytes: 1024 # full resolved key, prefix included
+#    max_value_bytes: 1mb
+#    max_inflight_loads: 1024 # distinct concurrent GetOrLoad loads
+  redis: # used when driver is redis; omitted fields keep the defaults
+    host: localhost # optional, default: localhost
+    port: 6379 # optional, default: 6379
+#    url: ${REDIS_URL} # optional redis:// or rediss:// URL; wins over host/port/username/password/database/tls
+#    username: ${REDIS_USERNAME} # optional; no AUTH is sent when username and password are empty
+#    password: ${REDIS_PASSWORD} # optional
+#    database: 0 # optional, default: 0
+#    tls: { enabled: false, server_name: "", ca_file: "" } # rediss:// always enables TLS; no skip-verify option
+#    pool: { size: 32, min_idle_conns: 2, max_idle_conns: 32, max_active_conns: 32, max_conn_idle_time: 5m, max_conn_lifetime: 30m }
+#    timeouts: { dial: 1s, read: 1s, write: 1s, pool: 500ms, operation: 2s } # a shorter request deadline always wins
+#    retry: { read_retries: 1, min_backoff: 50ms, max_backoff: 500ms } # reads only; writes are never replayed
+#  memory: # used when driver is memory; the budget counts key + value bytes, not Go overhead
+#    max_entries: 10000
+#    max_bytes: 64mb
+#    cleanup_interval: 30s

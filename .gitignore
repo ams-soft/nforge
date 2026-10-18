@@ -1,0 +1,17 @@
+
+# hot reload (air)
+.air.toml
+_examples/*/tmp/
+
+# IDE
+.idea/
+
+Makefile
+
+sandbox*
+
+# example keys (generated locally by _examples/jose/cmd/keygen, never committed)
+_examples/jose/keys/
+
+./basic
+

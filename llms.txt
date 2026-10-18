@@ -1,0 +1,610 @@
+# nForge
+
+> nForge (Nano Forge, module `github.com/ams-soft/nforge`, by AMS Software e Consultoria LTDA, MIT) is a small, opinionated Go 1.27+ framework for building HTTP APIs. One `config.yaml` drives layered configuration, `log/slog` logging (terminal and OpenTelemetry), OpenTelemetry tracing with `request_id == trace_id`, a JSON/CBOR/XML codec driven by one struct, an HTTP server on `github.com/ams-soft/go-ams-router` with a standard response envelope, typed routes validated before and after the handler and generated OpenAPI 3.1 docs, PostgreSQL (pgx + Squirrel) with multi-tenancy, JOSE/JWT bearer authentication, and a Redis or in-memory cache. Standalone packages add cryptographic primitives (`ncrypto`) and a money helper (`safecalc`).
+
+Important notes for code generation:
+
+- Import the HTTP package as `nhttp "github.com/ams-soft/nforge/http"` and the crypto package as `ncrypto "github.com/ams-soft/nforge/crypto"`. Inside nForge, `net/http` is imported as `stdhttp`.
+- Business code never imports `encoding/json`, `encoding/xml` or a CBOR library: it goes through `codec.Default()` / `deps.Codec`. The `jose` package is the only deliberate exception (protocol JSON).
+- `deps.DB`, `deps.JOSE` and `deps.Cache` are **nil** when their module is disabled in the config. Check before use.
+- `Deps.Logger` is a `slog.Logger` value: pass `&dps.Logger`.
+- Register every route and middleware **before** the server serves its first request; go-ams-router panics afterwards.
+- Programmer errors detected at startup or route registration panic; request-time errors are returned. Startup failures of enabled modules are fatal (`os.Exit(1)`).
+- Everything in the codebase (comments, logs, errors, API texts, tests) is English.
+- Build with Go 1.27.2+ (the repository pins `toolchain go1.27.2`); run golangci-lint as `GOTOOLCHAIN=local golangci-lint run ./...` until the binary is rebuilt with 1.27.2.
+
+## Docs
+
+- [AGENTS.md](AGENTS.md): the authoritative reference for contributors and AI agents: architecture, runtime lifecycle, every package, full configuration schema, conventions and known gotchas. If this file and AGENTS.md disagree, AGENTS.md (and then the code) wins.
+- [README.md](README.md): project overview, features, install, minimal config, development commands.
+- [_examples/README.md](_examples/README.md): the runnable examples, the local Docker stack and how to test them.
+- [LICENSE](LICENSE): MIT, © 2026 AMS Software e Consultoria LTDA.
+
+## Packages
+
+- [version.go](version.go): package `nforge`; `Version` read from the embedded root `config.yaml` (framework metadata, not an app config).
+- [config/](config): layered configuration: `Load`, `LoadFlags`, `Config` and its sections, `ByteSize`, defaults and validation.
+- [deps/](deps): dependency container `Deps`, bootstrap `NewDeps`, readiness helpers, LIFO `Shutdown`.
+- [logs/](logs): `log/slog` setup (tint terminal + OTel), context handler injecting `request_id`.
+- [telemetry/](telemetry): OTel resource, TracerProvider, trace-ID generator for `request_id == trace_id`.
+- [codec/](codec): JSON/CBOR/XML `Registry`, struct tags, strict mode, required fields, limits, typed errors.
+- [http/](http): package `nhttp`: `ServerHttp`, response envelope, typed routes, query strings, OpenAPI docs, auth, tenancy, security headers, CORS, health/readiness, JWKS.
+- [database/](database): PostgreSQL `DB` (pgx pool + Squirrel), transactions, multi-tenancy (RLS or column).
+- [jose/](jose): standalone JWS/JWE/JWT `Service` with configured profiles, keys, JWKS, reload/rotation.
+- [cache/](cache): standalone `*cache.Cache` on Redis or a bounded memory LRU, `GetOrLoad`, tenant namespaces.
+- [crypto/](crypto): package `ncrypto`: XChaCha20-Poly1305, AES-256-GCM, HMAC-SHA256, bcrypt/Argon2id, BLAKE3/SHA-256, secure random, ULID.
+- [helper/safecalc/](helper/safecalc): money as integer cents with exact formatting.
+
+## Examples
+
+- [_examples/basic](_examples/basic): bootstrap, plain and typed routes in three formats, typed query strings, docs, health/readiness, a global middleware, a minimal JWT login, memory cache, PostgreSQL notes, an `ncrypto` demo and a `safecalc` test.
+- [_examples/jose](_examples/jose): JWT login, bearer authentication, scopes, `Principal`, nested tokens, JWS/JWE, JWKS, key files (`cmd/keygen`).
+- [_examples/cache](_examples/cache): `deps.Cache` on Redis or memory: objects, TTL, NX, counters, raw bytes, `GetOrLoad`, CBOR, outages.
+- [_examples/database](_examples/database): Squirrel + pgx repositories, transactions, error mapping, tenancy in column or RLS mode.
+- [_examples/docker-compose.yml](_examples/docker-compose.yml): PostgreSQL 18, Redis 8, OTel Collector, Tempo, Loki, Grafana.
+
+## Optional
+
+- [_examples/observability](_examples/observability): Collector, Tempo, Loki and Grafana configuration (dashboard *nForge · Logs*).
+- [http/internal/openapi/docs.html](http/internal/openapi/docs.html): the embedded Swagger UI page template.
+
+---
+
+# Reference
+
+## 1. Quick start
+
+```go
+package main
+
+import (
+	"log/slog"
+	"net/http"
+	"os"
+
+	"github.com/ams-soft/nforge/config"
+	"github.com/ams-soft/nforge/deps"
+	nhttp "github.com/ams-soft/nforge/http"
+)
+
+type User struct {
+	ID    int64  `json:"id"`
+	Name  string `json:"name" codec:"required"`
+	Email string `json:"email,omitempty"`
+}
+
+func main() {
+	cfg, err := config.Load() // flags -config / -envfile; YAML + ${ENV} + env file + overlay + defaults + validation
+	if err != nil {
+		slog.Error("[Fatal ERROR] invalid config", "error", err)
+		os.Exit(1)
+	}
+	dps := deps.NewDeps(*cfg)          // logger → tracing → banner → codec → database → jose → cache
+	server := nhttp.NewHTTPServer(dps) // router, standard middlewares, docs, JWKS, health/readiness
+
+	server.Typed().Route("/api/v1", func(api *nhttp.TypedRouter) {
+		api.TPost("/users", User{}, User{}, func(w http.ResponseWriter, r *http.Request) {
+			u := nhttp.Body[User](r) // already decoded and validated
+			u.ID = 1
+			_ = nhttp.SendJSON(w, r, http.StatusCreated, u)
+		}, nhttp.Opts{DocTag: "users", Description: "Create a user"})
+	})
+
+	if err := server.Start(); err != nil { // blocks until SIGINT/SIGTERM, then graceful shutdown
+		server.Shutdown()
+		os.Exit(1)
+	}
+}
+```
+
+Minimal `config.yaml`:
+
+```yaml
+app: { name: my-api, version: 1.0.0 }
+http:
+  server: { port: 8080 }
+  docs: { enabled: true }
+  routes: { health: { enabled: true }, readiness: { enabled: true } }
+logging: { output: { terminal: { enabled: true } } }
+```
+
+Run `go run . -config config.yaml` and open `http://localhost:8080/docs`.
+
+## 2. Runtime lifecycle
+
+1. `config.Load()` parses `-config` and `-envfile` (it calls `flag.Parse()`: define app flags first) and delegates to `config.LoadFlags(configPath, envFilePath)`.
+2. `deps.NewDeps(cfg)` builds, in order:
+   1. Logger (`logs.Setup`) when terminal or OTel output is on, otherwise a discarding logger; then tracing (`telemetry.SetupTracing`) when `cfg.IsTracingEnabled()`. Logger failure → exit; tracing failure → panic.
+   2. Banner `***** AMS SOFT nForge v<ver>: <APP> v<appver> *****` when `http.server.header: true`.
+   3. Codec registry from `cfg.Codec`, installed with `codec.SetDefault`.
+   4. Database (`database.enabled`): `database.Open` with a 15 s timeout and a ping; with tenancy, `CheckTenancy`. Failure → exit.
+   5. JOSE (`jose.enabled`): `jose.New` with a 15 s timeout reads and validates every key. Failure → exit with a sanitized error.
+   6. Cache (`cache.enabled`): `cache.Open` with a 15 s timeout, the app codec registry, namespace `(env, app.name)`, the logger and, when `database.tenancy.enabled`, a tenant resolver bound to `database.TenantFromContext`. Ping failure → exit.
+3. `nhttp.NewHTTPServer(dps)` creates the router, mounts the standard middleware chain and registers docs, JWKS and health/readiness routes when enabled.
+4. The app adds global middlewares (`AddGlobalMiddleware` + `LoadGlobalMiddleware`) and routes (`Typed()` or `Router()`).
+5. `server.Start()` runs `ListenAndServe` in a goroutine and waits for SIGINT/SIGTERM or a listen error. On a signal: `Srv.Shutdown` (10 s), then `Deps.Shutdown`, which runs registered shutdown functions LIFO: cache → JOSE → database → tracing → logs. All run even if one fails; errors are joined.
+6. `ServerHttp.AddShutdownFunc` / `Shutdown()` are a separate app-level list the application calls itself; `Start` does not call them.
+
+Middleware chain (fixed order): `Tracing()` (only with tracing) → `Logger` (only with logging) → `middleware.Recoverer` → `middleware.Security` (`http.security.enabled`) → `middleware.CORS` (`http.cors.enabled`) → app global middlewares. go-ams-router builds the chain lazily on the first request, so `Use` is valid until then, even after routes. For inline routers (`With`/`Group`) add middlewares before routes.
+
+## 3. Configuration (`config`)
+
+Precedence, later wins: start with `Config{Env: "local"}` → base YAML (`-config`, default `./config.yaml` in the **working directory**; missing file is not an error) with `${VAR}` expanded per YAML scalar from the **process environment** → env file (`-envfile`, godotenv) mapping each leaf from its YAML path upper-cased and joined by `_` (`http.server.port` → `HTTP_SERVER_PORT`) → overlay by `env` (case-insensitive: `prd` → `config.prd.yaml`, `stg` → `config.stg.yaml`, `dev` → `config.dev.yaml`, relative to the working directory; `local` has none) → defaults → validation.
+
+- Env-file types: string, ints, uints (overflow-checked), bool, floats, `time.Duration` (`"5s"`), pointers, `[]string` (comma-separated), any `encoding.TextUnmarshaler` (e.g. `ByteSize`). Sequences of structs (`jose.keys`, `jose.profiles`) and maps (`http.security.csp.directives`) are YAML-only; naming them in the env file is an error.
+- The env file does **not** feed `${VAR}`; only the real environment does. The overlay beats the env file.
+- `env` drives the log level case-sensitively (`local` DEBUG, `dev` INFO, `stg` WARN, `prd` ERROR, anything else DEBUG): use lowercase.
+- Booleans default to `false` except the `*bool` fields `tracing.otel.enabled`, `codec.xml.disallow_dtd` and `http.security.hsts.include_subdomains` (default true).
+- Helpers: `cfg.IsLoggingEnabled()`, `cfg.IsTracingEnabled()` (= `logging.output.otel.enabled && tracing.otel.enabled != false`).
+- `config.ByteSize` (int64, base 1024) parses `"5mb"`, `"512kb"`, `"1.5gb"`, `"100b"`, `"1048576"`, `"5 MiB"`; constants `B, KB, MB, GB`; `ParseByteSize`.
+
+Full schema with defaults and validation (copied from AGENTS.md §4.2; `§` references inside it point to AGENTS.md sections):
+
+```yaml
+env: local                    # local (default) | dev | stg | prd — drives log level and overlay
+
+app:
+  name: my-app                # REQUIRED
+  version: 1.0.0              # REQUIRED
+  # OnlineSince is set at load time (RFC 3339), not configurable
+
+http:
+  server:
+    host: ""                  # "" = all interfaces
+    port: 8080                # REQUIRED, 1..65535
+    header: true              # print the nForge banner (zero value: false)
+  docs:
+    enabled: false
+    path: /docs               # normalized to "/x" (leading slash, no trailing)
+    title: <app.name>
+    version: <app.version>
+    auth: bearer              # bearer | none (validated) — documented scheme; none + private typed routes panics
+    hosts: ["http://{host|localhost}:{port}"]   # 0.0.0.0 / :: / "" → localhost
+    accent: "#007d9cbf"       # validated hex: #RGB, #RGBA, #RRGGBB, #RRGGBBAA
+  routes:
+    health:    { enabled: false, path: /health }   # path defaults only when enabled
+    readiness: { enabled: false, path: /ready }
+  auth:                       # bearer auth of private typed routes; see §7.9
+    default_profile: ""       # jwt profile for IsPrivate routes without AuthProfile; requires jose.enabled
+    realm: nforge-api         # WWW-Authenticate realm; printable ASCII, no quotes/backslashes
+  tenant:                     # source of Opts.Tenant / server.TenantMiddleware(); see §7.10
+    source: claim             # claim (Principal.TenantID) | header (validated)
+    header: X-Tenant-ID       # header name (RFC 9110 token), read when source is header
+  security:                   # router middleware.Security (helmet); see §7.11; validated only when enabled
+    enabled: false
+    disable: []               # header names not to send, case-insensitive (x-frame-options, …)
+    csp: { directives: {}, disable_defaults: false, report_only: false }  # directives YAML only; null removes, [] valueless
+    hsts: { max_age: 8760h, include_subdomains: <true>, preload: false }  # include_subdomains is *bool
+    frame_options: SAMEORIGIN # SAMEORIGIN | DENY
+    referrer_policy: [no-referrer]
+    cross_origin_opener_policy: same-origin     # | same-origin-allow-popups | unsafe-none
+    cross_origin_resource_policy: same-origin   # | same-site | cross-origin
+    cross_origin_embedder_policy: ""            # not sent | require-corp | credentialless | unsafe-none
+  cors:                       # router middleware.CORS (Express cors); see §7.11; validated only when enabled
+    enabled: false
+    origins: []               # exact lowercase origins; [] or ["*"] = any origin
+    origin_patterns: []       # regexps, must be anchored ^…$
+    methods: [GET, HEAD, PUT, PATCH, POST, DELETE]
+    allowed_headers: []       # [] = echo Access-Control-Request-Headers
+    exposed_headers: []
+    credentials: false        # requires explicit origins/patterns; "*" headers rejected with it
+    max_age: 0s               # preflight cache (whole seconds); 0 = not sent
+    options_success_status: 204   # 200..299
+
+database:                     # database.Config — see §9
+  enabled: false
+  driver: postgres            # postgres | postgresql | "" ; anything else → ErrUnsupportedDriver
+  dsn: ""                     # wins over the individual fields
+  host/port/name/user/password: ...
+  ssl: { mode: "" }           # libpq sslmode; "" = pgx default (prefer)
+  connection: { connect_timeout: 5s }
+  pool: { min_conns, max_conns, max_conn_lifetime, max_conn_idle_time, health_check_period }
+  tenancy:                    # database.TenancyConfig — see §9.1; validated at load only when database.enabled
+    enabled: false
+    mode: ""                  # rls | column — REQUIRED when enabled
+    column: tenant_id         # plain identifier (written into SQL by TenantEq)
+    schema: public            # schema of unqualified tables
+    setting: app.tenant_id    # rls only; custom GUC "prefix.name"
+    tables: []                # "table" | "schema.table"; checked at startup
+
+logging:
+  output:
+    otel:
+      enabled: false          # MASTER SWITCH for all OTel (logs AND traces)
+      endpoint: ""            # "host:port" or URL; "" = OTel default localhost:4317
+      insecure: false
+    terminal:
+      enabled: false
+
+tracing:
+  otel:
+    enabled: <true>           # *bool; nil = true. Only effective if logging.output.otel.enabled
+    endpoint: ""
+    insecure: false
+
+codec:
+  formats: { enabled: [json] }      # json | cbor | xml
+  default: json                     # must be one of the enabled formats
+  strict_unknown_fields: false
+  max_payload_bytes: 5mb            # ByteSize
+  xml: { disallow_dtd: true }       # *bool; nil = true
+
+jose:                         # jose.Config — see §10 (unknown keys inside jose are rejected)
+  enabled: false              # false: nothing is read, deps.JOSE is nil
+  limits: { max_token_bytes: 16384, max_header_bytes: 2048, max_payload_bytes: 8192,
+            max_json_depth: 16, max_key_file_bytes: 65536, max_profiles: 32, max_keys: 64 }
+  keys: [ { kid, algorithm: HS256, operations: <all of the algorithm>,
+            secret: ${ENV} | source: { format: pem|jwk|oct, file }, publish: false } ]
+  profiles: [ { name, kind, typ, signing_*, verification_*, encryption_*, decryption_*,
+                content_encryption: A256GCM, jwt: { issuer, audiences, ttl: 15m, max_ttl: 15m, clock_skew: 30s } } ]
+  jwks: { enabled: false, path: /.well-known/jwks.json, cache_max_age: 60s }
+
+cache:                        # cache.Config — see §11; validated only when enabled, and only the selected driver
+  enabled: false              # false: nothing is opened, deps.Cache is nil
+  driver: redis               # redis | memory
+  codec: json                 # json | cbor; must also be in codec.formats.enabled
+  prefix: ""                  # "" → nforge:<env>:[<tenant>:]<app.name>: ; custom → <prefix>:[<tenant>:]
+  limits: { max_key_bytes: 1024 (≤ 64 KiB), max_value_bytes: 1mb (≤ 64 MiB), max_inflight_loads: 1024 }
+  load_timeout: 5s            # bounds a shared GetOrLoad loader; there is NO default entry TTL
+  redis:
+    url: ""                   # redis:// | rediss://; wins for address, credentials, database, TLS; query options rejected
+    host: localhost
+    port: 6379
+    username: "" / password: ""   # optional; no AUTH when both empty
+    database: 0
+    tls: { enabled: false, server_name: <host>, ca_file: "" }   # TLS 1.2+, hostname verified; no skip-verify
+    pool: { size: 32, min_idle_conns: 2, max_idle_conns: 32, max_active_conns: 32,
+            max_conn_idle_time: 5m, max_conn_lifetime: 30m }    # min_idle ≤ max_idle ≤ size ≤ max_active
+    timeouts: { dial: 1s, read: 1s, write: 1s, pool: 500ms, operation: 2s }
+    retry: { read_retries: 1, min_backoff: 50ms, max_backoff: 500ms }   # *int, 0..3; reads only
+  memory: { max_entries: 10000, max_bytes: 64mb, cleanup_interval: 30s }  # max_bytes ≥ max_key + max_value
+```
+
+## 4. Logging (`logs`) and telemetry (`telemetry`)
+
+- `logs.Setup(ctx, cfg) (*slog.Logger, shutdown, error)` also calls `slog.SetDefault`. Handler stack: context handler (adds `request_id` from the router's `middleware.GetRequestID`) → fan-out multi handler → leveled tint terminal handler (env level, RFC 3339, `AddSource`) and/or leveled OTel handler (level `min(env level, INFO)`, OTLP/gRPC batch).
+- `logs.NewNoop()` returns a discarding logger; `logs.NewMultiHandler(...)`; `logs.SetLogLevelByEnv(env)`.
+- Log inside requests with the context-aware methods (`InfoContext`, `ErrorContext`, `LogAttrs(ctx, …)`) so `request_id` and trace correlation are attached. Module messages use a bracketed prefix (`[HTTPModule]`, `[CacheModule]`, …); fatal startup errors use `[Fatal ERROR] …`.
+- `telemetry.NewResource` sets `service.name` (app.name), `service.version`, `deployment.environment` (env), host, process pid/executable/runtime and `OTEL_RESOURCE_ATTRIBUTES`. It never uses `WithProcess()` (command-line args may hold secrets).
+- `telemetry.SetupTracing` always installs the W3C propagator; when enabled, a TracerProvider with an OTLP/gRPC batch exporter and a custom ID generator. Endpoint with `://` → URL form (`http://` implies insecure), else `host:port`.
+- `request_id == trace_id`: an incoming `X-Request-Id` shaped like a trace ID (32 hex chars or a UUID) seeds the root span's trace ID (an incoming `traceparent` wins); the response `X-Request-Id` and the `request_id` span attribute are the trace ID; a different client ID is kept as `request_id.original` only if it has the router's request-ID shape (≤ 64 chars of `[A-Za-z0-9._-]`). Spans are renamed `"<METHOD> <route pattern>"` with `http.route`.
+- Without tracing there is no `request_id` and no `X-Request-Id` header unless the app adds `middleware.RequestID` globally.
+- `telemetry.ParseTraceID(s)`, `telemetry.ContextWithTraceID(ctx, id)`.
+
+## 5. Codec (`codec`)
+
+One struct serves every format:
+
+```go
+type User struct {
+	XMLName xml.Name `json:"-" xml:"user"`          // XML root element
+	ID      int64    `json:"id" xml:"id,attr"`      // XML attribute
+	Name    string   `json:"name" codec:"required"` // required in every format
+	Email   string   `json:"email,omitempty"`       // cbor and xml inherit the json name
+}
+func (u *User) Validate() error { … } // codec.Validator: runs after decode → 422 over HTTP
+```
+
+- Tag resolution: json → `json` tag else Go name; cbor → `cbor`, else `json`, else Go name; xml → `xml`, else `json`, else Go name. `omitempty`/`omitzero` must be identical in every tag present (`ErrInvalidTags`).
+- `codec:"required"`: present and non-null on decode (`MissingFieldError` with the full path, e.g. `user.address.zip`); present and non-empty on typed-route responses (`codec.CheckRequired`).
+- Types with their own (un)marshalers (`time.Time`, `TextMarshaler`, `json.Marshaler`) are opaque. Reflection is cached per type.
+- JSON: stdlib with `UseNumber`; trailing data is an error. CBOR (`fxamacker/cbor/v2`): `time.Time` as RFC 3339 with nanoseconds, duplicate map keys rejected. XML: custom mapping over `encoding/xml` tokens; output starts with `xml.Header`; slices are repeated elements; maps are `<field><entry key="k">v</entry></field>`; `[]byte` base64; `<!DOCTYPE>` → `ErrDTDNotAllowed` unless allowed; external entities are never resolved; `innerxml`, `any`, `comment` and `a>b` options are rejected.
+- Registry: `codec.New(codec.Config{Formats, Default, StrictUnknownFields, MaxPayloadBytes, AllowDTD, Validate}, extra ...Codec)`; methods `EncodeAs(format, v)`, `DecodeAs(format, data, v)`, `EncodeTo(format, w, v)` (streams for `StreamCodec`), `DecodeFrom(format, r, v)` (limit-enforced, `ErrPayloadTooLarge` without reading the rest), `Lookup`, `Formats`, `DefaultFormat`, `Register` (init time only), `Validate`. Format names: `json`, `application/json`, `application/json; charset=utf-8`, `text/xml`; unknown short names become `application/<name>`. Constructors `NewJSON/NewCBOR/NewXML(codec.Options{StrictUnknownFields, AllowDTD})`. Constants `codec.JSON`, `codec.DefaultMaxPayloadBytes` (5 MiB).
+- `codec.Default()` before `NewDeps` is json+cbor+xml, permissive, 5 MiB; `NewDeps` replaces it once with `SetDefault`. Tests that need config-driven behavior build their own registry and restore the default afterwards.
+- Errors (match with `errors.Is`, details with `errors.As`; third-party errors are converted, never leaked): `ErrSyntax` (`*SyntaxError{Format, Offset, Msg}`), `ErrUnknownField` (`*UnknownFieldError{Format, Field}`), `ErrMissingField` (`*MissingFieldError{Format, Field}`), `ErrTypeMismatch` (`*TypeError{Format, Field, Expected, Got}`), `ErrNamespace` (`*NamespaceError`), `ErrInvalidTarget` (`*InvalidTargetError`), `ErrValidation` (`*ValidationError{Err}`, unwraps to the cause), `ErrInvalidTags` (`*TagError`), `ErrUnsupportedType` (`*UnsupportedTypeError`), `ErrEncode` (`*EncodeError`), `ErrUnsupportedFormat`, `ErrPayloadTooLarge`, `ErrDTDNotAllowed`.
+- `codec.Fields(format, t)` and `codec.IsOpaque(t)` expose the field model (used by the OpenAPI generator).
+
+## 6. HTTP (`nhttp`)
+
+### 6.1 Server
+
+`type ServerHttp struct { Deps deps.Deps; Srv *http.Server; ShutdownFunc []func(); TypedRoutes []TypedRoute }`. Methods: `NewHTTPServer(deps)`, `Router() router.Router`, `Typed() *TypedRouter`, `AddGlobalMiddleware(mw)`, `LoadGlobalMiddleware()`, `AddDocRoute(TypedRoute)`, `TenantMiddleware(opts...)`, `AddShutdownFunc(fn)`, `Shutdown()`, `Start() error`.
+
+### 6.2 Response envelope and plain handlers
+
+```json
+{ "success": true,  "status": 201, "data": { "id": 1 } }
+{ "success": false, "status": 404,
+  "error": { "title": "404 ERROR NOT FOUND", "detail": "user not found", "instance": "/api/v1/users/9" } }
+```
+
+- `SendJSON / SendXML / SendCBOR(w, r, status, message) error`: `status < 400` → `data`; `>= 400` → `error.detail` (any value), `title = ErrorTitle(status)`, `instance = r.URL.Path`. Encoding happens before writing, so on error nothing was sent. 1xx/204/304 send headers only. JSON and XML add `; charset=utf-8`. XML root is `<response>`.
+- `Envelope(r, status, msg) SuccessResponse`; aliases `SuccessResponse`, `ErrorResponse`.
+- `ParseJSON / ParseXML / ParseCBOR(r, &v) error` decode through `codec.Default()`. Content-Type: empty accepted; otherwise the format's type, a structured suffix (`application/vnd.x+json`) or `text/xml` for XML; parameters ignored.
+- `ParseStatus(err)`: `ErrUnsupportedMediaType` / `codec.ErrUnsupportedFormat` → 415; `codec.ErrPayloadTooLarge` → 413; `codec.ErrValidation` → 422; anything else → 400.
+
+```go
+var u User
+if err := nhttp.ParseJSON(r, &u); err != nil {
+	_ = nhttp.SendJSON(w, r, nhttp.ParseStatus(err), err.Error())
+	return
+}
+```
+
+### 6.3 Typed routes
+
+```go
+server.Typed().Route("/api/v1", func(api *nhttp.TypedRouter) {
+	api.TGet("/users", ListUsers{}, []User{}, listUsers, nhttp.Opts{DocTag: "users", Description: "List users"})
+	api.TGet("/users/{id:int}", nil, User{}, getUser)
+	api.TPost("/users", User{}, User{}, createUser, nhttp.Opts{IsPrivate: true, RequiredScopes: []string{"users:write"}})
+	api.TPut("/users/{id}", User{}, User{}, updateUser)
+	api.TPatch("/users/{id}", UserPatch{}, User{}, patchUser)
+	api.TDelete("/users/{id}", nil, nil, deleteUser)
+})
+```
+
+- Signature `TXxx(pattern, request, response any, h http.HandlerFunc, opts ...Opts)`. `request`/`response` are sample values (usually zero values); pointers are dereferenced; `nil` means none. For `TGet` the request is the query-string struct.
+- `Opts{Codec ("json" default | "xml" | "cbor" | content type), IsPrivate, AuthProfile, RequiredScopes, Tenant, DocTag, Headers, Description}`.
+- Registration panics (programmer errors): codec not enabled; GET request type not a struct of query-supported types or invalid `default` tags; inconsistent codec tags; `AuthProfile`/`RequiredScopes` without `IsPrivate`; private route with nil `deps.JOSE`, no resolvable profile, unknown/non-JWT/non-consuming profile, invalid scopes, or docs enabled with `http.docs.auth: none`; `Tenant` with `http.tenant.source: claim` on a public route.
+- Request flow: (0) private route → bearer authentication before any decoding (errors in the route codec); (0b) `Opts.Tenant` → tenant guard; (1) decode + validate the request (GET: query string; others: Content-Type check + body); failure → envelope with `ParseStatus(err)` and `err.Error()`, logged WARN `"invalid request"`, handler not called; (2) the decoded value is in the context: `nhttp.Body[T](r)` / `nhttp.Query[T](r)` (`T` may be the type or a pointer; wrong `T` → zero value); (3) the handler receives a capture writer: `Send*` calls are captured, raw `Write` bytes are buffered and decoded in the route codec, headers pass straight through; (4) status defaults to 200; success responses with a body and a declared response type are conformed to that type (same type/pointer used directly, otherwise encode+decode), then `codec.CheckRequired` and validation run; any failure → **500 `"failed to build the response"`**, logged ERROR `"invalid handler response"`; (5) the envelope is written in the **route codec**, whatever `Send*` variant was called.
+- Consequences: a handler that sends nothing returns 200 without data (500 if a response type is declared); errors (>= 400) are never validated against the response type; use `w.WriteHeader(204)` for no content; middlewares that wrap the writer must implement `Unwrap() http.ResponseWriter`.
+- `TypedRouter` embeds `router.Router` (plain `Get`, `Post`, `Use`, … remain). Use its `Route`, `Group`, `With` so documented paths keep the prefix. `AddDocRoute(TypedRoute{…})` documents a non-typed route (handler ignored; `IsPrivate` is documentation only there).
+- Path params: `router.URLParam(r, "id")`. `{id:int}` (`[0-9]+`) and `{id:uuid}` are documented as integer (min 0) / uuid string; values are always strings at runtime. chi regexp params (`{id:[0-9]+}`) panic at registration.
+
+### 6.4 Typed query strings
+
+```go
+type ListUsers struct {
+	Name   string        `query:"name"`                   // optional
+	Page   int           `query:"page" default:"1"`       // default when absent
+	Limit  int           `query:"limit" codec:"required"` // 400 when absent
+	Active *bool         `query:"active"`                 // nil when absent
+	Tags   []string      `query:"tag"`                    // ?tag=a&tag=b or ?tag=a,b
+	Since  time.Time     `query:"since"`                  // TextUnmarshaler (RFC 3339)
+	Wait   time.Duration `query:"wait"`                   // "1m30s"
+}
+func (q *ListUsers) Validate() error { … } // 422 on failure
+```
+
+Name from `query` tag, else `json`, else Go name; `"-"` skips; embedded structs flattened; `?name=` counts as absent; default wins over required; `codec.strict_unknown_fields: true` also rejects unknown parameters; errors reuse codec types with `Format: "query"` → 400.
+
+### 6.5 Authentication, scopes, principal
+
+```go
+r.With(nhttp.Authenticate(dps.JOSE, "access", nhttp.WithScopes("wallet:read"))).Get("/wallets", h)
+nhttp.RequireScopes("a", "b")                          // after Authenticate
+p, ok := nhttp.PrincipalFromContext(r.Context())       // Principal{Subject, Issuer, Audience, TokenID, TenantID, Roles, Scopes}
+p.HasScopes("a", "b")
+```
+
+- `Authenticate(service, profile, opts...)` accepts only `jwt_signed`/`jwt_nested` profiles that can validate. Options: `WithRealm` (default `nforge-api`, `nhttp.DefaultRealm`), `WithScopes` (every scope required, exact, case-sensitive; accumulates), `WithPrincipalMapper(func(ctx, registered, custom) (Principal, error))`. Invalid arguments panic at construction.
+- Transport: exactly one `Authorization` header, case-insensitive `Bearer`, one or more spaces, one token; never query, cookie or body.
+- Results: no header or another scheme → 401 `authentication required` + `WWW-Authenticate: Bearer realm="…"`; duplicate/empty/malformed header → 400 `invalid authentication request` (`error="invalid_request"`); invalid/expired/wrong-profile/oversized token or rejected claims → 401 `invalid token` (`error="invalid_token"`); missing scope → 403 `insufficient permissions` (`error="insufficient_scope", scope="…"`); validator unavailable, service closed or ctx done → 503 `authentication unavailable`; internal failure or `Authenticate` applied twice → 500 `internal error`.
+- The default mapper reads optional claims `tenant_id` (string), `roles` ([]string) and `scope` (space-separated). `Issuer`, `Subject`, `Audience`, `TokenID` always come from the registered claims. The raw token is never stored or logged; roles grant nothing by themselves.
+- Typed routes use the route codec and `http.auth.realm`; raw `Authenticate` uses `nforge-api` unless `WithRealm`.
+
+### 6.6 Tenancy middlewares
+
+```go
+r.With(nhttp.Authenticate(dps.JOSE, "access"), nhttp.Tenant()).Get("/x", h)       // JWT tenant_id claim (default)
+nhttp.Tenant(nhttp.WithTenantResolver(nhttp.TenantFromHeader("X-Tenant-ID")))     // header
+nhttp.Tenant(nhttp.WithTenantOptional())                                           // allow tenant-less requests
+nhttp.SetTenant(func(r *http.Request) (string, error) { … })                       // custom; always replaces
+server.TenantMiddleware()                                                          // configured from http.tenant
+api.TGet("/orders", nil, []Order{}, h, nhttp.Opts{IsPrivate: true, Tenant: true})
+id, ok := nhttp.TenantID(r); r, err = nhttp.WithTenantID(r, id)
+```
+
+The tenant lives under the `database` context key, so handlers call `dps.DB.ForContext(r.Context())`. IDs must be canonical UUID v4 (stored lowercase). `Tenant` keeps a tenant already in the context; `SetTenant` replaces it. Missing tenant → 403 `tenant required`; invalid ID or repeated header → 400 `invalid tenant`; claim resolver without a `Principal` → 401; other resolver errors → 500. The tenant value is never logged. A header is client-controlled: verify membership unless a trusted gateway sets it.
+
+### 6.7 Built-in routes, docs, security headers, CORS, JWKS
+
+- Health (`http.routes.health.enabled`): `GET {path}` → 200 `{"status":"ok"}`; never touches dependencies.
+- Readiness (`http.routes.readiness.enabled`): `GET {path}` → 200 `{"status":"ok","online_since":"<RFC3339>", "database":{"health":true}, "jose":{"health":true}, "cache":{"health":true}}` (each key only when the module is enabled; database and cache pinged with the request ctx + 2 s). Any failure → 503 with the same body as `error.detail`, `"status":"unavailable"`. Types: `HealthResponse`, `ReadinessResponse`, `DatabaseInfo`, `JOSEInfo`, `CacheInfo`.
+- Docs (`http.docs.enabled`): `GET {path}`, `{path}/swagger.json`, `{path}/swagger.yaml`. OpenAPI 3.1 rebuilt on every request from `ServerHttp.TypedRoutes`; named structs go to `components.schemas`; success envelopes are named per response type (`UserEnvelope`, `UserListEnvelope`, `SuccessEnvelope`); operations document 200 plus 400/422 (request), 413/415 (body), 400/401 (private), 403 (scopes), 400/403 (tenant), 500. Success is always documented as 200. `auth: bearer` adds the `bearerAuth` scheme; private operations carry `x-auth-profile` / `x-required-scopes`. Type mapping: `time.Time` date-time, `time.Duration` int64 ns (string in query), `[]byte` base64, maps `additionalProperties`, opaque types string, interfaces any. The page gets a fresh CSP nonce per render and, when `http.security` sends a CSP, its own matching policy.
+- Security (`http.security.enabled`): helmet-like defaults (CSP `default-src 'self'; …`, HSTS 1 year + includeSubDomains, `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy: no-referrer`, COOP/CORP `same-origin`, nosniff, `X-XSS-Protection: 0`). Validated at load; handlers may override a header.
+- CORS (`http.cors.enabled`): answers every `OPTIONS` request before routing with 204; exact lowercase origins or anchored `^…$` patterns; credentials require explicit origins; actual requests get `Access-Control-Allow-Origin` (none for disallowed origins) and `Vary: Origin`. Expose `X-Request-Id` if browsers need it. For dynamic options, keep the section off and add the router middleware yourself.
+- JWKS (`jose.enabled` and `jose.jwks.enabled`): `GET`/`HEAD {jose.jwks.path}`, raw `application/jwk-set+json` (no envelope), strong `ETag`, `If-None-Match` → 304, `Cache-Control: public, max-age=<cache_max_age>`; closed service → 503. A path equal to docs/health/readiness panics.
+- Access log (`Logger`): one `"request"` record per request with method, path, pattern, status, bytes, duration, remote; INFO / WARN (4xx) / ERROR (5xx).
+- go-ams-router middlewares also available: `Recoverer`, `RequestID`, `Timeout`, `TimeoutWithResponse`, `StripSlashes`, `CleanPath`, `CORS`, `Security`, `CSPNonce`, `Logger`, `SlogLogger`.
+
+## 7. Database (`database`)
+
+```go
+type DB struct {
+	Executor DBTX                    // *pgxpool.Pool, or pgx.Tx inside a transaction
+	Query    sq.StatementBuilderType // Squirrel with $N placeholders: BUILD ONLY
+}
+
+sql, args, err := db.Query.Select("id", "name").From("users").Where(sq.Eq{"id": id}).ToSql()
+err = db.Executor.QueryRow(ctx, sql, args...).Scan(&u.ID, &u.Name)
+
+err = db.Transaction(ctx, func(tx *database.DB) error {
+	// always use tx here; the outer db runs on another connection, outside the transaction
+	return nil // commit; any error → rollback, returned unwrapped
+})
+db.TransactionWithOptions(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable}, fn)
+```
+
+- `DBTX` = `Exec`, `Query`, `QueryRow`, `CopyFrom`, `SendBatch`. Repository functions take `*database.DB` so they work on the pool and in a transaction.
+- Constructors: `Open(ctx, cfg)` (pool + ping + tenancy check), `NewPool`, `NewPoolConfig` (customize `pgxpool.Config`, then `New(pool, opts...)`), `New(nil)` panics. `WithTenancy(cfg)`.
+- Config: `dsn` wins; otherwise `host`, `port`, `name`, `user` required (`ErrMissingConfig`). Only positive pool/connection values override; negatives error; `min_conns > max_conns` error. Never log `Config` with `%v`; `LogValue` redacts; never log `ConnectionString()`.
+- Nested transactions → `ErrNestedTransaction` (no savepoints). Panics are not recovered (the deferred rollback still runs). A transaction-scoped DB must not escape the callback; `Shutdown` on it → `ErrShutdownInTransaction`.
+- `db.Ping(ctx)`, `db.Shutdown(ctx)` (blocks until connections are released), `deps.PingDatabase(ctx)` (`deps.ErrDatabaseDisabled` when off).
+- Error idiom: `pgx.ErrNoRows` → 404; check `RowsAffected() == 0` on DELETE/UPDATE; other errors → log + generic 500 (never leak details). Migrations are out of scope.
+- Multi-tenancy (`database.tenancy`): tenant IDs are canonical UUID v4 (`ParseTenantID`). `WithTenant(ctx, id)` / `TenantFromContext(ctx)`. `db.ForTenant(id)` / `db.ForContext(ctx)` (`ErrNoTenant`) return a scoped DB with `TenantEq()`, `TenantEqOn("u")`, `TenantColumn()`, `TenantID()`, `Tenancy()`.
+  - `rls` mode: before every scoped statement the executor runs `set_config(setting, tenant, true)` (transaction-local) in the same pgx batch; scoped transactions apply it once after BEGIN. Isolation is guaranteed by the app's PostgreSQL policies. `COPY FROM` into RLS tables is rejected by PostgreSQL. The unscoped DB sees **no** tenant rows. Cross-tenant work uses a second DB outside `Deps` with a `BYPASSRLS` role and tenancy disabled.
+  - `column` mode: nothing on the connection; the query author adds `TenantEq()`.
+  - `TenantEq` fails `ToSql` with `ErrNoTenant` on an unscoped DB (`ErrTenancyDisabled` when off), so unscoped queries cannot be built by accident.
+  - `CheckTenancy` at startup (`ErrTenancyCheck`): rls rejects superuser/`BYPASSRLS` roles and requires, for each `tables` entry, the table, the tenant column, RLS enabled, ≥ 1 policy and `FORCE ROW LEVEL SECURITY` when the role owns the table; column mode checks table and column.
+  - Errors (all prefixed `database:`; also `ErrNestedTransaction`, `ErrShutdownInTransaction`, `ErrShutdownTenantScoped` above): `ErrTenancyDisabled`, `ErrNoTenant`, `ErrInvalidTenantID`, `ErrTenantInTransaction`, `ErrShutdownTenantScoped`, `ErrInvalidTenancy`, `ErrTenancyCheck`, `ErrNilPool`, `ErrUnsupportedDriver`, `ErrMissingConfig`.
+
+Reference policy (fails closed when the setting is absent):
+
+```sql
+ALTER TABLE users ADD COLUMN tenant_id uuid NOT NULL
+  DEFAULT NULLIF(current_setting('app.tenant_id', true), '')::uuid;
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE users FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON users
+  USING      (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+```
+
+## 8. JOSE (`jose`)
+
+Standalone (no internal imports, no globals). Crypto by `go-jose/v4` behind unexported adapters; no go-jose type is public.
+
+```go
+token, err := dps.JOSE.IssueJWT(ctx, "access", jose.RegisteredClaims{Subject: "42"}, map[string]any{"scope": "users:read", "tenant_id": tid})
+var custom struct{ Scope string `json:"scope"` }
+v, err := dps.JOSE.ValidateJWT(ctx, "access", token, &custom) // *ValidatedJWT{Registered, Signing, Encryption}
+jws, err := svc.Sign(ctx, "docs", payload);   m, err := svc.Verify(ctx, "docs", jws)     // *VerifiedMessage{Payload, Header}
+jwe, err := svc.Encrypt(ctx, "box", plain);   d, err := svc.Decrypt(ctx, "box", jwe)     // *DecryptedMessage{Plaintext, Header}
+info, ok := svc.Profile("access")                                                       // ProfileInfo{Name, Kind, Type, CanProduce, CanConsume}
+jwks, err := svc.PublicJWKS(ctx); err = svc.Reload(ctx); err = svc.Check(ctx); err = svc.Shutdown(ctx)
+svc, err := jose.New(ctx, cfg, jose.WithClaimsValidator("access", fn), jose.WithClock(now))
+```
+
+- Profile kinds: `jws` (Sign/Verify, compact JWS), `jwe` (Encrypt/Decrypt, compact JWE), `jwt_signed` (claims in a JWS), `jwt_nested` (claims → JWS → JWE, `cty: JWT`). Wrong kind → `ErrProfileKind`; missing capability → `ErrOperationUnavailable`.
+- Algorithms: `EdDSA` (Ed25519), `ES256`, `PS256`/`RS256` (RSA 2048–8192), `HS256` (≥ 32-byte secret), `RSA-OAEP-256`, `dir` (32 bytes), content `A256GCM`. Everything else (`none`, `RSA1_5`, PBES2, CBC, zip) is rejected. A key is bound to one algorithm and its operations; HS256 cannot be mixed with asymmetric algorithms in one allowlist.
+- Defaults: a key without `algorithm` is **HS256**; without `operations` it gets all of its algorithm; profile algorithms default from their keys; allowlists come only from config, never from tokens. `dir` must be explicit.
+- Keys: inline `secret: ${ENV}` (HS256 ≥ 32 bytes, dir exactly 32) or `source: {format: pem|jwk|oct, file}`; private/secret files must have no group/other permission bits (keep 0600); symlinks followed; bounded size; the same material under two kids is rejected; `publish: true` exports only public parts of asymmetric keys.
+- Validation pipeline: size bound → base64url and segment checks → bounded strict protected header (no duplicate members, valid UTF-8, depth limit) → allowed headers only (`alg`, `kid`, `typ`, + `enc` for JWE, + `cty` for nested outer) → exact `typ`, algorithm allowlist, `kid` among the profile's candidates → length prechecks → crypto → header cross-check. `kid` and `typ` are mandatory.
+- JWT claims: `iss`, `sub`, `aud`, `exp`, `iat`, `jti` required, `nbf` optional; integral NumericDates; issuer exact, ≥ 1 accepted audience, `now < exp + skew`, `now + skew >= nbf`, `iat <= now + skew`, `iat <= nbf < exp`, `0 < exp − iat <= max_ttl`. `IssueJWT` fills `iss`/`aud`/`iat`/`nbf`/`exp`/`jti` (128-bit random); custom claims (struct or string-keyed map) cannot use registered names. `ValidateJWT` assigns the target only on full success.
+- `WithClaimsValidator(profile, fn)` runs on issue and validate; return errors wrapping `ErrClaimsRejected` (→ 401) or `ErrValidationUnavailable` (→ 503); anything else is `ErrInternal`.
+- Lifecycle: operations are admitted against an immutable snapshot; `Shutdown` is idempotent (new operations `ErrClosed`, admitted ones finish, secrets cleared best effort); `Reload` rereads key files of the same config and swaps atomically only if all validate. Rotation: deploy old and new kids, switch the producer key, keep the old consumer key until tokens expire + skew + JWKS cache age. `jti` does not prevent replay; revocation is an application concern.
+- Errors: `ErrDisabled`, `ErrClosed`, `ErrInvalidConfig`, `ErrUnknownProfile`, `ErrProfileKind`, `ErrOperationUnavailable`, `ErrInvalidKey`, `ErrUnknownKey`, `ErrUnsupportedAlgorithm`, `ErrMalformedToken`, `ErrPayloadTooLarge`, `ErrInvalidSignature`, `ErrDecryption`, `ErrInvalidClaims`, `ErrExpired`, `ErrNotYetValid`, `ErrInvalidIssuer`, `ErrInvalidAudience`, `ErrInvalidType`, `ErrInvalidTarget`, `ErrClaimsRejected`, `ErrValidationUnavailable`, `ErrInternal`; details in `*jose.Error{Code, Operation, Profile, Field, Reason}`. Messages never contain tokens, claims, key bytes or paths; config types redact paths in every `fmt` verb and slog.
+- `jose` YAML rejects unknown keys. `jose.ApplyDefaults`, `jose.ValidateConfig`. `deps.CheckJOSE(ctx)` (`deps.ErrJOSEDisabled` when off).
+
+## 9. Cache (`cache`)
+
+```go
+err := dps.Cache.Set(ctx, "user:42", user, 10*time.Minute) // 0 = persistent
+err = dps.Cache.Get(ctx, "user:42", &user)                  // cache.ErrNotFound on a miss
+ok, err := dps.Cache.SetIfAbsent(ctx, "lock:job", "me", 30*time.Second)
+b, err := dps.Cache.GetBytes(ctx, "raw"); err = dps.Cache.SetBytes(ctx, "raw", b, 0)
+n, err := dps.Cache.Delete(ctx, "a", "b")
+exists, err := dps.Cache.Exists(ctx, "a"); ok, err = dps.Cache.Expire(ctx, "a", time.Minute)
+exp, err := dps.Cache.TTL(ctx, "a")                         // Expiration{Exists, Persistent, Remaining}
+v, err := dps.Cache.Increment(ctx, "hits", 1)
+err = dps.Cache.GetOrLoad(ctx, "product:1", &p, 5*time.Minute, func(ctx context.Context) (any, error) {
+	return catalog.Find(ctx, 1)
+})
+err = dps.Cache.Ping(ctx); driver := dps.Cache.Driver()     // "redis" | "memory"
+```
+
+- `cache.Open(ctx, cfg, opts...)` (deps does it): options `WithCodecRegistry`, `WithNamespace(env, app)` (required unless `cache.prefix`), `WithTenantResolver`, `WithLogger`. Disabled cfg → `ErrDisabled`. It pings and closes what it created on failure; it never panics or exits.
+- Contract: ctx checked first; after `Shutdown` → `ErrClosed`; empty key or full key > `max_key_bytes` → `ErrInvalidKey`; wildcards are literal. TTL `0` = persistent, negative → `ErrInvalidTTL`, positive rounded **up** to whole ms. `Set*` replaces value and TTL. `Expire` needs ttl > 0 and returns false for a missing key.
+- Objects are encoded with the configured codec (`json` or `cbor`) without an envelope; decode into a fresh value assigned only on success (`codec:"required"`, `Validate()` included). Decode failure is `ErrDecode`, never a miss. Changing `cache.codec` needs a new `cache.prefix` or expiry.
+- `SetIfAbsent`: one atomic `SET NX PX`; a lost Redis reply is `ErrOutcomeUnknown`, never false. `Increment`: decimal ASCII int64; missing key starts at 0; TTL preserved; `ErrNotInteger`, `ErrCounterOverflow`. Never mix counter and object keys.
+- `GetOrLoad`: hit → decode; read errors other than `ErrNotFound` are returned and the loader is **not** called; otherwise one flight per full key in this instance (`max_inflight_loads`, `ErrLoadCapacity`), the leader runs the loader with `load_timeout`, stores best-effort with the leader's TTL; loader panics → `ErrLoaderPanic`; loader errors are returned unchanged and never cached. Not a distributed lock.
+- Redis driver: GET, SET [PX], SET NX [PX], DEL, EXISTS, PEXPIRE, PTTL, INCRBY, PING; `MaxRetries: -1`; every operation under `timeouts.operation`; only pure reads are retried (`read_retries`, transport errors only); **mutations are never retried**. Errors map to `ErrNotFound`, `ErrUnavailable` (reasons `auth`, `server`, `pool_timeout`, `closed`, `connect`, `timeout`, `connection`), `ErrNotInteger`, `ErrCounterOverflow`, `ErrInvalidTTL`, or `ErrOutcomeUnknown` (mutation with unknown result; also matches `ErrUnavailable`). The same `*Cache` recovers when Redis returns. URL `redis://` / `rediss://` (no query options); TLS 1.2+ with verification, no skip option.
+- Memory driver: map + LRU + deadline heap under one mutex; `max_entries` and `max_bytes` (payload budget, not RSS); cleanup goroutine every `cleanup_interval`; data lost on restart.
+- Keys: `nforge:<env>:<app>:<key>`, with tenancy `nforge:<env>:<tenant>:<app>:<key>`; custom prefix `<prefix>:[<tenant>:]<key>`; env, app and tenant are escaped injectively. With `database.tenancy.enabled` every operation except `Ping` needs a tenant in the context (`ErrTenantRequired`, before any I/O).
+- Errors: `ErrDisabled`, `ErrClosed`, `ErrInvalidConfig`, `ErrUnsupportedDriver`, `ErrUnsupportedCodec`, `ErrInvalidKey`, `ErrTenantRequired`, `ErrInvalidTTL`, `ErrInvalidTarget`, `ErrNotFound`, `ErrEncode`, `ErrDecode`, `ErrValueTooLarge`, `ErrNotInteger`, `ErrCounterOverflow`, `ErrUnavailable`, `ErrOutcomeUnknown`, `ErrLoadCapacity`, `ErrLoaderPanic`; details in `*cache.Error{Op, Driver, Kind, Reason}` (no keys, tenants, values, credentials or Redis text). `cache.ApplyDefaults`, `cache.ValidateConfig`, `cache.ByteSize`, constants `DriverRedis`, `DriverMemory`, `CodecJSON`, `CodecCBOR`. `deps.PingCache(ctx)` (`deps.ErrCacheDisabled`).
+
+## 10. Crypto (`ncrypto`)
+
+Standalone; no config, not in `Deps`.
+
+```go
+key, err := ncrypto.Key()                    // 32 random bytes
+var c ncrypto.Crypto
+c, err = ncrypto.NewChaCha20(key)            // XChaCha20-Poly1305 (24-byte nonce); or ncrypto.NewAES(key) (AES-256-GCM)
+ct, err := c.Encrypt(plain, aad)             // nonce || ciphertext || tag; aad authenticated, not encrypted
+pt, err := c.Decrypt(ct, aad)
+mac, err := ncrypto.NewHMAC256(macKey)       // >= 32 bytes; key copied
+sig := mac.Sign(data); ok := mac.Verify(data, sig)
+h, err := ncrypto.NewHash(ncrypto.HashConfig{}) // bcrypt cost 12; Argon2id 64 MiB (KiB units), 3 passes, 4 threads
+enc, err := h.Argon2id(pw); ok, err := h.VerifyArgon2id(pw, enc)
+enc, err = h.Bcrypt(pw);    ok, err = h.VerifyBcrypt(pw, enc)
+sum := h.Blake3(data); ok, err = h.VerifyBlake3(data, sum) // also SHA256 / VerifySHA256
+b, err := ncrypto.Bytes(16); s, err := ncrypto.String(32); id, err := ncrypto.ULID()
+n, err := ncrypto.Int(10, 1)                 // NOTE the (max, min) order: 1..10 inclusive
+f, err := ncrypto.Float64(1, 0)              // [0, 1)
+```
+
+- XChaCha20 is not wire-compatible with 12-byte-nonce ChaCha20-Poly1305. AES-GCM with random 96-bit nonces caps a key at 2^32 encryptions across all instances (rotate before).
+- Password verification checks the encoded parameters against fixed ceilings before allocating (bcrypt cost ≤ 16; Argon2 memory ≤ 256 MiB, passes ≤ 10, threads ≤ 16); bcrypt rejects passwords over 72 bytes (never truncates); wrong password → `false, nil`. Bound concurrent password hashing in the app.
+- BLAKE3 and SHA-256 are unkeyed: never for passwords or authentication.
+- Ranges: integers `[min, max]` unbiased; floats `[min, max)`; `min > max` → `ErrBounds`; negative sizes → `ErrSize`. ULIDs expose their timestamp: identifiers, not secrets.
+- Errors: `ErrCiphertext`, `ErrKey`, `ErrAESKey`, `ErrMessageTooLarge`, `ErrHash`, `ErrConfig`, `ErrBounds`, `ErrSize` (all prefixed `ncrypto:`); AEAD authentication failures are the cipher's opaque error.
+
+## 11. Helpers: `safecalc` (money)
+
+```go
+price := safecalc.New(1999, nil)                 // cents; nil opts → safecalc.BRL()
+total := safecalc.New(price.Value*3, nil)
+total.Format()                                   // "R$ 59,97"
+m, err := safecalc.NewFromFloat(12.5, nil)       // half-to-even to cents; ErrInvalidAmount on NaN/Inf/overflow
+usd := safecalc.MoneyOpt{Prefix: "US$", DecimalSep: ".", ThousandsSep: ","}
+safecalc.New(123456789, &usd).Format()           // "US$ 1,234,567.89"
+safecalc.Round(0.125, 2)                         // 0.12 (float display helper)
+```
+
+`Money{Opt MoneyOpt, Value int64}` stores cents. `Format` is exact integer arithmetic over the whole int64 range: `Prefix` + one space (only when non-empty) + `-` + integer part grouped by `ThousandsSep` (`""` disables grouping) + `DecimalSep` + two digits + `Suffix` verbatim. `MoneyOpt{Prefix, Suffix, DecimalSep, ThousandsSep}`. Floats may already be inexact (1.005 → 100 cents): prefer integer cents from the source. No overflow-checked arithmetic helpers yet.
+
+## 12. Examples and local stack
+
+All commands from the repository root; every example listens on `127.0.0.1:8080` with docs at `/docs`; app names are `<name>-example`.
+
+```bash
+docker compose -f _examples/docker-compose.yml up -d     # PostgreSQL 18 (app/app/app :5432), Redis 8 (:6379), OTel Collector (:4317/:4318), Tempo, Loki, Grafana (:3000)
+go run ./_examples/basic -config _examples/basic/config.yaml [-envfile _examples/basic/standalone.env]   # standalone.env: no database
+export JWT_SECRET=$(openssl rand -hex 32) JWT_ENCRYPTION_SECRET=$(openssl rand -hex 16)
+go run ./_examples/jose -config _examples/jose/config.yaml
+go run ./_examples/cache -config _examples/cache/config.yaml [-envfile _examples/cache/standalone.env]   # standalone.env: memory driver
+go run ./_examples/database -config _examples/database/config.yaml [-envfile _examples/database/rls.env]
+```
+
+- `basic`: demo login `admin@admin.com` / `admin123` → `POST /auth/login`, private `GET /auth/me`; `/api/v1/users` typed CRUD (JSON) and `/api/v1/xml/users` (XML); `/echo/{json,xml,cbor}` plain routes; `/cache/{key}`; `/db/notes` (only with the database). OTel is preconfigured for the local collector but off: set `logging.output.otel.enabled: true` to see logs and traces in Grafana (dashboard *nForge · Logs*).
+- `jose`: demo login `admin` / `admin` with `profile` and `scope`; 200/401/403 matrix over typed and raw routes; nested-only route; JWS/JWE demo; JWKS; `cmd/keygen` writes key files for the asymmetric setup.
+- `cache`: items (Set/Get/claim/TTL/expire/delete), counters, raw bytes, `GetOrLoad` over a slow catalog; maps cache errors to HTTP.
+- `database`: users repository with filters, batch insert in a transaction; tenant-scoped notes with `Opts{Tenant}` and `server.TenantMiddleware()`; `rls.env` + `rls-setup.sql` switch to RLS with role `app_tenant`.
+
+## 13. Building and testing
+
+```bash
+go build ./... && go vet ./...
+go test -race ./...
+gofmt -l .
+GOTOOLCHAIN=local golangci-lint run ./...
+govulncheck ./...
+
+EXAMPLES='./_examples/basic/... ./_examples/jose/... ./_examples/cache/... ./_examples/database/...'
+go vet $EXAMPLES && go test -race $EXAMPLES      # ./... skips directories starting with "_"
+
+for f in FuzzValidateJWT FuzzStrictJSON FuzzParseCompact FuzzKeyImport; do
+  go test ./jose -run '^$' -fuzz "^$f\$" -fuzztime 15s; done
+
+NFORGE_TEST_DATABASE_URL='postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable' go test -tags integration ./database/...
+NFORGE_TEST_REDIS_URL='redis://localhost:6379/15' go test -race -tags integration ./cache/
+NFORGE_TEST_DATABASE_URL='postgres://app:app@localhost:5432/app?sslmode=disable' \
+NFORGE_TEST_REDIS_URL='redis://localhost:6379/15' go test -race -tags integration $EXAMPLES
+```
+
+Tests are standard `testing`, white-box (same package), table-driven where it fits, no assertion library, `httptest` for HTTP. Every behavior change needs a test; every bug fix needs a regression test; JOSE security behavior needs negative tests. Integration tests skip when their variable is unset. `jose/imports_test.go` enforces the import graph.
+
+## 14. Conventions
+
+- Import graph (acyclic): `database`, `codec`, `jose`, `ncrypto` and `helper/*` import no nForge package; `cache` imports only `codec`; `config` only `database`, `jose`, `cache`; `telemetry` → config; `logs` → config, telemetry; `deps` → everything it builds; `nhttp` → config, database, deps, codec, jose, telemetry. `internal/` subpackages follow their parent's rules.
+- Errors: wrap with `%w` and context; exported sentinels plus typed errors for anything callers branch on; lowercase messages, no trailing punctuation, package prefix (`codec: …`, `nhttp: …`).
+- Doc comments on every exported identifier, explaining why and constraints.
+- Configuration keys are `snake_case`; document defaults in a trailing comment on the struct field; new fields follow config → defaults → validation → env-file support → tests → example `config.yaml`.
+- Security defaults stay on: DTD blocked, payload limits, no `WithProcess()` resource, redacted secrets, validated docs accent, per-render docs CSP nonce, anchored CORS patterns, no DB error details to clients; JOSE restricted suite, allowlists from config, mandatory `kid`/`typ`, strict JSON, minimum secret sizes, owner-only key files, no key generation at startup, static auth responses, tokens never logged or stored; tenancy transaction-local settings, fail-closed `TenantEq`/`ForContext`, startup `CheckTenancy`, tenant values never logged; cache: no mutation replay, no driver fallback, tenant before I/O, bounded memory and loads, TLS verification; `ncrypto`: AEAD only with random nonces, bounded password-hash verification.
+- Don't add dependencies without a strong reason. Keep examples focused on their module. Update AGENTS.md, this file and the affected READMEs with every change to architecture, configuration, public API or documented behavior.
+
+## 15. Gotchas
+
+1. The working directory resolves `config.yaml` and the overlays.
+2. The overlay beats the env file; `${VAR}` reads only the real environment.
+3. `env` casing: overlay selection is case-insensitive, the log level is not.
+4. `deps.DB`, `deps.JOSE`, `deps.Cache` are nil when disabled; with a module enabled and its backend down at startup, the app does not start.
+5. No `request_id` without tracing.
+6. The route codec decides the output format (`SendJSON` in an XML route writes XML); raw `w.Write` bytes must be in the route codec.
+7. Typed responses that do not match the declared type, miss a required field or fail `Validate()` → 500 `"failed to build the response"` (look for ERROR `"invalid handler response"`).
+8. OpenAPI documents success as 200 even when the handler sends 201/204.
+9. Routes or middlewares added after the first request panic; tests that need another route config need a new server.
+10. Tracing needs `logging.output.otel.enabled: true` and `tracing.otel.enabled` not false.
+11. `IsPrivate` is enforced on typed routes (panics at startup without jose/profile or with `http.docs.auth: none`); on `AddDocRoute` it is documentation only.
+12. JOSE defaults to HS256; a token whose `typ`, `kid` or `alg` does not match the profile is 401 even with a valid signature. Key files readable by group/others fail startup.
+13. Raw `Authenticate` realm is `nforge-api` unless `WithRealm`; typed routes use `http.auth.realm`.
+14. RLS: the unscoped DB sees no tenant rows; if everything is visible, the role is superuser/BYPASSRLS or owns the table without `FORCE`. `COPY FROM` fails on RLS tables.
+15. With `database.tenancy.enabled` the cache needs a tenant in every context (jobs included); `Ping` is the only exception.
+16. `ErrOutcomeUnknown` means a Redis write may have been applied: do not blindly retry `Increment`.
+17. Changing `cache.codec` makes old object entries fail with `ErrDecode`: bump `cache.prefix`.
+18. `GetOrLoad` does not cache loader errors, and a Redis read failure does not call the loader.
+19. `ncrypto` ranges take `(max, min)`; `ChaCha20` is XChaCha20.
+20. `safecalc` values are cents; floats enter only through `NewFromFloat`.

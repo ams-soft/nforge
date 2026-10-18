@@ -1,0 +1,61 @@
+# Database example: PostgreSQL through pgx + Squirrel, transactions and
+# multi-tenant scoping (tenant column or Row-Level Security). No JOSE, no cache.
+#
+#   docker compose -f _examples/docker-compose.yml up -d postgres
+#   go run ./_examples/database -config _examples/database/config.yaml
+env: local
+
+app:
+  name: database-example
+  version: 1.0.0
+
+http:
+  server:
+    host: 127.0.0.1
+    port: 8080
+    header: true
+  docs:
+    enabled: true
+    title: Database Example API
+    auth: none # no private routes here
+  routes:
+    health:
+      enabled: true
+    readiness:
+      enabled: true # pings the database (2s budget): 503 while it is down
+  tenant: # where Opts.Tenant / server.TenantMiddleware() read the tenant (a UUID v4)
+    source: header # default: claim (JWT tenant_id, see the jose example) | header
+    header: X-Tenant-ID # optional, default: X-Tenant-ID. A header is client-controlled:
+                        # only trust it behind a gateway that sets it, or check membership.
+
+logging:
+  output:
+    terminal:
+      enabled: true
+
+database:
+  enabled: true # default: false (deps.DB is nil). Unreachable at startup = the app does not start.
+  # dsn: ${DATABASE_URL} # optional; when set, host/port/name/user/password/ssl are ignored
+  host: localhost
+  port: 5432
+  name: app
+  user: app
+  password: app # in production use ${DB_PASSWORD}
+  ssl:
+    mode: disable # disable | allow | prefer (default) | require | verify-ca | verify-full
+  connection:
+    connect_timeout: 5s # optional
+  pool: # optional; omitted fields keep the pgx defaults
+    min_conns: 1
+    max_conns: 10
+#    max_conn_lifetime: 1h
+#    max_conn_idle_time: 30m
+#    health_check_period: 1m
+  tenancy: # optional multi-tenant scoping: db.ForTenant(id) / db.ForContext(ctx); used by /api/v1/notes
+    enabled: true # default: false
+    mode: column # rls (Row-Level Security; see rls.env) | column (queries add TenantEq); required when enabled
+#    column: tenant_id # optional, default: tenant_id
+#    schema: public # optional, default: public (for unqualified tables)
+#    setting: app.tenant_id # rls only; default: app.tenant_id (read by the policies with current_setting)
+#    tables: [notes] # checked at startup (column; in rls also RLS forced + policy, and no superuser/BYPASSRLS role).
+#                    # Not listed here because the example creates notes AFTER the check; with migrations, list it.

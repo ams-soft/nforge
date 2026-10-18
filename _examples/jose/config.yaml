@@ -1,0 +1,108 @@
+# JOSE example: JWT issuance and validation, bearer authentication with
+# scopes, nested (signed + encrypted) tokens and generic JWS/JWE. No database,
+# no cache, no Docker. Set the secrets first (never commit real ones):
+#
+#   export JWT_SECRET=$(openssl rand -hex 32)             # HS256, at least 32 bytes
+#   export JWT_ENCRYPTION_SECRET=$(openssl rand -hex 16)  # dir/A256GCM, exactly 32 bytes
+#
+# ${VAR} reads the process environment; an unset secret stops startup
+# ("secret or source is required").
+env: local
+
+app:
+  name: jose-example
+  version: 1.0.0
+
+http:
+  server:
+    host: 127.0.0.1
+    port: 8080
+    header: true
+  docs:
+    enabled: true
+    title: JOSE Example API
+    auth: bearer # default: bearer; private routes are documented with the bearer scheme
+  routes:
+    health:
+      enabled: true
+    readiness:
+      enabled: true # reports "jose": {"health": true}
+  auth: # bearer authentication of private typed routes (Opts.IsPrivate)
+    default_profile: access # jwt profile used when a private route has no Opts.AuthProfile
+    realm: jose-example # optional, default: nforge-api (WWW-Authenticate realm of typed routes)
+
+logging:
+  output:
+    terminal:
+      enabled: true
+
+jose:
+  enabled: true # default: false (deps.JOSE is nil and nothing is loaded)
+#  limits: # optional; defaults shown
+#    max_token_bytes: 16384
+#    max_header_bytes: 2048
+#    max_payload_bytes: 8192
+#    max_json_depth: 16
+#    max_key_file_bytes: 65536
+#    max_profiles: 32
+#    max_keys: 64
+  keys: # every key is bound to ONE algorithm; kids are unique
+    - kid: jwt-signing
+      secret: ${JWT_SECRET} # inline secret (HS256 >= 32 bytes, dir = 32 bytes); excludes source
+#      algorithm: HS256 # optional, default: HS256 | EdDSA | ES256 | PS256 | RS256 | RSA-OAEP-256 | dir
+#      operations: [sign, verify] # optional, default: every operation of the algorithm
+    - kid: jwt-encryption
+      algorithm: dir # direct AES-256-GCM key (the confidential profile and the JWE demo)
+      secret: ${JWT_ENCRYPTION_SECRET}
+    # Asymmetric alternative (keys in files, public key in the JWKS so other services can verify
+    # without being able to sign). Generate them with `go run ./_examples/jose/cmd/keygen`:
+#    - kid: access-sign-2026-10
+#      algorithm: EdDSA
+#      source:
+#        format: pem # pem (PKCS#8, PKCS#1, SEC1, PKIX) | jwk (one JWK object) | oct (base64url secret)
+#        file: ${NFORGE_KEYS_DIR}/access-sign.pem # private/secret files must be owner-only (0600)
+#      publish: true # optional, default: false; exports the PUBLIC part in the JWKS
+#    - kid: confidential-enc-2026-10
+#      algorithm: RSA-OAEP-256
+#      source:
+#        format: pem
+#        file: ${NFORGE_KEYS_DIR}/confidential-enc.pem
+  profiles: # the caller always picks the profile; tokens never select it
+    - name: access # API access tokens: claims signed with HS256 (readable, not confidential)
+      kind: jwt_signed # jws | jwe | jwt_signed | jwt_nested
+      typ: at+jwt # required; checked exactly on every token; unique across jwt profiles
+      signing_key: jwt-signing # producer (issues tokens)
+      verification_keys: [jwt-signing] # consumer (validates tokens)
+      jwt:
+        issuer: https://auth.jose-example.local # required; must match exactly
+        audiences: [jose-example-api] # required; a token needs at least one of them
+        ttl: 15m # optional, default: 15m
+        max_ttl: 15m # optional, default: 15m (or ttl); longer-lived tokens are rejected
+        clock_skew: 30s # optional, default: 30s; at most 2m
+    - name: confidential # claims signed (inner JWS) and then encrypted (outer JWE, cty: JWT)
+      kind: jwt_nested
+      typ: jose-example-confidential+jwt
+      signing_key: jwt-signing
+      verification_keys: [jwt-signing]
+      encryption_key: jwt-encryption
+      decryption_keys: [jwt-encryption]
+      jwt:
+        issuer: https://auth.jose-example.local
+        audiences: [jose-example-confidential-api]
+        ttl: 5m
+        max_ttl: 5m
+    # optional generic profiles (arbitrary bytes, no claims): JWS = integrity, JWE = confidentiality
+    - name: message-jws
+      kind: jws
+      typ: jose-example-message+jws
+      signing_key: jwt-signing
+      verification_keys: [jwt-signing]
+    - name: message-jwe
+      kind: jwe
+      typ: jose-example-message+jwe
+      encryption_key: jwt-encryption
+      decryption_keys: [jwt-encryption]
+  jwks:
+    enabled: false # default: false; enable with the asymmetric keys (symmetric keys are never published)
+    path: /.well-known/jwks.json
+    cache_max_age: 60s

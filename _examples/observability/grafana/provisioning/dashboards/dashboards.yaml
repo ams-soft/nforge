@@ -1,0 +1,13 @@
+apiVersion: 1
+
+providers:
+  - name: nforge
+    folder: nforge
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      # Path inside the container (./grafana/provisioning is mounted at /etc/grafana/provisioning).
+      path: /etc/grafana/provisioning/dashboards/json
+      foldersFromFilesStructure: false

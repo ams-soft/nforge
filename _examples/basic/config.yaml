@@ -1,0 +1,106 @@
+# Basic example: HTTP plus minimal versions of the modules: a JWT login, an
+# in-memory cache and PostgreSQL:
+#
+#   docker compose -f _examples/docker-compose.yml up -d postgres
+#   go run ./_examples/basic -config _examples/basic/config.yaml
+#   go run ./_examples/basic -config _examples/basic/config.yaml -envfile _examples/basic/standalone.env   # no database, no Docker
+#
+# Every key is documented in AGENTS.md (section 4.2); only the ones this
+# example uses are listed here.
+env: local # local (default) | dev | stg | prd — drives the log level and the overlay file
+
+app:
+  name: basic-example
+  version: 1.0.0
+
+http:
+  server:
+    host: 127.0.0.1 # optional, default: "" (all interfaces)
+    port: 8080
+    header: true # optional, show the framework banner, default: false
+  docs:
+    enabled: true # default: false
+    path: /docs # optional, default: /docs (spec at /docs/swagger.json and /docs/swagger.yaml)
+    title: Basic Example API # optional, default: app.name
+    auth: bearer # optional, default: bearer; private routes are documented with the bearer scheme
+  security: # helmet's security headers (CSP, HSTS, X-Frame-Options, …) on every response
+    enabled: true # default: false
+    # disable: [x-frame-options]   # headers not to send
+    # csp:
+    #   directives:                # merged over the defaults; null removes one
+    #     img-src: ["'self'", "data:", "https://images.example.com"]
+    #   report_only: false
+    # hsts: {max_age: 8760h, include_subdomains: true, preload: false}
+    # The docs page always gets its own CSP (nonce + jsDelivr + Google Fonts).
+  cors: # cross-origin browser access; preflights are answered before routing
+    enabled: true # default: false
+    origins: [http://localhost:3000] # default: [] = any origin ("*")
+    # origin_patterns: ['^https://[a-z0-9-]+\.preview\.example\.com$'] # anchored regexps
+    exposed_headers: [X-Clacks-Overhead] # default: none
+    max_age: 10m # preflight cache; default: 0 (not sent)
+    # credentials: false            # true requires explicit origins
+  routes:
+    health:
+      enabled: true # default: false
+    readiness:
+      enabled: true # default: false; reports the cache (and the database when on)
+  auth: # bearer authentication of private typed routes (Opts.IsPrivate)
+    default_profile: access # jwt profile used when a private route has no Opts.AuthProfile
+
+codec:
+  formats:
+    enabled: [json, xml, cbor] # default: [json]
+  default: json
+  strict_unknown_fields: false # true rejects unknown body fields and query parameters (400)
+  max_payload_bytes: 1mb # default: 5mb
+  xml:
+    disallow_dtd: true # default: true (XXE protection)
+
+logging:
+  output:
+    terminal:
+      enabled: true
+    otel:
+      enabled: false # true (with the local stack up) sends logs and traces to Grafana
+      endpoint: localhost:4317 # the compose OTel Collector (OTLP gRPC)
+      insecure: true # the local collector has no TLS
+
+jose: # see the jose example for asymmetric keys, scopes, nested tokens and JWKS
+  enabled: true # default: false
+  keys:
+    - kid: jwt-signing
+      # HS256 (the default algorithm), at least 32 bytes. Inline only because this is a
+      # demo: generate your own with `openssl rand -hex 32` and, outside local runs,
+      # read it from the environment instead (secret: ${JWT_SECRET}), never commit it.
+      secret: ae201552efbc6419c4aa1213ee000603e707be6dc7daeb4f25dd9cc46387541d
+  profiles:
+    - name: access
+      kind: jwt_signed # claims signed, readable by anyone holding the token
+      typ: at+jwt # checked exactly on every token
+      signing_key: jwt-signing
+      verification_keys: [jwt-signing]
+      jwt:
+        issuer: https://auth.basic-example.local
+        audiences: [basic-example-api]
+        ttl: 15m # optional, default: 15m
+
+cache: # see the cache example for Redis, counters, NX and GetOrLoad
+  enabled: true # default: false (deps.Cache is nil)
+  driver: memory # redis (default) | memory (in-process, lost on restart)
+  codec: json # optional, default: json; must be in codec.formats.enabled
+  memory: # optional; defaults shown. The budget counts key + value bytes, not Go overhead
+    max_entries: 10000
+    max_bytes: 64mb
+
+database: # see the database example for filters, transactions and multi-tenancy
+  enabled: true # default: false (deps.DB is nil and /db/notes is not registered; see standalone.env).
+                # Unreachable at startup = the app does not start.
+  host: localhost # the docker compose PostgreSQL
+  port: 5432
+  name: app
+  user: app
+  password: app # in production use ${DB_PASSWORD}
+  ssl:
+    mode: disable # disable | allow | prefer (default) | require | verify-ca | verify-full
+  pool: # optional; omitted fields keep the pgx defaults
+    max_conns: 5
