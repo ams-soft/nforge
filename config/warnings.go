@@ -5,7 +5,10 @@ import (
 	"net/url"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
+
+	"github.com/ams-soft/nforge/cache"
 )
 
 // transportWarnings reports settings that are valid but weaken the deployment
@@ -18,7 +21,42 @@ func transportWarnings(cfg *Config) []string {
 	w = append(w, redisWarnings(cfg)...)
 	w = append(w, databaseWarnings(cfg)...)
 	w = append(w, docsWarnings(cfg)...)
+	w = append(w, edgeTLSWarnings(cfg)...)
 	return w
+}
+
+// edgeTLSWarnings flags a server that terminates TLS (HTTPS or HTTP/3) while
+// its backends are reached without it: the operator cared about the edge but
+// the data and credentials behind it travel in clear text. A Unix socket is
+// exempt (TLS does not apply to it).
+func edgeTLSWarnings(cfg *Config) []string {
+	s := cfg.HTTP.Server
+	if !s.TLS.Enabled && !s.HTTP3.Enabled {
+		return nil
+	}
+	var w []string
+	if c := cfg.Cache; c.Enabled && c.Driver == "redis" && !redisUsesTLS(c) {
+		w = append(w, "the server uses HTTPS or HTTP/3 but cache.redis is reached without TLS; use rediss:// or cache.redis.tls.enabled")
+	}
+	if d := cfg.Database; d.Enabled {
+		host, mode := d.Host, d.SSL.Mode
+		if dsn := strings.TrimSpace(d.DSN); dsn != "" {
+			host, mode, _ = dsnParts(dsn)
+		}
+		if !strings.HasPrefix(host, "/") && !slices.Contains([]string{"require", "verify-ca", "verify-full"}, mode) {
+			w = append(w, "the server uses HTTPS or HTTP/3 but the database connection does not require TLS (database.ssl.mode must be require, verify-ca or verify-full)")
+		}
+	}
+	return w
+}
+
+// redisUsesTLS reports whether the configured Redis connection is encrypted.
+func redisUsesTLS(c cache.Config) bool {
+	if c.Redis.URL != "" {
+		u, err := url.Parse(c.Redis.URL)
+		return err == nil && u.Scheme == "rediss"
+	}
+	return c.Redis.TLS.Enabled
 }
 
 // docsWarnings flags the documentation endpoints in production. They are

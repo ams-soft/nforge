@@ -8,6 +8,8 @@ All notable changes to nForge are documented here. The format follows
 
 ### Added
 
+- A startup warning when HTTPS or HTTP/3 is on while `cache.redis` or the
+  database connection does not use TLS.
 - **HTTPS and HTTP/3 transports**, opt-in through `http.server.tls` and
   `http.server.http3`. HTTPS serves over TCP with TLS 1.3 as the minimum
   (`min_version: "1.2"` is the only alternative); HTTP/3 serves over
@@ -223,6 +225,13 @@ All notable changes to nForge are documented here. The format follows
   currencies with 0 (JPY) or 3 (KWD, BHD) minor digits in `Format` and
   `NewFromFloat`.
 
+- **Upgrading:** an unset `${VAR}` in a config file is now a load error
+  (it used to expand to an empty string with a warning). Use
+  `${VAR:-default}`, or `${VAR:-}` for an optional variable.
+- **Upgrading:** `http.security` is on by default (CSP, HSTS, X-Frame-Options,
+  Referrer-Policy, Cross-Origin-*). Set `http.security.enabled: false` to
+  restore the old behavior. `http.cors` stays off: with no origins it would
+  mean "any origin".
 - **Upgrading:** a scalar typed-query parameter sent twice (`?page=1&page=2`)
   is now a 400; only slice fields accept repetition.
 - **Upgrading:** `tracing.otel.trust_incoming` now defaults to `false` and

@@ -257,7 +257,7 @@ closes nothing); it exists for tests that tear modules down themselves.
 5. Handler timeout — always: the request context gets a deadline of
    `http.server.handler_timeout` (default 30s), so handlers, queries and
    loaders that honor `ctx` stop (the write timeout only closes the connection).
-6. `middleware.Security` (go-ams-router) — only if `http.security.enabled` (§7.11).
+6. `middleware.Security` (go-ams-router) — unless `http.security.enabled: false` (§7.11).
 7. `middleware.CORS` (go-ams-router) — only if `http.cors.enabled` (§7.11).
 8. App global middlewares — whatever `LoadGlobalMiddleware` adds.
 
@@ -293,8 +293,9 @@ Built-in routes registered by `NewHTTPServer`:
    leave `origins` empty, which means "any origin". Top-level keys starting
    with `x-` are ignored (room for application data in the same file).
    - `${VAR}` references in any YAML scalar are expanded from the **process
-     environment** (undefined → empty string, reported in `Config.Warnings`
-     and logged as WARN by `deps.NewDeps`). Expansion is per YAML node, not
+     environment** (an **unset** variable is a load error naming every missing one;
+     `${VAR:-default}` supplies a value when VAR is unset or empty, and
+     `${VAR:-}` declares it optional). Expansion is per YAML node, not
      on raw text, so values with YAML special characters are safe. For
      unquoted scalars the tag is reset so `port: ${DB_PORT}` still decodes as
      an int; quoted scalars stay strings.
@@ -327,7 +328,9 @@ Built-in routes registered by `NewHTTPServer`:
    (`config/warnings.go`) appends to `Config.Warnings`, never an error: a TLS
    private key readable by group or others, Redis credentials without TLS to a
    non-local host, a PostgreSQL password with `sslmode` disable/allow/prefer
-   (the pgx default) to a non-local host. `codec.max_payload_bytes` must be at
+   (the pgx default) to a non-local host, and HTTPS or HTTP/3 served while
+   `cache.redis` or the database does not use TLS (a Unix socket is exempt).
+   `codec.max_payload_bytes` must be at
    most 256 MiB.
 
 ### 4.2 Full schema, defaults and validation
@@ -388,7 +391,7 @@ http:
     source: claim             # claim (Principal.TenantID) | header (validated)
     header: X-Tenant-ID       # header name (RFC 9110 token), read when source is header
   security:                   # router middleware.Security (helmet); see §7.11; validated only when enabled
-    enabled: false
+    enabled: <true>           # *bool; on unless set to false
     disable: []               # header names not to send, case-insensitive (x-frame-options, …)
     csp: { directives: {}, disable_defaults: false, report_only: false }  # directives YAML only; null removes, [] valueless
     hsts: { max_age: 8760h, include_subdomains: <false>, preload: false }  # include_subdomains is *bool; true pins HTTPS on every subdomain
@@ -493,7 +496,7 @@ check when enabled. Sizes use `cache.ByteSize` (same syntax as
 by `cache.Open`, and only for an enabled Redis TLS.
 
 Booleans have **no implicit `true` defaults** except the `*bool` fields
-(`tracing.otel.enabled`, `codec.xml.disallow_dtd`,
+(`tracing.otel.enabled`, `http.security.enabled`, `codec.xml.disallow_dtd`,
 `http.security.hsts.include_subdomains`, whose default is `false`). Map fields
 (`http.security.csp.directives`) cannot come from the env file (explicit
 error). In particular

@@ -1251,6 +1251,9 @@ ones) found nothing.
   note: G-11 (the docs and `/ready` stay public; they are cached and a
   production warning is logged), G-09 and G-32 (warnings, not errors, because
   orchestrators mount keys 0644 and private networks carry plain traffic),
+  (G-39 and G-13 were later closed: `http.security` is on by default and an
+  unset `${VAR}` is a load error with `${VAR:-default}` as the opt-out; a
+  warning now covers HTTPS/HTTP3 in front of plaintext Redis or PostgreSQL.)
   (G-19, G-38 and G-17 were later closed in code: the replaced JOSE snapshot
   is wiped after its last user, `Money` takes `Decimals`, and
   `trust_incoming` defaults to false.)

@@ -126,3 +126,39 @@ func TestDocsInProductionWarning(t *testing.T) {
 		}
 	}
 }
+
+// A server with HTTPS or HTTP/3 whose cache or database is reached without TLS
+// is reported; without TLS at the edge nothing is added.
+func TestEdgeTLSWithPlaintextBackendsWarning(t *testing.T) {
+	cert, key := testPair(t)
+	tlsOn := "http: {server: {tls: {enabled: true, cert_file: " + cert + ", key_file: " + key + "}}}\n"
+	h3Only := "http: {server: {http3: {enabled: true, same_keycert_tls: false, cert_file: " + cert + ", key_file: " + key + "}}}\n"
+	redisPlain := "cache: {enabled: true, driver: redis, redis: {host: 127.0.0.1}}\n"
+	redisTLS := "cache: {enabled: true, driver: redis, redis: {url: 'rediss://127.0.0.1:6379'}}\n"
+	dbPlain := "database: {enabled: true, host: localhost, port: 5432, name: d, user: u, password: p}\n"
+	dbTLS := "database: {enabled: true, host: localhost, port: 5432, name: d, user: u, password: p, ssl: {mode: verify-full}}\n"
+	dbSocket := "database: {enabled: true, dsn: 'host=/var/run/postgresql user=u dbname=d'}\n"
+	memory := "cache: {enabled: true, driver: memory}\n"
+
+	cases := []struct {
+		name, yaml string
+		redis, db  bool
+	}{
+		{"https, redis and db plain", tlsOn + redisPlain + dbPlain, true, true},
+		{"http3 only, redis and db plain", h3Only + redisPlain + dbPlain, true, true},
+		{"https, everything encrypted", tlsOn + redisTLS + dbTLS, false, false},
+		{"https, memory cache, db socket", tlsOn + memory + dbSocket, false, false},
+		{"plain http edge", redisPlain + dbPlain, false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w := loadWarnings(t, c.yaml)
+			if got := hasWarning(w, "HTTPS or HTTP/3 but cache.redis"); got != c.redis {
+				t.Errorf("redis warning = %v, want %v: %q", got, c.redis, w)
+			}
+			if got := hasWarning(w, "HTTPS or HTTP/3 but the database"); got != c.db {
+				t.Errorf("database warning = %v, want %v: %q", got, c.db, w)
+			}
+		})
+	}
+}
