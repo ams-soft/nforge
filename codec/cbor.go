@@ -72,7 +72,7 @@ func (c *cborCodec) Decode(data []byte, v any) error {
 		if err := c.dec.Unmarshal(data, &tree); err != nil {
 			return cborDecodeErr(err)
 		}
-		if err := checkPresence(fmtCBOR, t, tree, "", c.strict); err != nil {
+		if err := checkPresence(fmtCBOR, t, tree, nil, c.strict); err != nil {
 			return err
 		}
 	}

@@ -61,6 +61,13 @@ All notable changes to nForge are documented here. The format follows
   `database.Config`'s DSN redaction also covers the `password` and
   `sslpassword` query parameters.
 
+- **XML decoding is bounded in depth and no longer quadratic in memory.** A
+  683 KB document with 100 000 nested elements used about 10 GB; element
+  nesting is now limited to 256 levels (`SyntaxError`), and the location of a
+  value (`a.b[2].c`) is kept as a linked list and rendered only when an error
+  is reported, which also removes the same blow-up from the JSON/CBOR presence
+  fallback (131 KB -> 337 MB before).
+
 ### Notes
 
 - Nothing changes for existing apps: with no `tls`/`http3` section the server

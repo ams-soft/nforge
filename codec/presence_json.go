@@ -66,7 +66,7 @@ const (
 	elemIndex
 )
 
-// checkPresenceJSON is checkPresence(fmtJSON, t, tree, "", strict) for the
+// checkPresenceJSON is checkPresence(fmtJSON, t, tree, nil, strict) for the
 // tree that data decodes into, without building the tree.
 func checkPresenceJSON(data []byte, t reflect.Type, strict bool) error {
 	w, _ := walkerPool.Get().(*jsonWalker)
@@ -100,7 +100,7 @@ func checkPresenceTree(data []byte, t reflect.Type, strict bool) error {
 	if err := jsonDecodeAll(bytes.NewReader(data), &tree); err != nil {
 		return err
 	}
-	return checkPresence(fmtJSON, t, tree, "", strict)
+	return checkPresence(fmtJSON, t, tree, nil, strict)
 }
 
 // pathTo renders the current path plus leaf with the tree walk's rules

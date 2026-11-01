@@ -450,10 +450,28 @@ func (g *xmlGuard) Token() (xml.Token, error) {
 	return tok, nil
 }
 
+// maxXMLDepth bounds the element nesting the XML decoder follows. encoding/xml
+// itself has no limit, and every level keeps the decoder's recursion, its
+// element stack and a location node alive, so an unbounded depth is a cheap
+// way to make a small payload expensive. 256 is far deeper than any
+// document that maps to a Go type.
+const maxXMLDepth = 256
+
 type xmlDecoder struct {
 	raw    *xml.Decoder
 	d      *xml.Decoder
 	strict bool
+	depth  int // open struct/map elements being decoded
+}
+
+// enter counts one more level of nesting and fails past maxXMLDepth; the
+// caller defers d.depth--.
+func (d *xmlDecoder) enter() error {
+	d.depth++
+	if d.depth > maxXMLDepth {
+		return &SyntaxError{Format: "xml", Offset: d.raw.InputOffset(), Msg: "nesting exceeds the maximum depth"}
+	}
+	return nil
 }
 
 func (d *xmlDecoder) token() (xml.Token, error) {
@@ -508,7 +526,7 @@ func (d *xmlDecoder) decodeDocument(v reflect.Value) error {
 	if expected.Local != "" && start.Name.Local != expected.Local {
 		return &TypeError{Format: "xml", Field: "", Expected: "<" + expected.Local + ">", Got: "<" + start.Name.Local + ">"}
 	}
-	if err := d.value(start, v, "", expected.Space); err != nil {
+	if err := d.value(start, v, nil, expected.Space); err != nil {
 		return err
 	}
 
@@ -532,9 +550,9 @@ func (d *xmlDecoder) decodeDocument(v reflect.Value) error {
 }
 
 // value decodes the start element (already consumed) into v.
-func (d *xmlDecoder) value(start xml.StartElement, v reflect.Value, path, ns string) error {
+func (d *xmlDecoder) value(start xml.StartElement, v reflect.Value, path *xpath, ns string) error {
 	if start.Name.Space != ns {
-		return &NamespaceError{Field: pathOr(path, start.Name.Local), Expected: ns, Got: start.Name.Space}
+		return &NamespaceError{Field: path.or(start.Name.Local), Expected: ns, Got: start.Name.Space}
 	}
 	for v.Kind() == reflect.Pointer {
 		if v.IsNil() {
@@ -556,7 +574,7 @@ func (d *xmlDecoder) value(start xml.StartElement, v reflect.Value, path, ns str
 			return err
 		}
 		if err := u.UnmarshalText([]byte(text)); err != nil {
-			return &TypeError{Format: "xml", Field: path, Expected: t.String(), Got: strconv.Quote(text)}
+			return &TypeError{Format: "xml", Field: path.String(), Expected: t.String(), Got: strconv.Quote(text)}
 		}
 		return nil
 	}
@@ -587,7 +605,11 @@ func (d *xmlDecoder) value(start xml.StartElement, v reflect.Value, path, ns str
 	return setText(v, text, path)
 }
 
-func (d *xmlDecoder) structValue(start xml.StartElement, v reflect.Value, path, ns string) error {
+func (d *xmlDecoder) structValue(start xml.StartElement, v reflect.Value, path *xpath, ns string) error {
+	defer func() { d.depth-- }()
+	if err := d.enter(); err != nil {
+		return err
+	}
 	t := v.Type()
 	si := getStruct(t)
 	if si.xmlNameIndex != nil {
@@ -602,7 +624,7 @@ func (d *xmlDecoder) structValue(start xml.StartElement, v reflect.Value, path, 
 		fl := si.byName[fmtXML]["@"+a.Name.Local]
 		if fl == nil {
 			if d.strict {
-				return &UnknownFieldError{Format: "xml", Field: path + "@" + a.Name.Local}
+				return &UnknownFieldError{Format: "xml", Field: path.attrLeaf(a.Name.Local)}
 			}
 			continue
 		}
@@ -610,9 +632,9 @@ func (d *xmlDecoder) structValue(start xml.StartElement, v reflect.Value, path, 
 			return xmlOptErr(t, fl)
 		}
 		if a.Name.Space != fl.space {
-			return &NamespaceError{Field: path + "@" + a.Name.Local, Expected: fl.space, Got: a.Name.Space}
+			return &NamespaceError{Field: path.attrLeaf(a.Name.Local), Expected: fl.space, Got: a.Name.Space}
 		}
-		if err := setText(fieldByIndexAlloc(v, fl.index), a.Value, path+"@"+fl.name); err != nil {
+		if err := setText(fieldByIndexAlloc(v, fl.index), a.Value, path.attr(fl.name)); err != nil {
 			return err
 		}
 		seen[fl] = true
@@ -638,7 +660,7 @@ loop:
 			fl := si.byName[fmtXML][tk.Name.Local]
 			if fl == nil || fl.chardata {
 				if d.strict {
-					return &UnknownFieldError{Format: "xml", Field: joinPath(path, tk.Name.Local)}
+					return &UnknownFieldError{Format: "xml", Field: path.leaf(tk.Name.Local)}
 				}
 				if err := d.d.Skip(); err != nil {
 					return d.mapErr(err)
@@ -664,7 +686,7 @@ loop:
 				}
 				fv = fv.Index(i)
 			}
-			if err := d.value(tk, fv, joinPath(path, fl.name), childNS); err != nil {
+			if err := d.value(tk, fv, path.field(fl.name), childNS); err != nil {
 				return err
 			}
 			seen[fl] = true
@@ -685,9 +707,9 @@ loop:
 	}
 	for _, fl := range si.fields[fmtXML] {
 		if fl.required && !seen[fl] {
-			name := joinPath(path, fl.name)
+			name := path.leaf(fl.name)
 			if fl.attr {
-				name = path + "@" + fl.name
+				name = path.attrLeaf(fl.name)
 			}
 			return &MissingFieldError{Format: "xml", Field: name}
 		}
@@ -695,7 +717,11 @@ loop:
 	return nil
 }
 
-func (d *xmlDecoder) mapValue(start xml.StartElement, v reflect.Value, path, ns string) error {
+func (d *xmlDecoder) mapValue(start xml.StartElement, v reflect.Value, path *xpath, ns string) error {
+	defer func() { d.depth-- }()
+	if err := d.enter(); err != nil {
+		return err
+	}
 	if err := d.rejectAttrs(start, path); err != nil {
 		return err
 	}
@@ -721,7 +747,7 @@ func (d *xmlDecoder) mapValue(start xml.StartElement, v reflect.Value, path, ns 
 			}
 			if tk.Name.Local != "entry" || !hasKey {
 				if d.strict {
-					return &UnknownFieldError{Format: "xml", Field: joinPath(path, tk.Name.Local)}
+					return &UnknownFieldError{Format: "xml", Field: path.leaf(tk.Name.Local)}
 				}
 				if err := d.d.Skip(); err != nil {
 					return d.mapErr(err)
@@ -730,11 +756,11 @@ func (d *xmlDecoder) mapValue(start xml.StartElement, v reflect.Value, path, ns 
 			}
 			tk.Attr = attrs
 			kv := reflect.New(t.Key()).Elem()
-			if err := setText(kv, key, joinPath(path, key)); err != nil {
+			if err := setText(kv, key, path.field(key)); err != nil {
 				return err
 			}
 			ev := reflect.New(t.Elem()).Elem()
-			if err := d.value(tk, ev, joinPath(path, key), ns); err != nil {
+			if err := d.value(tk, ev, path.field(key), ns); err != nil {
 				return err
 			}
 			v.SetMapIndex(kv, ev)
@@ -746,7 +772,7 @@ func (d *xmlDecoder) mapValue(start xml.StartElement, v reflect.Value, path, ns 
 
 // leafText reads the text content up to the end of the element; child
 // elements are a type error, since the target is a simple value.
-func (d *xmlDecoder) leafText(start xml.StartElement, t reflect.Type, path string) (string, error) {
+func (d *xmlDecoder) leafText(start xml.StartElement, t reflect.Type, path *xpath) (string, error) {
 	if err := d.rejectAttrs(start, path); err != nil {
 		return "", err
 	}
@@ -760,27 +786,27 @@ func (d *xmlDecoder) leafText(start xml.StartElement, t reflect.Type, path strin
 		case xml.CharData:
 			text = append(text, tk...)
 		case xml.StartElement:
-			return "", &TypeError{Format: "xml", Field: pathOr(path, start.Name.Local), Expected: t.String(), Got: "elemento <" + tk.Name.Local + ">"}
+			return "", &TypeError{Format: "xml", Field: path.or(start.Name.Local), Expected: t.String(), Got: "elemento <" + tk.Name.Local + ">"}
 		case xml.EndElement:
 			return string(text), nil
 		}
 	}
 }
 
-func (d *xmlDecoder) rejectAttrs(start xml.StartElement, path string) error {
+func (d *xmlDecoder) rejectAttrs(start xml.StartElement, path *xpath) error {
 	if !d.strict {
 		return nil
 	}
 	for _, a := range start.Attr {
 		if !isNamespaceDecl(a) {
-			return &UnknownFieldError{Format: "xml", Field: path + "@" + a.Name.Local}
+			return &UnknownFieldError{Format: "xml", Field: path.attrLeaf(a.Name.Local)}
 		}
 	}
 	return nil
 }
 
 // setText converts text (content or attribute) to the type of v.
-func setText(v reflect.Value, text, path string) error {
+func setText(v reflect.Value, text string, path *xpath) error {
 	for v.Kind() == reflect.Pointer {
 		if v.IsNil() {
 			v.Set(reflect.New(v.Type().Elem()))
@@ -789,7 +815,7 @@ func setText(v reflect.Value, text, path string) error {
 	}
 	t := v.Type()
 	mismatch := func() error {
-		return &TypeError{Format: "xml", Field: path, Expected: t.String(), Got: strconv.Quote(text)}
+		return &TypeError{Format: "xml", Field: path.String(), Expected: t.String(), Got: strconv.Quote(text)}
 	}
 	if u, ok := asInterface[encoding.TextUnmarshaler](v); ok {
 		if err := u.UnmarshalText([]byte(text)); err != nil {
@@ -851,11 +877,4 @@ func setText(v reflect.Value, text, path string) error {
 
 func isNamespaceDecl(a xml.Attr) bool {
 	return a.Name.Space == "xmlns" || (a.Name.Space == "" && a.Name.Local == "xmlns")
-}
-
-func pathOr(path, name string) string {
-	if path == "" {
-		return name
-	}
-	return path
 }

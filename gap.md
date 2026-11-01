@@ -19,11 +19,11 @@ PoC files were temporary and are deleted; each item says how to reproduce.
 
 | # | Sev | Evidence | Where | One line |
 |---|---|---|---|---|
-| G-01 | High | PoC | `codec/xml.go` | XML decode memory is quadratic in nesting depth: 683 KB -> 10 GB |
+| G-01 | High | PoC | `codec/xml.go` | **RESOLVED** XML decode memory is quadratic in nesting depth: 683 KB -> 10 GB |
 | G-02 | Med-High | PoC | `config/config.go` | Unknown YAML keys ignored outside `jose`; a typo in `cors.origins` means "any origin" |
 | G-03 | Medium | PoC | `deps/deps.go` | Fatal startup errors are silent with default logging; no flush with OTel |
 | G-04 | Medium | CODE | `http/internal/openapi` | Docs page loads Swagger UI from a floating CDN version, no SRI, host-wide CSP allowlist |
-| G-05 | Medium | PoC | `codec/presence*.go` | JSON tree fallback is quadratic: 131 KB -> 337 MB |
+| G-05 | Medium | PoC | `codec/presence*.go` | **RESOLVED** JSON tree fallback is quadratic: 131 KB -> 337 MB |
 | G-06 | Low | PoC | `codec/json.go` | Decode errors leak Go package-qualified type names to clients |
 | G-07 | Low | CODE | `codec/xml.go:763` | Non-English error text in production code |
 | G-08 | Low | CODE | `http/transport.go` | TLS/QUIC certificates are loaded once; no rotation without restart |
@@ -67,7 +67,7 @@ Coverage limits are in section 4.
 
 ## 1. Findings in detail
 
-### G-01 — XML decode: memory is quadratic in nesting depth (High, PoC)
+### G-01 — XML decode: memory is quadratic in nesting depth (High, PoC) [RESOLVED]
 
 **Where.** `codec/xml.go`, `xmlDecoder.structValue` calls
 `d.value(tk, fv, joinPath(path, fl.name), childNS)` at line 667 (and the map
@@ -119,6 +119,9 @@ before decoding, public ones do not).
    already does) and render the string only when an error is created.
 3. Add a regression test with depth 100 000 asserting the limit error and a
    memory/time bound.
+
+
+> **Resolved** in `fix(codec): bound XML nesting and make locations lazy`. XML nesting is limited to 256 levels and error locations are xpath linked lists rendered on demand (codec/xpath.go). Tests: TestXMLNestingIsBounded (100 000 levels now fails fast with a SyntaxError and allocates < 64 MB), TestXMLUnknownDeepContentIsSkippedCheaply.
 
 ---
 
@@ -240,7 +243,7 @@ Google Fonts dependency and works offline). Drop the CDN from `script-src`.
 
 ---
 
-### G-05 — JSON presence fallback is quadratic (Medium, PoC)
+### G-05 — JSON presence fallback is quadratic (Medium, PoC) [RESOLVED]
 
 **Where.** `codec/presence_json.go` falls back to `checkPresenceTree` on
 duplicate names, invalid UTF-8 or trailing data; that path calls
@@ -276,6 +279,9 @@ where the library depth limit (32) keeps it harmless.
 **Fix direction.** Same as G-01: path stack, render on error. Also consider
 making the fallback decision cheaper to trigger-proof (e.g. detect duplicates
 without building the whole tree).
+
+
+> **Resolved** in `fix(codec): bound XML nesting and make locations lazy`. The tree fallback of the JSON/CBOR presence check uses the same lazy xpath; TestJSONPresenceFallbackIsNotQuadratic keeps a 9 000-deep fallback under 128 MB (was 337 MB).
 
 ---
 

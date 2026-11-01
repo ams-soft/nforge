@@ -1047,6 +1047,10 @@ type User struct {
   `<!DOCTYPE>` → `ErrDTDNotAllowed` unless allowed; external entities are
   **never** resolved. Unsupported xml options (innerxml, any, comment, `a>b`)
   are rejected.
+  Element nesting is limited to 256 levels (`maxXMLDepth`, a `SyntaxError`
+  past it). Locations in errors (`a.b[2].c`) are `*xpath` linked lists
+  rendered only when an error is built: never concatenate path strings per
+  level, that is O(depth^2) memory.
 
 ### 8.3 Registry
 

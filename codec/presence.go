@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 )
@@ -51,7 +50,7 @@ func hasRequiredRec(t reflect.Type, seen map[reflect.Type]bool) bool {
 	return false
 }
 
-func checkPresence(f format, t reflect.Type, tree any, path string, strict bool) error {
+func checkPresence(f format, t reflect.Type, tree any, path *xpath, strict bool) error {
 	if tree == nil {
 		return nil
 	}
@@ -78,20 +77,20 @@ func checkPresence(f format, t reflect.Type, tree any, path string, strict bool)
 			fl := lookupField(si, f, k)
 			if fl == nil {
 				if strict {
-					return &UnknownFieldError{Format: f.String(), Field: joinPath(path, k)}
+					return &UnknownFieldError{Format: f.String(), Field: path.leaf(k)}
 				}
 				continue
 			}
 			if m[k] != nil {
 				present[fl] = true
 			}
-			if err := checkPresence(f, fl.typ, m[k], joinPath(path, fl.name), strict); err != nil {
+			if err := checkPresence(f, fl.typ, m[k], path.field(fl.name), strict); err != nil {
 				return err
 			}
 		}
 		for _, fl := range si.fields[f] {
 			if fl.required && !present[fl] {
-				return &MissingFieldError{Format: f.String(), Field: joinPath(path, fl.name)}
+				return &MissingFieldError{Format: f.String(), Field: path.leaf(fl.name)}
 			}
 		}
 	case reflect.Slice, reflect.Array:
@@ -103,7 +102,7 @@ func checkPresence(f format, t reflect.Type, tree any, path string, strict bool)
 			return nil
 		}
 		for i, item := range arr {
-			if err := checkPresence(f, t.Elem(), item, path+"["+strconv.Itoa(i)+"]", strict); err != nil {
+			if err := checkPresence(f, t.Elem(), item, path.at(i), strict); err != nil {
 				return err
 			}
 		}
@@ -118,7 +117,7 @@ func checkPresence(f format, t reflect.Type, tree any, path string, strict bool)
 		}
 		slices.Sort(keys)
 		for _, k := range keys {
-			if err := checkPresence(f, t.Elem(), m[k], joinPath(path, k), strict); err != nil {
+			if err := checkPresence(f, t.Elem(), m[k], path.field(k), strict); err != nil {
 				return err
 			}
 		}
