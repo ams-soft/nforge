@@ -22,7 +22,7 @@ PoC files were temporary and are deleted; each item says how to reproduce.
 | G-01 | High | PoC | `codec/xml.go` | **RESOLVED** XML decode memory is quadratic in nesting depth: 683 KB -> 10 GB |
 | G-02 | Med-High | PoC | `config/config.go` | **RESOLVED** Unknown YAML keys ignored outside `jose`; a typo in `cors.origins` means "any origin" |
 | G-03 | Medium | PoC | `deps/deps.go` | **RESOLVED** Fatal startup errors are silent with default logging; no flush with OTel |
-| G-04 | Medium | CODE | `http/internal/openapi` | Docs page loads Swagger UI from a floating CDN version, no SRI, host-wide CSP allowlist |
+| G-04 | Medium | CODE | `http/internal/openapi` | **RESOLVED** Docs page loads Swagger UI from a floating CDN version, no SRI, host-wide CSP allowlist |
 | G-05 | Medium | PoC | `codec/presence*.go` | **RESOLVED** JSON tree fallback is quadratic: 131 KB -> 337 MB |
 | G-06 | Low | PoC | `codec/json.go` | Decode errors leak Go package-qualified type names to clients |
 | G-07 | Low | CODE | `codec/xml.go:763` | Non-English error text in production code |
@@ -220,7 +220,7 @@ run the registered shutdown functions before exiting. Better: add
 
 ---
 
-### G-04 — Docs page: unpinned CDN script, no SRI, host-wide CSP allowlist (Medium, CODE)
+### G-04 — Docs page: unpinned CDN script, no SRI, host-wide CSP allowlist (Medium, CODE) [RESOLVED]
 
 **Where.** `http/internal/openapi/docs.html:20` and `:280`
 (`https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/...`), and
@@ -246,6 +246,9 @@ non-production.
 **Fix direction.** Pin an exact version, add SRI hashes, or embed the Swagger
 UI bundle with `//go:embed` and serve it from `'self'` (also removes the
 Google Fonts dependency and works offline). Drop the CDN from `script-src`.
+
+
+> **Resolved** in `fix(http): pin Swagger UI with SRI and drop the CDN from script-src`. docs.html loads swagger-ui-dist@5.33.1 with sha384 integrity (hashes cross-checked against the npm tarball) and script-src is the nonce alone. Tests: TestDocsPageAssetsArePinnedWithIntegrity, openapi TestRenderPagePinsSwaggerUIAndDropsTheScriptHost.
 
 ---
 

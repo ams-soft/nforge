@@ -43,6 +43,9 @@ type pageData struct {
 	Nonce    string
 }
 
+// swaggerUIVersion is the exact swagger-ui-dist release docs.html loads.
+const swaggerUIVersion = "5.33.1"
+
 // RenderPage renders the HTML documentation page and the Content-Security-Policy
 // that fits it: its inline scripts carry a fresh nonce, Swagger UI comes from
 // jsDelivr and the fonts from Google Fonts. The server sends the policy only
@@ -78,6 +81,15 @@ func randomBytes(n int) []byte {
 }
 
 // pageCSP is the policy of docs.html; keep it in sync with what the page loads.
+//
+// script-src is the nonce alone: the Swagger UI bundle carries the nonce and a
+// Subresource Integrity hash, so no host is allowed to serve scripts (a host
+// allowlist for jsDelivr would admit any npm package or GitHub file).
+// Styles still allow the CDN host because the stylesheet is loaded from it
+// (with SRI). Swagger UI is pinned to swaggerUIVersion; to update it, change
+// the version and both hashes in docs.html together:
+//
+//	curl -s https://cdn.jsdelivr.net/npm/swagger-ui-dist@<v>/swagger-ui-bundle.js | openssl dgst -sha384 -binary | openssl base64 -A
 func pageCSP(nonce string, hosts []string) string {
 	connect := []string{"'self'"}
 	for _, h := range hosts {
@@ -91,7 +103,7 @@ func pageCSP(nonce string, hosts []string) string {
 		"object-src 'none'",
 		"frame-ancestors 'self'",
 		"form-action 'self'",
-		"script-src 'nonce-" + nonce + "' https://cdn.jsdelivr.net",
+		"script-src 'nonce-" + nonce + "'",
 		"style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com",
 		"font-src 'self' data: https://fonts.gstatic.com",
 		"img-src 'self' data:",

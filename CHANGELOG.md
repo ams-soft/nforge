@@ -124,6 +124,11 @@ All notable changes to nForge are documented here. The format follows
   every value inside the target (children before parents, pointer or value
   receiver, location in the message) for all formats and for query strings.
 
+- **The docs page no longer trusts the whole CDN.** Swagger UI is pinned to
+  `swagger-ui-dist@5.33.1` with Subresource Integrity hashes (it was the
+  floating `@5`, unverified), and the page's `script-src` is the per-render
+  nonce alone instead of the nonce plus all of `cdn.jsdelivr.net`.
+
 ### Notes
 
 - **Upgrading:** requests that decode into types with a nested `Validate()`

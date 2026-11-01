@@ -823,8 +823,13 @@ func (q *ListUsers) Validate() error { ... }         // → 422 on failure
   Keep that validation if you touch either side.
 - Every render puts a fresh nonce (base64url: `html/template` escapes `+`
   in attributes) on the page's `<script>` tags and returns the matching
-  policy (`pageCSP`: nonce + jsDelivr scripts, Google Fonts, `connect-src`
-  'self' + the `docs.hosts` origins). The docs handler sends it only when
+  policy (`pageCSP`: `script-src` is the nonce alone, jsDelivr only for the
+  stylesheet, Google Fonts, `connect-src` 'self' + the `docs.hosts` origins).
+  Swagger UI comes from jsDelivr **pinned to one exact version
+  (`swaggerUIVersion`) with Subresource Integrity** on the script and the
+  stylesheet; to update it change the version and both sha384 hashes in
+  `docs.html` together (cross-check the files against the npm tarball) and the
+  tests will tell you if they drift. The docs handler sends it only when
   `http.security` sends a CSP, under the same header name (report-only
   respected), replacing the API policy whose `script-src 'self'` would
   block Swagger UI. Keep `pageCSP` in sync with what `docs.html` loads.

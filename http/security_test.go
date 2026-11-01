@@ -99,7 +99,8 @@ func TestDocsPageCSP(t *testing.T) {
 			continue
 		}
 		csp := rec.Header().Get(c.header)
-		if !strings.Contains(csp, "script-src 'nonce-"+m[0][1]+"' https://cdn.jsdelivr.net") ||
+		if !strings.Contains(csp, "script-src 'nonce-"+m[0][1]+"';") ||
+			strings.Contains(csp, "script-src 'nonce-"+m[0][1]+"' https://") ||
 			!strings.Contains(csp, "connect-src 'self' https://api.example.com") {
 			t.Errorf("%s: docs CSP %q", c.name, csp)
 		}
@@ -163,5 +164,32 @@ func TestCORS(t *testing.T) {
 	if h.Get("Access-Control-Allow-Origin") != "https://app.example.com" || h.Get("Access-Control-Expose-Headers") != "X-Request-Id" ||
 		!strings.Contains(strings.Join(h.Values("Vary"), ","), "Origin") {
 		t.Errorf("actual request: %v", h)
+	}
+}
+
+// The docs page loads Swagger UI from a CDN: the version must be exact and
+// both files need a Subresource Integrity hash, otherwise whatever the CDN
+// serves for "@5" runs in the API's origin (G-04).
+func TestDocsPageAssetsArePinnedWithIntegrity(t *testing.T) {
+	s := newSecurityServer(t, func(cfg *config.Config) {})
+	body := serveReq(s, httptest.NewRequest("GET", "/docs", nil)).Body.String()
+
+	assetRe := regexp.MustCompile(`(?s)<(?:script|link)[^>]*?(?:src|href)="(https://[^"]+)"[^>]*>`)
+	var cdn []string
+	for _, m := range assetRe.FindAllStringSubmatch(body, -1) {
+		if !strings.Contains(m[1], "cdn.jsdelivr.net") {
+			continue
+		}
+		cdn = append(cdn, m[1])
+		if !regexp.MustCompile(`/swagger-ui-dist@\d+\.\d+\.\d+/`).MatchString(m[1]) {
+			t.Errorf("%s: pin an exact version, not a range", m[1])
+		}
+		if !regexp.MustCompile(`integrity="sha384-[A-Za-z0-9+/]{64}"`).MatchString(m[0]) ||
+			!strings.Contains(m[0], `crossorigin="anonymous"`) {
+			t.Errorf("%s: missing integrity or crossorigin in %q", m[1], m[0])
+		}
+	}
+	if len(cdn) != 2 {
+		t.Fatalf("expected the Swagger UI script and stylesheet, found %v", cdn)
 	}
 }
