@@ -531,11 +531,18 @@ AES), `jose/jwt.go` (claim validation), `jose/keys.go` (file loading),
 `database/tenancy.go` (predicate and `CheckTenancy`), `crypto/random.go`,
 `helper/safecalc`, `logs/`, `telemetry/`, `deps/deps.go`, `version.go`.
 
-**Skimmed only (tests and fuzzers exist; not re-read line by line):**
-`codec/typeinfo.go` tag resolution, `codec/presence.go` (beyond the path
-handling), `http/internal/query` decoding logic (fuzzed instead),
-`jose/config.go` validation tables, `jose/keys.go` beyond file loading,
-`cache/memory.go` heap internals, `database/db.go` and `transaction.go`.
+**Fourth pass (the areas that had been skimmed, now read line by line):**
+`codec/typeinfo.go`, `codec/presence.go`, `http/internal/query/query.go`,
+`jose/config.go`, `jose/keys.go`, `cache/memory.go`, `database/db.go` and
+`database/transaction.go`. Results:
+
+| Area | Result |
+|---|---|
+| `jose/config.go` | A `jws` profile could reuse the `typ` of a `jwt` profile, so a route that signs caller-chosen bytes with the same key would mint that JWT. **Fixed**: `ValidateConfig` refuses it (`TestJWSProfileCannotShareAJWTTyp`). |
+| `http/internal/query` | `strconv.ParseFloat` accepts `NaN` and `Inf`, so a float parameter could be non-finite. **Fixed**: refused as a type error (`TestFloatRejectsNonFinite`). |
+| `database/transaction.go` | The deferred rollback used the caller's context, so a canceled request made it fail and left the transaction open until the connection was discarded. **Fixed**: it uses `context.WithoutCancel` with a 5 s bound. |
+| `database/db.go` | `Shutdown` ignored its context: `pool.Close()` blocks until every connection is released, so one stuck connection hung `Deps.Shutdown`. **Fixed**: the close runs in a goroutine and the context bounds the wait. |
+| `codec/typeinfo.go`, `codec/presence.go`, `cache/memory.go`, `jose/keys.go` | No defect found. Observations kept as notes: a repeated scalar query parameter (`?page=1&page=2`) uses the first value (a proxy that reads the last one sees another request); a key source that is a FIFO blocks `os.Open` until a writer appears (trusted configuration path, startup only). |
 
 ---
 

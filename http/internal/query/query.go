@@ -18,6 +18,7 @@ package query
 import (
 	"encoding"
 	"fmt"
+	"math"
 	"net/url"
 	"reflect"
 	"strconv"
@@ -278,7 +279,9 @@ func setScalar(v reflect.Value, s, name string) error {
 		v.SetUint(n)
 	case reflect.Float32, reflect.Float64:
 		n, err := strconv.ParseFloat(s, v.Type().Bits())
-		if err != nil {
+		// ParseFloat accepts "NaN" and "Inf"; a JSON body cannot carry them,
+		// and a NaN compares false with everything in a handler.
+		if err != nil || math.IsNaN(n) || math.IsInf(n, 0) {
 			return typeErr()
 		}
 		v.SetFloat(n)

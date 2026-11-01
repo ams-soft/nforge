@@ -50,3 +50,21 @@ func TestTypeErrorsDoNotNameGoTypes(t *testing.T) {
 		}
 	}
 }
+
+// ParseFloat accepts NaN and Inf spellings; a query float must be finite.
+func TestFloatRejectsNonFinite(t *testing.T) {
+	type q struct {
+		Score float64 `query:"score"`
+	}
+	for _, in := range []string{"NaN", "nan", "Inf", "+Inf", "-inf", "infinity", "1e999"} {
+		_, err := Decode(url.Values{"score": {in}}, reflect.TypeOf(q{}), false)
+		var te *codec.TypeError
+		if !errors.As(err, &te) {
+			t.Errorf("score=%s: want a TypeError, got %v", in, err)
+		}
+	}
+	ptr, err := Decode(url.Values{"score": {"1.5"}}, reflect.TypeOf(q{}), false)
+	if err != nil || ptr.Interface().(*q).Score != 1.5 {
+		t.Fatalf("finite value: %v", err)
+	}
+}

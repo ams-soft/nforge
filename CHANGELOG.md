@@ -52,6 +52,13 @@ All notable changes to nForge are documented here. The format follows
 
 ### Fixed
 
+- **Smaller hardening items from a second read of the codebase.** A `jws`
+  profile cannot share the `typ` of a `jwt` profile (config error); query
+  float parameters reject `NaN` and `Inf`; a transaction's rollback no longer
+  uses the request context (a canceled request left it open); and
+  `database.DB.Shutdown` honors its context instead of waiting forever for a
+  stuck connection.
+
 - **Secrets no longer leak when a whole `config.Config` is printed or
   logged.** `Config` (and `database.Config`) now redact the database
   password and DSN, Redis password, URL and CA path, JOSE key secrets and key
