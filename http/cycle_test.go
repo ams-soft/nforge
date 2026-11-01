@@ -1,7 +1,6 @@
 package nhttp
 
 import (
-	"encoding/xml"
 	"log/slog"
 	stdhttp "net/http"
 	"net/http/httptest"
@@ -12,9 +11,8 @@ import (
 )
 
 type cycleResponse struct {
-	XMLName xml.Name       `json:"-" cbor:"-" xml:"node"`
-	Name    string         `json:"name" xml:"name" codec:"required"`
-	Next    *cycleResponse `json:"next" xml:"next"`
+	Name string         `json:"name" xml:"name" codec:"required"`
+	Next *cycleResponse `json:"next" xml:"next"`
 }
 
 // A handler that returns a value containing itself used to crash the whole
