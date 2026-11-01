@@ -316,7 +316,12 @@ Built-in routes registered by `NewHTTPServer`:
    is skipped; any other `Stat` or read error is a load error. It overrides
    the env file too.
 5. **Defaults** (`feedDefaults`).
-6. **Validation** (`validateRequiredConfig`).
+6. **Validation** (`validateRequiredConfig`), then `transportWarnings`
+   (`config/warnings.go`) appends to `Config.Warnings`, never an error: a TLS
+   private key readable by group or others, Redis credentials without TLS to a
+   non-local host, a PostgreSQL password with `sslmode` disable/allow/prefer
+   (the pgx default) to a non-local host. `codec.max_payload_bytes` must be at
+   most 256 MiB.
 
 ### 4.2 Full schema, defaults and validation
 
@@ -377,7 +382,7 @@ http:
     enabled: false
     disable: []               # header names not to send, case-insensitive (x-frame-options, …)
     csp: { directives: {}, disable_defaults: false, report_only: false }  # directives YAML only; null removes, [] valueless
-    hsts: { max_age: 8760h, include_subdomains: <true>, preload: false }  # include_subdomains is *bool
+    hsts: { max_age: 8760h, include_subdomains: <false>, preload: false }  # include_subdomains is *bool; true pins HTTPS on every subdomain
     frame_options: SAMEORIGIN # SAMEORIGIN | DENY
     referrer_policy: [no-referrer]
     cross_origin_opener_policy: same-origin     # | same-origin-allow-popups | unsafe-none
@@ -429,13 +434,14 @@ codec:
   formats: { enabled: [json] }      # json | cbor | xml
   default: json                     # must be one of the enabled formats
   strict_unknown_fields: false
-  max_payload_bytes: 5mb            # ByteSize
+  max_payload_bytes: 5mb            # ByteSize; at most 256mb
   xml: { disallow_dtd: true }       # *bool; nil = true
 
 jose:                         # jose.Config — see §10 (unknown keys inside jose are rejected)
   enabled: false              # false: nothing is read, deps.JOSE is nil
   limits: { max_token_bytes: 16384, max_header_bytes: 2048, max_payload_bytes: 8192,
-            max_json_depth: 16, max_key_file_bytes: 65536, max_profiles: 32, max_keys: 64 }
+            max_json_depth: 16, max_key_file_bytes: 65536, max_profiles: 32, max_keys: 64,
+            max_token_lifetime: 720h (≤ 8760h; caps every jwt ttl/max_ttl) }
   keys: [ { kid, algorithm: HS256, operations: <all of the algorithm>,
             secret: ${ENV} | source: { format: pem|jwk|oct, file }, publish: false } ]
   profiles: [ { name, kind, typ, signing_*, verification_*, encryption_*, decryption_*,
@@ -477,7 +483,7 @@ by `cache.Open`, and only for an enabled Redis TLS.
 
 Booleans have **no implicit `true` defaults** except the `*bool` fields
 (`tracing.otel.enabled`, `codec.xml.disallow_dtd`,
-`http.security.hsts.include_subdomains`). Map fields
+`http.security.hsts.include_subdomains`, whose default is `false`). Map fields
 (`http.security.csp.directives`) cannot come from the env file (explicit
 error). In particular
 `http.routes.health.enabled`, `readiness.enabled`, `http.server.header` and
@@ -927,7 +933,8 @@ own pages, `CORSDelegate`, `OriginFunc`) leave the section disabled and
 add the router middleware with `AddGlobalMiddleware`.
 
 - **Security** (helmet defaults): CSP `default-src 'self'; …`, HSTS
-  `max-age=31536000; includeSubDomains`, `X-Frame-Options: SAMEORIGIN`,
+  `max-age=31536000` (`includeSubDomains` only with
+  `hsts.include_subdomains: true`), `X-Frame-Options: SAMEORIGIN`,
   `Referrer-Policy: no-referrer`, COOP/CORP `same-origin`, nosniff,
   `X-XSS-Protection: 0`, … Headers are set before the handler, so a
   handler may override one (the docs page does, §7.8).

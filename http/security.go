@@ -23,7 +23,7 @@ func securityOptions(sec config.SecurityConfig) middleware.SecurityOptions {
 		ReferrerPolicy:            middleware.ReferrerPolicyOptions{Policy: sec.ReferrerPolicy},
 		StrictTransportSecurity: middleware.HSTSOptions{
 			MaxAge:                   int(sec.HSTS.MaxAge / time.Second),
-			DisableIncludeSubDomains: sec.HSTS.IncludeSubdomains != nil && !*sec.HSTS.IncludeSubdomains,
+			DisableIncludeSubDomains: sec.HSTS.IncludeSubdomains == nil || !*sec.HSTS.IncludeSubdomains,
 			Preload:                  sec.HSTS.Preload,
 		},
 		XFrameOptions: middleware.XFrameOptionsOptions{Action: sec.FrameOptions},

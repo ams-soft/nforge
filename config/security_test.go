@@ -18,7 +18,7 @@ func TestSecurityAndCORSDefaults(t *testing.T) {
 	if sec.FrameOptions != "SAMEORIGIN" || strings.Join(sec.ReferrerPolicy, ",") != "no-referrer" ||
 		sec.CrossOriginOpenerPolicy != "same-origin" || sec.CrossOriginResourcePolicy != "same-origin" ||
 		sec.CrossOriginEmbedderPolicy != "" || sec.HSTS.MaxAge != 365*24*time.Hour ||
-		sec.HSTS.IncludeSubdomains == nil || !*sec.HSTS.IncludeSubdomains {
+		sec.HSTS.IncludeSubdomains == nil || *sec.HSTS.IncludeSubdomains {
 		t.Fatalf("http.security = %+v", sec)
 	}
 	if strings.Join(cors.Methods, ",") != "GET,HEAD,PUT,PATCH,POST,DELETE" || cors.OptionsSuccessStatus != 204 {

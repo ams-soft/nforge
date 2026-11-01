@@ -27,7 +27,7 @@ PoC files were temporary and are deleted; each item says how to reproduce.
 | G-06 | Low | PoC | `codec/json.go` | **RESOLVED** Decode errors leak Go package-qualified type names to clients |
 | G-07 | Low | CODE | `codec/xml.go:763` | **RESOLVED** Non-English error text in production code |
 | G-08 | Low | CODE | `http/transport.go` | TLS/QUIC certificates are loaded once; no rotation without restart |
-| G-09 | Low | CODE | `config/server.go` | TLS private key file permissions are never checked |
+| G-09 | Low | CODE | `config/server.go` | **RESOLVED** TLS private key file permissions are never checked |
 | G-10 | Low | CODE | `http/transport.go` | HTTPS and HTTP/3 servers ignore customisations of `ServerHttp.Srv` |
 | G-11 | Low | CODE | `http/routes.go` | Docs, spec and readiness endpoints are public; spec rebuilt per request |
 | G-12 | Low | CODE | `http/` | Raw (untyped) routes have no request-body limit |
@@ -42,15 +42,15 @@ PoC files were temporary and are deleted; each item says how to reproduce.
 | G-21 | Medium | PoC | `config/env.go` | **RESOLVED** Env-file values undergo `$VAR` expansion from the process env; passwords with `$NAME` are corrupted |
 | G-22 | Medium | PoC | `config/env.go` | **RESOLVED** Env-file keys that match no field are ignored (`HTTP_CORS_ORIGNS`) |
 | G-23 | Low-Med | CODE | `http/response.go` | Missing `Content-Type` is accepted: cross-site JSON POSTs without preflight |
-| G-24 | Low | CODE | `config/security.go` | HSTS `includeSubDomains` on by default |
+| G-24 | Low | CODE | `config/security.go` | **RESOLVED** HSTS `includeSubDomains` on by default |
 | G-25 | Low | CODE | `config/config.go` | **RESOLVED** Unreadable overlay file is skipped silently |
-| G-26 | Low | CODE | `config/config.go` | `codec.max_payload_bytes` has no upper bound |
+| G-26 | Low | CODE | `config/config.go` | **RESOLVED** `codec.max_payload_bytes` has no upper bound |
 | G-27 | Medium | PoC | `codec/fields.go`, `cbor.go`, `xml.go` | **RESOLVED** Cyclic values crash the process: CBOR/XML encode and `CheckRequired` (fatal stack overflow) |
 | G-28 | Low | PoC | `http/internal/capture` | **RESOLVED** `CheckRequired` walks every response (1.9 ms per MB) even with no `required` tags |
 | G-29 | Low-Med | CODE | `codec/registry.go` | **RESOLVED** `Validate()` only runs on the root value, never on nested types |
 | G-30 | Med-High | PoC | `config`, `database` | **RESOLVED** `config.Config` and `database.Config` print passwords/DSNs; slog JSON leaks every secret incl. JOSE key |
-| G-31 | Low | CODE | `jose/config.go` | No ceiling on JWT `ttl`/`max_ttl` |
-| G-32 | Low | CODE | `cache`, `database` | Credentials allowed over plain TCP to remote hosts, no warning |
+| G-31 | Low | CODE | `jose/config.go` | **RESOLVED** No ceiling on JWT `ttl`/`max_ttl` |
+| G-32 | Low | CODE | `cache`, `database` | **RESOLVED** Credentials allowed over plain TCP to remote hosts, no warning |
 | G-33 | Low | CODE | `cache` | No atomic increment-with-TTL: counters can live forever |
 | G-34 | Low-Med | PoC | `database/config.go` | **RESOLVED** `redactDSN` leaves `?password=` and `?sslpassword=` visible |
 | G-35 | Low-Med | CODE | `http/server.go`, `database` | No handler timeout and no `statement_timeout` by default |
@@ -350,12 +350,15 @@ Mirror what `jose.Service.Reload` does for keys.
 
 ---
 
-### G-09 — TLS private key permissions are not checked (Low, CODE)
+### G-09 — TLS private key permissions are not checked (Low, CODE) [RESOLVED]
 
 `config/server.go:242` `checkKeyPair` only loads the pair. JOSE refuses key
 files that are group/other readable (`jose/keys.go` `ownerOnly`); the TLS key,
 which is just as sensitive, gets no equivalent check or even a warning.
 Inconsistent security posture between two key loaders in the same framework.
+
+
+> **Resolved** in `fix(config): cap risky limits and warn about weak transports`. A TLS key readable by group/others is reported in Config.Warnings (not an error: orchestrators mount keys 0644). TestTLSKeyPermissionWarning.
 
 ---
 
@@ -758,7 +761,7 @@ clients rely on it.
 
 ---
 
-### G-24 — HSTS `includeSubDomains` is on by default (Low, CODE)
+### G-24 — HSTS `includeSubDomains` is on by default (Low, CODE) [RESOLVED]
 
 `config/security.go` / `http/security.go`: `hsts.include_subdomains` defaults
 to true with a one-year `max_age`. On an API served from an apex or shared
@@ -766,6 +769,9 @@ parent domain, one response permanently forces HTTPS on *every* subdomain of
 that domain in each browser that saw it for a year, including internal tools
 that only speak HTTP. Safe for a dedicated `api.` host, a footgun otherwise.
 Consider defaulting to `false` and documenting the trade-off.
+
+
+> **Resolved** in `fix(config): cap risky limits and warn about weak transports`. hsts.include_subdomains defaults to false (TestHSTSIncludeSubdomainsIsOptIn).
 
 ---
 
@@ -782,13 +788,16 @@ Treat `!errors.Is(err, fs.ErrNotExist)` as a startup error.
 
 ---
 
-### G-26 — `codec.max_payload_bytes` has no upper bound (Low, CODE)
+### G-26 — `codec.max_payload_bytes` has no upper bound (Low, CODE) [RESOLVED]
 
 `config/config.go` `feedDefaults` only defaults a zero value; nothing caps it.
 `max_payload_bytes: 100gb` is accepted and, with G-01/G-05 amplification and
 the decoders that buffer the whole payload (`io.ReadAll` for strict/required,
 XML), turns the limit meant to protect the process into the attack surface.
 Validate a sane ceiling (for example 64 MiB) and log the effective value.
+
+
+> **Resolved** in `fix(config): cap risky limits and warn about weak transports`. codec.max_payload_bytes is capped at 256 MiB (TestMaxPayloadHasACeiling).
 
 ---
 
@@ -926,7 +935,7 @@ backend.
 
 ---
 
-### G-31 — No ceiling on JWT `ttl` / `max_ttl` (Low, CODE)
+### G-31 — No ceiling on JWT `ttl` / `max_ttl` (Low, CODE) [RESOLVED]
 
 `jose/config.go:~500`: `ttl` and `max_ttl` must be positive whole seconds and
 `ttl <= max_ttl`; there is no upper bound. `max_ttl: 87600h` (ten years) is
@@ -935,9 +944,12 @@ stateless (no revocation list, `jti` is not tracked), the lifetime is the only
 revocation window. Add a hard ceiling (for example 24 h for access profiles,
 configurable) or at least a startup warning above a threshold.
 
+
+> **Resolved** in `fix(config): cap risky limits and warn about weak transports`. jose.limits.max_token_lifetime (default 720h, max 8760h) caps jwt ttl and max_ttl (TestTokenLifetimeHasACeiling).
+
 ---
 
-### G-32 — Redis credentials are allowed over plain TCP to remote hosts (Low, CODE)
+### G-32 — Redis credentials are allowed over plain TCP to remote hosts (Low, CODE) [RESOLVED]
 
 `cache/config.go`, `newRedis`: with `tls.enabled: false` and a `redis://` URL
 (or host/port) nothing stops `password` or `username` from being sent in
@@ -947,6 +959,9 @@ without TLS unless the host is loopback, like `RedirectAuthority` does for the
 redirect host. The same applies to PostgreSQL `ssl.mode: ""` (pgx default
 `prefer`, which silently downgrades): the database section never warns when
 the effective mode can send the password unencrypted.
+
+
+> **Resolved** in `fix(config): cap risky limits and warn about weak transports`. Redis credentials without TLS and PostgreSQL passwords with a clear-text-capable sslmode to non-local hosts are reported in Config.Warnings. TestPlaintextCredentialWarnings.
 
 ---
 

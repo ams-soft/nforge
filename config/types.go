@@ -89,7 +89,7 @@ type CSPConfig struct {
 // on plain http).
 type HSTSConfig struct {
 	MaxAge            time.Duration `yaml:"max_age"`            // default: 8760h (365 days); whole seconds
-	IncludeSubdomains *bool         `yaml:"include_subdomains"` // default: true
+	IncludeSubdomains *bool         `yaml:"include_subdomains"` // default: false (true pins HTTPS on every subdomain)
 	Preload           bool          `yaml:"preload"`            // default: false
 }
 

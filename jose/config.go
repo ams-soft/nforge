@@ -28,6 +28,10 @@ type LimitsConfig struct {
 	MaxKeyFileBytes int64 `yaml:"max_key_file_bytes"` // default: 65536; at most 1 MiB
 	MaxProfiles     int   `yaml:"max_profiles"`       // default: 32; at most 1024
 	MaxKeys         int   `yaml:"max_keys"`           // default: 64; at most 1024
+
+	// MaxTokenLifetime caps jwt ttl and max_ttl. Tokens are stateless: there
+	// is no revocation list, so the lifetime is the only revocation window.
+	MaxTokenLifetime time.Duration `yaml:"max_token_lifetime"` // default: 720h (30 days); at most 8760h (1 year)
 }
 
 // KeyConfig binds one key to exactly one algorithm and explicit operations.
@@ -84,20 +88,22 @@ type JWKSConfig struct {
 }
 
 const (
-	defaultMaxTokenBytes   = 16384
-	defaultMaxHeaderBytes  = 2048
-	defaultMaxPayloadBytes = 8192
-	defaultMaxJSONDepth    = 16
-	defaultMaxKeyFileBytes = 65536
-	defaultMaxProfiles     = 32
-	defaultMaxKeys         = 64
-	defaultTTL             = 15 * time.Minute
-	defaultClockSkew       = 30 * time.Second
-	maxClockSkew           = 2 * time.Minute
-	defaultJWKSPath        = "/.well-known/jwks.json"
-	defaultJWKSMaxAge      = 60 * time.Second
-	maxJWKSMaxAge          = time.Hour
-	maxTypBytes            = 128
+	defaultMaxTokenBytes    = 16384
+	defaultMaxHeaderBytes   = 2048
+	defaultMaxPayloadBytes  = 8192
+	defaultMaxJSONDepth     = 16
+	defaultMaxKeyFileBytes  = 65536
+	defaultMaxProfiles      = 32
+	defaultMaxTokenLifetime = 30 * 24 * time.Hour
+	hardMaxTokenLifetime    = 365 * 24 * time.Hour
+	defaultMaxKeys          = 64
+	defaultTTL              = 15 * time.Minute
+	defaultClockSkew        = 30 * time.Second
+	maxClockSkew            = 2 * time.Minute
+	defaultJWKSPath         = "/.well-known/jwks.json"
+	defaultJWKSMaxAge       = 60 * time.Second
+	maxJWKSMaxAge           = time.Hour
+	maxTypBytes             = 128
 )
 
 var identRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
@@ -116,6 +122,9 @@ func ApplyDefaults(cfg *Config) {
 	setDefault(&l.MaxKeyFileBytes, defaultMaxKeyFileBytes)
 	setDefault(&l.MaxProfiles, defaultMaxProfiles)
 	setDefault(&l.MaxKeys, defaultMaxKeys)
+	if l.MaxTokenLifetime == 0 {
+		l.MaxTokenLifetime = defaultMaxTokenLifetime
+	}
 
 	// Keys default to HS256 with every operation of their algorithm, and
 	// profiles inherit their algorithms from the keys they reference. The
@@ -231,7 +240,7 @@ func ValidateConfig(cfg Config) error {
 	for i := range cfg.Profiles {
 		p := &cfg.Profiles[i]
 		field := fmt.Sprintf("jose.profiles[%d]", i)
-		if err := validateProfileConfig(field, p, keys); err != nil {
+		if err := validateProfileConfig(field, p, keys, cfg.Limits.MaxTokenLifetime); err != nil {
 			return err
 		}
 		if names[p.Name] {
@@ -272,6 +281,7 @@ func validateLimits(l LimitsConfig) error {
 		{"max_key_file_bytes", l.MaxKeyFileBytes > 0 && l.MaxKeyFileBytes <= mib},
 		{"max_profiles", l.MaxProfiles > 0 && l.MaxProfiles <= 1024},
 		{"max_keys", l.MaxKeys > 0 && l.MaxKeys <= 1024},
+		{"max_token_lifetime", l.MaxTokenLifetime >= time.Second && l.MaxTokenLifetime <= hardMaxTokenLifetime && l.MaxTokenLifetime%time.Second == 0},
 	}
 	for _, c := range checks {
 		if !c.ok {
@@ -344,7 +354,7 @@ func validateKeyConfig(field string, k *KeyConfig) error {
 	return nil
 }
 
-func validateProfileConfig(field string, p *ProfileConfig, keys map[string]*KeyConfig) error {
+func validateProfileConfig(field string, p *ProfileConfig, keys map[string]*KeyConfig, maxLifetime time.Duration) error {
 	if !identRe.MatchString(p.Name) {
 		return configError(field+".name", "must match [A-Za-z0-9_-]{1,64}")
 	}
@@ -429,7 +439,7 @@ func validateProfileConfig(field string, p *ProfileConfig, keys map[string]*KeyC
 		}
 	}
 	if isJWTKind(p.Kind) {
-		return validateJWTConfig(field+".jwt", p.JWT)
+		return validateJWTConfig(field+".jwt", p.JWT, maxLifetime)
 	}
 	return nil
 }
@@ -484,7 +494,7 @@ func checkConsumer(field string, algs, kids []string, op string, algOK func(stri
 	return nil
 }
 
-func validateJWTConfig(field string, j JWTConfig) error {
+func validateJWTConfig(field string, j JWTConfig, maxLifetime time.Duration) error {
 	if j.Issuer == "" || hasControl(j.Issuer) {
 		return configError(field+".issuer", "required, without control characters")
 	}
@@ -507,6 +517,9 @@ func validateJWTConfig(field string, j JWTConfig) error {
 	}
 	if j.TTL > j.MaxTTL {
 		return configError(field+".ttl", "ttl exceeds max_ttl")
+	}
+	if j.MaxTTL > maxLifetime {
+		return configError(field+".max_ttl", "exceeds jose.limits.max_token_lifetime ("+maxLifetime.String()+"); tokens cannot be revoked, so keep the lifetime short")
 	}
 	if j.ClockSkew == nil || *j.ClockSkew < 0 || *j.ClockSkew > maxClockSkew {
 		return configError(field+".clock_skew", "must be in [0, 2m]")

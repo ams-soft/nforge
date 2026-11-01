@@ -276,3 +276,36 @@ func TestHS256DefaultsAndInlineSecret(t *testing.T) {
 		t.Fatalf("secret leaked in error: %v", err)
 	}
 }
+
+// Tokens are stateless (no revocation), so the lifetime is the only
+// revocation window and must have a ceiling (G-31).
+func TestTokenLifetimeHasACeiling(t *testing.T) {
+	build := func(ttl time.Duration, limit time.Duration) Config {
+		cfg := testConfig(t)
+		cfg.Limits.MaxTokenLifetime = limit
+		for i := range cfg.Profiles {
+			if cfg.Profiles[i].Name == "refresh" {
+				cfg.Profiles[i].JWT.TTL, cfg.Profiles[i].JWT.MaxTTL = ttl, ttl
+			}
+		}
+		ApplyDefaults(&cfg)
+		return cfg
+	}
+	const day = 24 * time.Hour
+	if err := ValidateConfig(build(30*day, 0)); err != nil {
+		t.Fatalf("30 days is the default ceiling: %v", err)
+	}
+	err := ValidateConfig(build(10*365*day, 0))
+	if err == nil || !strings.Contains(err.Error(), "max_token_lifetime") {
+		t.Fatalf("a ten-year token must be refused, got %v", err)
+	}
+	if err := ValidateConfig(build(31*day, 0)); err == nil {
+		t.Fatal("31 days exceeds the default ceiling")
+	}
+	if err := ValidateConfig(build(60*day, 90*day)); err != nil {
+		t.Fatalf("the ceiling is configurable: %v", err)
+	}
+	if err := ValidateConfig(build(day, 2*365*day)); err == nil {
+		t.Fatal("the ceiling itself is capped at one year")
+	}
+}

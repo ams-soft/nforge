@@ -28,7 +28,10 @@ func feedSecurityDefaults(sec *SecurityConfig) {
 		sec.HSTS.MaxAge = 365 * 24 * time.Hour
 	}
 	if sec.HSTS.IncludeSubdomains == nil {
-		include := true
+		// Off by default: includeSubDomains pins HTTPS on every subdomain of
+		// the host for the whole max_age, which breaks unrelated HTTP-only
+		// services when the API is served from an apex or shared domain.
+		include := false
 		sec.HSTS.IncludeSubdomains = &include
 	}
 }

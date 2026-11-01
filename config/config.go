@@ -21,6 +21,10 @@ import (
 
 const defaultConfigFileName = "config.yaml"
 
+// maxPayloadCeiling is the largest accepted codec.max_payload_bytes. The limit
+// exists to protect the process, so a value that no longer does is refused.
+const maxPayloadCeiling = 256 * MB
+
 var hexColorRe = regexp.MustCompile(`^#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$`)
 
 func Load() (*Config, error) {
@@ -83,6 +87,7 @@ func LoadFlags(configPath, envFilePath string) (*Config, error) {
 	if valid, err := validateRequiredConfig(cfg); !valid {
 		return nil, fmt.Errorf("validate config: %w", err)
 	}
+	cfg.Warnings = append(cfg.Warnings, transportWarnings(cfg)...)
 
 	return cfg, nil
 }
@@ -186,6 +191,9 @@ func validateRequiredConfig(cfg *Config) (bool, error) {
 	}
 	if err := ValidateServer(cfg.HTTP.Server); err != nil {
 		return false, err
+	}
+	if p := cfg.Codec.MaxPayloadBytes; p < 0 || p > maxPayloadCeiling {
+		return false, fmt.Errorf("codec.max_payload_bytes must be between 0 and %d (256 MiB), got %d: every payload is held in memory while it is decoded", int64(maxPayloadCeiling), int64(p))
 	}
 	if auth := cfg.HTTP.Docs.Auth; auth != "bearer" && auth != "none" {
 		return false, fmt.Errorf("http.docs.auth must be bearer or none, got %q", auth)

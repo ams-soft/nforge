@@ -137,6 +137,17 @@ All notable changes to nForge are documented here. The format follows
   `TypeError.Wire` holds the payload-level name. One XML error message that was
   in Portuguese is now English.
 
+- **Guard rails on risky settings.** `codec.max_payload_bytes` is capped at
+  256 MiB; JWT `ttl`/`max_ttl` are capped by the new `jose.limits.max_token_lifetime`
+  (default 720h, at most 8760h) because tokens cannot be revoked; startup now
+  warns (in the log, not an error) about a TLS private key that group or others
+  can read, Redis credentials sent without TLS to a non-local host, and a
+  PostgreSQL password sent with an `sslmode` that can fall back to clear text.
+- **`http.security.hsts.include_subdomains` now defaults to `false`.**
+  `includeSubDomains` pins HTTPS on every subdomain for the whole `max_age`,
+  which breaks unrelated HTTP-only services when the API is served from an apex
+  or shared domain; set it to `true` explicitly for a dedicated host.
+
 ### Notes
 
 - **Upgrading:** requests that decode into types with a nested `Validate()`

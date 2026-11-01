@@ -133,7 +133,7 @@ Precedence, later wins: start with `Config{Env: "local"}` → base YAML (`-confi
 - Env-file types: string, ints, uints (overflow-checked), bool, floats, `time.Duration` (`"5s"`), pointers, `[]string` (comma-separated), any `encoding.TextUnmarshaler` (e.g. `ByteSize`). Sequences of structs (`jose.keys`, `jose.profiles`) and maps (`http.security.csp.directives`) are YAML-only; naming them in the env file is an error.
 - The env file does **not** feed `${VAR}`; only the real environment does. The overlay beats the env file.
 - `env` drives the log level case-sensitively (`local` DEBUG, `dev` INFO, `stg` WARN, `prd` ERROR, anything else DEBUG): use lowercase.
-- Booleans default to `false` except the `*bool` fields `tracing.otel.enabled`, `codec.xml.disallow_dtd` and `http.security.hsts.include_subdomains` (default true).
+- Booleans default to `false` except the `*bool` fields `tracing.otel.enabled` and `codec.xml.disallow_dtd` (default true); `http.security.hsts.include_subdomains` is a `*bool` that defaults to false.
 - Helpers: `cfg.IsLoggingEnabled()`, `cfg.IsTracingEnabled()` (= `logging.output.otel.enabled && tracing.otel.enabled != false`).
 - `config.ByteSize` (int64, base 1024) parses `"5mb"`, `"512kb"`, `"1.5gb"`, `"100b"`, `"1048576"`, `"5 MiB"`; constants `B, KB, MB, GB`; `ParseByteSize`.
 
@@ -196,7 +196,7 @@ http:
     enabled: false
     disable: []               # header names not to send, case-insensitive (x-frame-options, …)
     csp: { directives: {}, disable_defaults: false, report_only: false }  # directives YAML only; null removes, [] valueless
-    hsts: { max_age: 8760h, include_subdomains: <true>, preload: false }  # include_subdomains is *bool
+    hsts: { max_age: 8760h, include_subdomains: <false>, preload: false }  # include_subdomains is *bool; true pins HTTPS on every subdomain
     frame_options: SAMEORIGIN # SAMEORIGIN | DENY
     referrer_policy: [no-referrer]
     cross_origin_opener_policy: same-origin     # | same-origin-allow-popups | unsafe-none
@@ -248,13 +248,14 @@ codec:
   formats: { enabled: [json] }      # json | cbor | xml
   default: json                     # must be one of the enabled formats
   strict_unknown_fields: false
-  max_payload_bytes: 5mb            # ByteSize
+  max_payload_bytes: 5mb            # ByteSize; at most 256mb
   xml: { disallow_dtd: true }       # *bool; nil = true
 
 jose:                         # jose.Config — see §10 (unknown keys inside jose are rejected)
   enabled: false              # false: nothing is read, deps.JOSE is nil
   limits: { max_token_bytes: 16384, max_header_bytes: 2048, max_payload_bytes: 8192,
-            max_json_depth: 16, max_key_file_bytes: 65536, max_profiles: 32, max_keys: 64 }
+            max_json_depth: 16, max_key_file_bytes: 65536, max_profiles: 32, max_keys: 64,
+            max_token_lifetime: 720h (≤ 8760h; caps every jwt ttl/max_ttl) }
   keys: [ { kid, algorithm: HS256, operations: <all of the algorithm>,
             secret: ${ENV} | source: { format: pem|jwk|oct, file }, publish: false } ]
   profiles: [ { name, kind, typ, signing_*, verification_*, encryption_*, decryption_*,
@@ -419,7 +420,7 @@ The tenant lives under the `database` context key, so handlers call `dps.DB.ForC
 - Health (`http.routes.health.enabled`): `GET {path}` → 200 `{"status":"ok"}`; never touches dependencies.
 - Readiness (`http.routes.readiness.enabled`): `GET {path}` → 200 `{"status":"ok","online_since":"<RFC3339>", "database":{"health":true}, "jose":{"health":true}, "cache":{"health":true}}` (each key only when the module is enabled; database and cache pinged with the request ctx + 2 s). Any failure → 503 with the same body as `error.detail`, `"status":"unavailable"`. Types: `HealthResponse`, `ReadinessResponse`, `DatabaseInfo`, `JOSEInfo`, `CacheInfo`.
 - Docs (`http.docs.enabled`): `GET {path}`, `{path}/swagger.json`, `{path}/swagger.yaml`. OpenAPI 3.1 rebuilt on every request from `ServerHttp.TypedRoutes`; named structs go to `components.schemas`; success envelopes are named per response type (`UserEnvelope`, `UserListEnvelope`, `SuccessEnvelope`); operations document 200 plus 400/422 (request), 413/415 (body), 400/401 (private), 403 (scopes), 400/403 (tenant), 500. Success is always documented as 200. `auth: bearer` adds the `bearerAuth` scheme; private operations carry `x-auth-profile` / `x-required-scopes`. Type mapping: `time.Time` date-time, `time.Duration` int64 ns (string in query), `[]byte` base64, maps `additionalProperties`, opaque types string, interfaces any. The page gets a fresh CSP nonce per render and, when `http.security` sends a CSP, its own matching policy.
-- Security (`http.security.enabled`): helmet-like defaults (CSP `default-src 'self'; …`, HSTS 1 year + includeSubDomains, `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy: no-referrer`, COOP/CORP `same-origin`, nosniff, `X-XSS-Protection: 0`). Validated at load; handlers may override a header.
+- Security (`http.security.enabled`): helmet-like defaults (CSP `default-src 'self'; …`, HSTS 1 year (+ includeSubDomains only when configured), `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy: no-referrer`, COOP/CORP `same-origin`, nosniff, `X-XSS-Protection: 0`). Validated at load; handlers may override a header.
 - CORS (`http.cors.enabled`): answers every `OPTIONS` request before routing with 204; exact lowercase origins or anchored `^…$` patterns; credentials require explicit origins; actual requests get `Access-Control-Allow-Origin` (none for disallowed origins) and `Vary: Origin`. Expose `X-Request-Id` if browsers need it. For dynamic options, keep the section off and add the router middleware yourself.
 - JWKS (`jose.enabled` and `jose.jwks.enabled`): `GET`/`HEAD {jose.jwks.path}`, raw `application/jwk-set+json` (no envelope), strong `ETag`, `If-None-Match` → 304, `Cache-Control: public, max-age=<cache_max_age>`; closed service → 503. A path equal to docs/health/readiness panics.
 - Access log (`Logger`): one `"request"` record per request with method, path, pattern, status, bytes, duration, remote; INFO / WARN (4xx) / ERROR (5xx).
