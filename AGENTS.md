@@ -789,6 +789,9 @@ func (q *ListUsers) Validate() error { ... }         // → 422 on failure
 - Name: `query` tag, else `json` tag, else Go field name; `"-"` skips.
   Anonymous embedded structs are flattened.
 - Empty value (`?name=`) counts as absent. Default wins over required.
+- A scalar parameter sent more than once (`?page=1&page=2`) is a 400
+  (`query.RepeatedError`): a proxy may read another occurrence than the first,
+  so it is refused, not resolved. Slices take repetition.
 - Supported: scalars, pointers, slices of scalars, `time.Duration`, any
   `encoding.TextUnmarshaler`.
 - `codec.strict_unknown_fields: true` also rejects unknown query parameters.

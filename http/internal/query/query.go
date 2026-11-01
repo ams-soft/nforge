@@ -179,6 +179,9 @@ func Decode(values url.Values, t reflect.Type, strict bool) (reflect.Value, erro
 	ptr := reflect.New(t)
 	for _, f := range fields {
 		vals := nonEmpty(values[f.Name])
+		if len(vals) > 1 && !repeatable(f.Type) {
+			return reflect.Value{}, &RepeatedError{Field: f.Name}
+		}
 		if len(vals) == 0 {
 			switch {
 			case f.HasDefault:
@@ -194,6 +197,25 @@ func Decode(values url.Values, t reflect.Type, strict bool) (reflect.Value, erro
 		}
 	}
 	return ptr, nil
+}
+
+// RepeatedError reports a scalar parameter sent more than once. Components in
+// front of the application may read another occurrence than the first one
+// used here, so the request is refused instead of resolved (parameter
+// pollution). Slices take repeated parameters (?tag=a&tag=b).
+type RepeatedError struct{ Field string }
+
+func (e *RepeatedError) Error() string {
+	return "query parameter " + strconv.Quote(e.Field) + " must not be repeated"
+}
+
+// repeatable reports whether t collects several values: a slice (or a pointer
+// to one) that does not parse itself from text.
+func repeatable(t reflect.Type) bool {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	return t.Kind() == reflect.Slice && !isTextUnmarshaler(t)
 }
 
 func nonEmpty(vals []string) []string {

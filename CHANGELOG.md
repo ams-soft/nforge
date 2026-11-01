@@ -222,6 +222,8 @@ All notable changes to nForge are documented here. The format follows
   currencies with 0 (JPY) or 3 (KWD, BHD) minor digits in `Format` and
   `NewFromFloat`.
 
+- **Upgrading:** a scalar typed-query parameter sent twice (`?page=1&page=2`)
+  is now a 400; only slice fields accept repetition.
 - **Upgrading:** `tracing.otel.trust_incoming` now defaults to `false` and
   `nhttp.Tracing()` ignores the caller's trace context unless given
   `WithTrustedIncomingContext()`. Services that relied on a gateway's

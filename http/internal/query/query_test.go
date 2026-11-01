@@ -68,3 +68,28 @@ func TestFloatRejectsNonFinite(t *testing.T) {
 		t.Fatalf("finite value: %v", err)
 	}
 }
+
+// A scalar sent twice is refused; slices, empty values and one value are fine.
+func TestRepeatedScalarIsRefused(t *testing.T) {
+	type q struct {
+		Page int      `query:"page"`
+		Opt  *int     `query:"opt"`
+		Tags []string `query:"tag"`
+		TS   *[]int   `query:"n"`
+	}
+	typ := reflect.TypeOf(q{})
+	for _, raw := range []string{"page=1&page=2", "page=1&page=1", "opt=1&opt=2"} {
+		vals, _ := url.ParseQuery(raw)
+		_, err := Decode(vals, typ, false)
+		var re *RepeatedError
+		if !errors.As(err, &re) {
+			t.Errorf("%s: want RepeatedError, got %v", raw, err)
+		}
+	}
+	for _, raw := range []string{"page=1", "page=&page=2", "tag=a&tag=b", "tag=a,b&tag=c", "n=1&n=2"} {
+		vals, _ := url.ParseQuery(raw)
+		if _, err := Decode(vals, typ, false); err != nil {
+			t.Errorf("%s: %v", raw, err)
+		}
+	}
+}
