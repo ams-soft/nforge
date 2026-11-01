@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"reflect"
 	"time"
 )
 
@@ -22,7 +23,10 @@ type flight struct {
 // stores the encoded result with ttl and decodes it into target.
 //
 //   - A hit never calls load. Any read error other than ErrNotFound (Redis
-//     down, corrupt data) is returned without calling load.
+//     down) is returned without calling load. An entry that is present but no
+//     longer decodes (corrupt, written by another version, a newer required
+//     field) counts as a miss: it is logged as a warning, reloaded and
+//     overwritten, so one bad entry cannot fail every caller until its TTL.
 //   - Concurrent callers of the same full key (tenant included) in this
 //     process share one load: the leader rechecks the cache, runs load once
 //     with a context detached from the first caller (values kept,
@@ -67,14 +71,21 @@ func (c *Cache) GetOrLoad(ctx context.Context, key string, target any, ttl time.
 	}
 
 	data, err := c.backend.get(ctx, full)
-	if err == nil {
-		return c.fail(op, c.decodeInto(data, target))
-	}
-	if !isNotFound(err) {
+	switch {
+	case err == nil:
+		if derr := c.decodeInto(data, target); derr == nil {
+			return nil
+		}
+		// An entry that no longer decodes (a newer required field, a stricter
+		// Validate, another cache.codec, a rolling deploy) is a miss for a
+		// cache-aside helper: load a fresh value and overwrite it, instead of
+		// failing every caller until the TTL ends.
+		c.warnUndecodable(ctx)
+	case !isNotFound(err):
 		return c.fail(op, err)
 	}
 
-	f, err := c.join(ctx, full, ttl, load)
+	f, err := c.join(ctx, full, ttl, c.decodableAs(reflect.TypeOf(target).Elem()), load)
 	if err != nil {
 		return c.fail(op, err)
 	}
@@ -97,7 +108,7 @@ func (c *Cache) GetOrLoad(ctx context.Context, key string, target any, ttl time.
 // flight abandoned by all its callers keeps its slot until its loader
 // returns (no overlapping loads of one key); a new caller waits for it to
 // finish and then starts a fresh flight.
-func (c *Cache) join(ctx context.Context, full string, ttl time.Duration, load func(context.Context) (any, error)) (*flight, error) {
+func (c *Cache) join(ctx context.Context, full string, ttl time.Duration, valid func([]byte) bool, load func(context.Context) (any, error)) (*flight, error) {
 	for {
 		c.mu.Lock()
 		f := c.flights[full]
@@ -131,7 +142,7 @@ func (c *Cache) join(ctx context.Context, full string, ttl time.Duration, load f
 		c.active++ // the loader is lifecycle work: Shutdown waits for it
 		c.mu.Unlock()
 
-		go c.runFlight(lctx, full, f, ttl, load, func() { stop(); cancel() })
+		go c.runFlight(lctx, full, f, ttl, valid, load, func() { stop(); cancel() })
 		return f, nil
 	}
 }
@@ -147,7 +158,7 @@ func (c *Cache) leave(f *flight) {
 }
 
 func (c *Cache) runFlight(ctx context.Context, full string, f *flight, ttl time.Duration,
-	load func(context.Context) (any, error), release func()) {
+	valid func([]byte) bool, load func(context.Context) (any, error), release func()) {
 	defer func() {
 		release()
 		c.mu.Lock()
@@ -159,18 +170,21 @@ func (c *Cache) runFlight(ctx context.Context, full string, f *flight, ttl time.
 		c.maybeDrainedLocked()
 		c.mu.Unlock()
 	}()
-	f.data, f.err = c.loadOnce(ctx, full, ttl, load)
+	f.data, f.err = c.loadOnce(ctx, full, ttl, valid, load)
 }
 
 func (c *Cache) loadOnce(ctx context.Context, full string, ttl time.Duration,
-	load func(context.Context) (any, error)) ([]byte, error) {
+	valid func([]byte) bool, load func(context.Context) (any, error)) ([]byte, error) {
 	// Recheck: another flight (or instance) may have filled the key while
-	// this one was being set up.
+	// this one was being set up. Bytes the leader's own target cannot decode
+	// (the entry that sent it here) do not count as filled.
 	data, err := c.backend.get(ctx, full)
-	if err == nil {
+	switch {
+	case err == nil && valid(data):
 		return data, nil
-	}
-	if !isNotFound(err) {
+	case err == nil:
+		// undecodable: fall through to the loader
+	case !isNotFound(err):
 		return nil, err
 	}
 
@@ -204,6 +218,21 @@ func (c *Cache) loadOnce(ctx context.Context, full string, ttl time.Duration,
 		}
 	}
 	return data, nil
+}
+
+// decodableAs reports whether bytes decode into a value of type t, exactly as
+// a caller's target would (limits, required fields, validation).
+func (c *Cache) decodableAs(t reflect.Type) func([]byte) bool {
+	return func(data []byte) bool {
+		return c.registry.DecodeAs(c.format, data, reflect.New(t).Interface()) == nil
+	}
+}
+
+// warnUndecodable logs that a cached entry was replaced because it no longer
+// decodes, without the key, tenant or value.
+func (c *Cache) warnUndecodable(ctx context.Context) {
+	c.logger.WarnContext(ctx, "[CacheModule] GetOrLoad found an undecodable entry and reloads it",
+		"op", "get_or_load", "driver", c.backend.name(), "reason", "decode")
 }
 
 // warnWrite logs a best-effort insertion failure without the key, tenant or

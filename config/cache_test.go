@@ -117,6 +117,8 @@ func TestCacheValidationAtLoad(t *testing.T) {
 		{"xml codec", "codec: {formats: {enabled: [json, xml]}}\ncache: {enabled: true, codec: xml}", cache.ErrUnsupportedCodec},
 		{"negative port", "cache: {enabled: true, redis: {port: -1}}", cache.ErrInvalidConfig},
 		{"url query", "cache: {enabled: true, redis: {url: 'redis://h/0?pool_size=3'}}", cache.ErrInvalidConfig},
+		{"value limit above the codec limit", "cache: {enabled: true, limits: {max_value_bytes: 20mb}}", cache.ErrInvalidConfig},
+		{"value limit equal to the codec limit", "codec: {max_payload_bytes: 20mb}\ncache: {enabled: true, limits: {max_value_bytes: 20mb}}", nil},
 		{"disabled is not validated", "cache: {enabled: false, driver: memcached}", nil},
 	}
 	for _, tc := range cases {

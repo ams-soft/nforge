@@ -60,16 +60,20 @@ func TestGetOrLoadReadErrorSkipsLoader(t *testing.T) {
 		t.Fatal("loader must not run on a read outage")
 	}
 
-	// a corrupt value is not a miss either
+	// a corrupt value is derived data that can be rebuilt: it is reloaded and
+	// overwritten (and logged), instead of failing until the TTL ends
 	f.failGets(nil)
 	_ = c.SetBytes(bg, "bad", []byte("{"), 0)
 	err = c.GetOrLoad(bg, "bad", &target, 0, func(context.Context) (any, error) {
 		called = true
 		return User{Name: "x"}, nil
 	})
-	mustIs(t, err, ErrDecode)
-	if called {
-		t.Fatal("loader must not mask corrupt data")
+	if err != nil || !called || target.Name != "x" {
+		t.Fatalf("a corrupt entry must be reloaded: %+v err=%v called=%v", target, err, called)
+	}
+	var healed User
+	if err := c.Get(bg, "bad", &healed); err != nil || healed.Name != "x" {
+		t.Fatalf("the corrupt entry must be overwritten: %+v %v", healed, err)
 	}
 }
 
@@ -426,5 +430,95 @@ func waitFor(t testing.TB, cond func() bool) {
 			t.Fatal("condition not reached")
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+type staleV1 struct {
+	Name string `json:"name"`
+}
+
+// staleV2 adds a required field: entries written as staleV1 no longer decode.
+type staleV2 struct {
+	Name  string `json:"name"`
+	Email string `json:"email" codec:"required"`
+}
+
+// An entry that no longer decodes is a miss, not a permanent failure: the
+// loader runs once, the entry is overwritten and the next call hits (G-15).
+func TestGetOrLoadReloadsAnUndecodableEntry(t *testing.T) {
+	var logs bytes.Buffer
+	c, _ := openMemory(t, nil, WithLogger(slog.New(slog.NewTextHandler(&logs, nil))))
+	if err := c.Set(bg, "user:secret-key", staleV1{Name: "ana"}, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+
+	// a plain Get stays strict: the entry is undecodable and that is reported
+	var probe staleV2
+	if err := c.Get(bg, "user:secret-key", &probe); !errors.Is(err, ErrDecode) {
+		t.Fatalf("Get must still report ErrDecode: %v", err)
+	}
+
+	calls := 0
+	load := func(context.Context) (any, error) {
+		calls++
+		return staleV2{Name: "ana", Email: "a@x"}, nil
+	}
+	var v staleV2
+	if err := c.GetOrLoad(bg, "user:secret-key", &v, time.Hour, load); err != nil || v.Email != "a@x" || calls != 1 {
+		t.Fatalf("reload: %+v err=%v calls=%d", v, err, calls)
+	}
+	var again staleV2
+	if err := c.GetOrLoad(bg, "user:secret-key", &again, time.Hour, load); err != nil || again.Email != "a@x" || calls != 1 {
+		t.Fatalf("the overwritten entry must hit: %+v err=%v calls=%d", again, err, calls)
+	}
+	if err := c.Get(bg, "user:secret-key", &probe); err != nil || probe.Email != "a@x" {
+		t.Fatalf("Get after the reload: %+v %v", probe, err)
+	}
+
+	out := logs.String()
+	if !strings.Contains(out, "undecodable") || !strings.Contains(out, "level=WARN") {
+		t.Errorf("the reload must be logged as a warning: %q", out)
+	}
+	if strings.Contains(out, "secret-key") || strings.Contains(out, "a@x") {
+		t.Errorf("the log must not contain the key or the value: %q", out)
+	}
+}
+
+func TestGetOrLoadUndecodableEntryWithConcurrentCallers(t *testing.T) {
+	c, _ := openMemory(t, nil)
+	if err := c.Set(bg, "k", staleV1{Name: "old"}, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	release := make(chan struct{})
+	load := func(context.Context) (any, error) {
+		calls.Add(1)
+		<-release
+		return staleV2{Name: "new", Email: "e@x"}, nil
+	}
+	const n = 8
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	out := make([]staleV2, n)
+	for i := range n {
+		wg.Go(func() { errs[i] = c.GetOrLoad(bg, "k", &out[i], time.Hour, load) })
+	}
+	waitFor(t, func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for _, f := range c.flights {
+			return f.waiters == n
+		}
+		return false
+	})
+	close(release)
+	wg.Wait()
+	for i := range n {
+		if errs[i] != nil || out[i].Email != "e@x" {
+			t.Fatalf("caller %d: %+v %v", i, out[i], errs[i])
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("the loader ran %d times, want 1", got)
 	}
 }

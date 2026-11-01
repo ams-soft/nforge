@@ -33,7 +33,7 @@ PoC files were temporary and are deleted; each item says how to reproduce.
 | G-12 | Low | CODE | `http/` | Raw (untyped) routes have no request-body limit |
 | G-13 | Low | CODE | `config/config.go` | **RESOLVED** `${VAR}` that is unset silently becomes `""`; a missing `-config` file is silently ignored |
 | G-14 | Info | CODE | `http/internal/authn` | `Bearerx token` answers 400 instead of 401 |
-| G-15 | Medium | PoC | `cache/load.go` | `GetOrLoad` hard-fails on an undecodable entry and never calls the loader until the TTL ends |
+| G-15 | Medium | PoC | `cache/load.go` | **RESOLVED** `GetOrLoad` hard-fails on an undecodable entry and never calls the loader until the TTL ends |
 | G-16 | Medium | CODE | `config`, `logs` | **RESOLVED** `env` is never validated: `production`/`prod` runs at DEBUG and skips the prd overlay |
 | G-17 | Low | CODE | `telemetry`, `http/internal/tracing` | 100 % sampling, no sampler setting; client picks the trace/request id and baggage |
 | G-18 | Low | CODE | `logs/logs.go` | `AddSource: true` on every record, including OTel export |
@@ -55,7 +55,7 @@ PoC files were temporary and are deleted; each item says how to reproduce.
 | G-34 | Low-Med | PoC | `database/config.go` | **RESOLVED** `redactDSN` leaves `?password=` and `?sslpassword=` visible |
 | G-35 | Low-Med | CODE | `http/server.go`, `database` | No handler timeout and no `statement_timeout` by default |
 | G-36 | Medium | PoC | `config/bytesize.go` | **RESOLVED** `ByteSize` overflows to `MinInt64` with no error (cache copy is correct) |
-| G-37 | Low | CODE | `cache`, `codec` | `cache.max_value_bytes` can exceed `codec.max_payload_bytes`: stored but unreadable |
+| G-37 | Low | CODE | `cache`, `codec` | **RESOLVED** `cache.max_value_bytes` can exceed `codec.max_payload_bytes`: stored but unreadable |
 | G-38 | Low | PoC | `helper/safecalc` | `Round` returns NaN/Inf for finite input; fixed two decimals |
 | G-39 | Low | CODE | `config/security.go` | Security headers and cache control off by default |
 | G-40 | Info | CODE | `deps/deps.go` | `Shutdown` not safe for concurrent calls |
@@ -507,7 +507,7 @@ handling), `http/internal/query` decoding logic (fuzzed instead),
 
 ## 5. Findings from the second pass
 
-### G-15 — `GetOrLoad` fails forever on an undecodable cached entry (Medium, PoC)
+### G-15 — `GetOrLoad` fails forever on an undecodable cached entry (Medium, PoC) [RESOLVED]
 
 **Where.** `cache/load.go`, the hit path of `GetOrLoad`:
 
@@ -556,6 +556,9 @@ flap.
 log a WARN (without key/value), fall through to the flight, and let the store
 overwrite the bad entry. Keep `Get` strict. Add a regression test for the
 required-field case.
+
+
+> **Resolved** in `fix(cache): reload undecodable GetOrLoad entries`. GetOrLoad treats ErrDecode on a hit (and on the flight's recheck) as a miss: WARN, load, overwrite. Get stays strict. Tests: TestGetOrLoadReloadsAnUndecodableEntry, TestGetOrLoadUndecodableEntryWithConcurrentCallers, TestGetOrLoadReadErrorSkipsLoader (corrupt data).
 
 ---
 
@@ -1028,7 +1031,7 @@ code with) `cache.ByteSize`, since `config` is allowed to import `cache`.
 
 ---
 
-### G-37 — `cache.limits.max_value_bytes` and `codec.max_payload_bytes` are independent (Low, CODE)
+### G-37 — `cache.limits.max_value_bytes` and `codec.max_payload_bytes` are independent (Low, CODE) [RESOLVED]
 
 `cache.decodeInto` reads through `registry.DecodeAs`, so every cached object
 is subject to **`codec.max_payload_bytes`** (default 5 MiB) on top of
@@ -1039,6 +1042,9 @@ later `Get` fails with `ErrDecode (payload exceeds the configured limit)`;
 `validateCache` compares neither number. Validate
 `cache.limits.max_value_bytes <= codec.max_payload_bytes` at load, or decode
 cached bytes without the HTTP payload limit.
+
+
+> **Resolved** in `fix(cache): reload undecodable GetOrLoad entries`. config.validateCache rejects cache.limits.max_value_bytes > codec.max_payload_bytes (config/cache_test.go).
 
 ---
 

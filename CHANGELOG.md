@@ -109,6 +109,15 @@ All notable changes to nForge are documented here. The format follows
   lost a piece. `$` is now an ordinary character in every value. A value
   that relied on `B=$A` expansion must be written out.
 
+- **`cache.GetOrLoad` heals an entry that no longer decodes.** After a deploy
+  that adds a `codec:"required"` field or tightens `Validate`, every call for
+  a key written by the old version failed with `ErrDecode` until its TTL ended
+  and the loader never ran. A hit that does not decode is now a miss: it is
+  logged as a warning (without key or value), reloaded and overwritten.
+  `Get` is unchanged and stays strict.
+- `cache.limits.max_value_bytes` larger than `codec.max_payload_bytes` is now
+  a configuration error: such values could be stored but never read back.
+
 ### Notes
 
 - **Upgrading:** configs and env files with keys that match no field now

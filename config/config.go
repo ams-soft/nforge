@@ -224,6 +224,14 @@ func validateCache(cfg *Config) error {
 	if err := cache.ValidateConfig(cfg.Cache); err != nil {
 		return err
 	}
+	// Cached objects are read back through the registry, which refuses
+	// payloads over codec.max_payload_bytes: a larger cached value could be
+	// stored but never decoded again.
+	if limit := int64(cfg.Codec.MaxPayloadBytes); int64(cfg.Cache.Limits.MaxValueBytes) > limit {
+		return fmt.Errorf("%w: cache.limits.max_value_bytes (%d) must not exceed codec.max_payload_bytes (%d), "+
+			"or values larger than the codec limit would be stored and never read back",
+			cache.ErrInvalidConfig, int64(cfg.Cache.Limits.MaxValueBytes), limit)
+	}
 	for _, f := range cfg.Codec.Formats.Enabled {
 		if strings.EqualFold(strings.TrimSpace(f), cfg.Cache.Codec) {
 			return nil

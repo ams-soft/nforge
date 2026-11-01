@@ -1526,7 +1526,14 @@ retries and no "unknown outcome".
 
 1. Validate target, loader (nil → `ErrInvalidConfig`), TTL, key/tenant.
 2. Read: hit → decode, done. Any error other than `ErrNotFound` (Redis
-   down, corrupt data) is returned and **the loader is not called**.
+   down) is returned and **the loader is not called**. A hit that does not
+   decode (`ErrDecode`: corrupt bytes, a newer `codec:"required"` field, a
+   stricter `Validate`, strict mode vs a newer writer, another `cache.codec`)
+   is treated as a **miss**: WARN `[CacheModule] GetOrLoad found an
+   undecodable entry and reloads it` (no key, tenant or value), then steps
+   3-5, whose store overwrites the entry (the flight's recheck also ignores
+   bytes its leader's target cannot decode). Plain `Get` stays strict and
+   returns `ErrDecode`.
 3. Join or start the flight of the **full resolved key** (tenant included)
    in this instance. At `max_inflight_loads` distinct flights a new key gets
    `ErrLoadCapacity`; joining is always allowed.
@@ -1961,8 +1968,10 @@ algorithm/kid/typ, boundaries), not only round trips.
     must put a tenant in the ctx). `Ping` is the only tenant-free call.
 22. **`ErrOutcomeUnknown`** (Redis) means the write may have been applied:
     do not blindly retry non-idempotent operations such as `Increment`.
-23. **Changing `cache.codec`** makes old object entries fail with
-    `ErrDecode` (not a miss): bump `cache.prefix` or let them expire. Counter
+23. **Changing `cache.codec`** (or tightening a cached type) makes old
+    object entries fail `Get` with `ErrDecode`; `GetOrLoad` reloads them
+    (gotcha-free, one WARN each), but `Get`/`SetIfAbsent` callers should bump
+    `cache.prefix` or let them expire. Counter
     keys are decimal text: `Get` on them decodes JSON numbers, but CBOR
     objects are never integers.
 24. **`GetOrLoad` does not cache loader errors** and returns them unchanged;
