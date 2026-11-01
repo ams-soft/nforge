@@ -24,8 +24,8 @@ PoC files were temporary and are deleted; each item says how to reproduce.
 | G-03 | Medium | PoC | `deps/deps.go` | **RESOLVED** Fatal startup errors are silent with default logging; no flush with OTel |
 | G-04 | Medium | CODE | `http/internal/openapi` | **RESOLVED** Docs page loads Swagger UI from a floating CDN version, no SRI, host-wide CSP allowlist |
 | G-05 | Medium | PoC | `codec/presence*.go` | **RESOLVED** JSON tree fallback is quadratic: 131 KB -> 337 MB |
-| G-06 | Low | PoC | `codec/json.go` | Decode errors leak Go package-qualified type names to clients |
-| G-07 | Low | CODE | `codec/xml.go:763` | Non-English error text in production code |
+| G-06 | Low | PoC | `codec/json.go` | **RESOLVED** Decode errors leak Go package-qualified type names to clients |
+| G-07 | Low | CODE | `codec/xml.go:763` | **RESOLVED** Non-English error text in production code |
 | G-08 | Low | CODE | `http/transport.go` | TLS/QUIC certificates are loaded once; no rotation without restart |
 | G-09 | Low | CODE | `config/server.go` | TLS private key file permissions are never checked |
 | G-10 | Low | CODE | `http/transport.go` | HTTPS and HTTP/3 servers ignore customisations of `ServerHttp.Srv` |
@@ -294,7 +294,7 @@ without building the whole tree).
 
 ---
 
-### G-06 — Go type names leak to clients (Low, PoC)
+### G-06 — Go type names leak to clients (Low, PoC) [RESOLVED]
 
 **Where.** `codec/json.go:179` (`Expected: typ.Type.String()`), surfaced by
 `TypeError.Error()` (`codec/errors.go:94`) and sent verbatim by
@@ -317,15 +317,21 @@ fingerprinting and targeted payload crafting). Not exploitable by itself.
 in the log. The same applies to the XML and query decoders, which also put
 `t.String()` into `TypeError`.
 
+
+> **Resolved** in `fix(codec): describe type mismatches in payload terms`. TypeError.Error() prints Wire (codec.WireType) instead of the Go type; Expected keeps the Go type. Tests: codec/wire_test.go, query TestTypeErrorsDoNotNameGoTypes.
+
 ---
 
-### G-07 — Non-English text in production code (Low, CODE)
+### G-07 — Non-English text in production code (Low, CODE) [RESOLVED]
 
 `codec/xml.go:763`: `Got: "elemento <" + tk.Name.Local + ">"`.
 `AGENTS.md` section 16 requires English for error strings and API response
 texts. This one reaches clients through the 400 detail. Replace with
 `"element <...>"` and add a test that no non-ASCII word appears in codec error
 formats (cheap guard).
+
+
+> **Resolved** in `fix(codec): describe type mismatches in payload terms`. The XML message now says "element <x>"; TestTypeErrorMessagesDoNotNameGoTypes rejects the old word.
 
 ---
 

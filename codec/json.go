@@ -177,7 +177,7 @@ func jsonDecodeErr(err error) error {
 	case errors.As(err, &syn):
 		return &SyntaxError{Format: "json", Offset: syn.Offset, Msg: syn.Error()}
 	case errors.As(err, &typ):
-		return &TypeError{Format: "json", Field: typ.Field, Expected: typ.Type.String(), Got: "value " + typ.Value}
+		return &TypeError{Format: "json", Field: typ.Field, Expected: typ.Type.String(), Wire: WireType(typ.Type), Got: "value " + typ.Value}
 	case errors.Is(err, io.ErrUnexpectedEOF):
 		return &SyntaxError{Format: "json", Offset: -1, Msg: "unexpected end of payload"}
 	}

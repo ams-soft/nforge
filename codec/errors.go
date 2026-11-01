@@ -84,10 +84,16 @@ func (e *MissingFieldError) Is(target error) bool { return target == ErrMissingF
 
 // TypeError indicates that the payload value is not compatible with the Go
 // type of the target field.
+//
+// Expected is the Go type, for logs and programmatic use; the message shows
+// the payload-level description (Wire, or one derived from Expected) because
+// the message reaches clients and a Go type name discloses package and type
+// names.
 type TypeError struct {
 	Format   string
 	Field    string
 	Expected string // expected Go type
+	Wire     string // expected type as the payload describes it ("object", "integer", ...); optional
 	Got      string // description of the received value
 }
 
@@ -96,7 +102,11 @@ func (e *TypeError) Error() string {
 	if field == "" {
 		field = "(root)"
 	}
-	return fmt.Sprintf("codec: %s: field %q expects %s, got %s", e.Format, field, e.Expected, e.Got)
+	wire := e.Wire
+	if wire == "" {
+		wire = wireFromGoName(e.Expected)
+	}
+	return fmt.Sprintf("codec: %s: field %q expects %s, got %s", e.Format, field, wire, e.Got)
 }
 
 func (e *TypeError) Is(target error) bool { return target == ErrTypeMismatch }

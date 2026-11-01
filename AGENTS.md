@@ -1138,7 +1138,7 @@ from a user's own `UnmarshalJSON`/`UnmarshalText` are wrapped and propagated.
 | `ErrSyntax` | `*SyntaxError{Format, Offset (-1 unknown), Msg}` |
 | `ErrUnknownField` | `*UnknownFieldError{Format, Field}` |
 | `ErrMissingField` | `*MissingFieldError{Format, Field}` |
-| `ErrTypeMismatch` | `*TypeError{Format, Field, Expected, Got}` |
+| `ErrTypeMismatch` | `*TypeError{Format, Field, Expected, Wire, Got}` (`Expected` is the Go type, for logs; the message uses `Wire`, the payload-level description from `codec.WireType`: object, integer, string, ... so clients never see Go type names) |
 | `ErrNamespace` | `*NamespaceError` |
 | `ErrInvalidTarget` | `*InvalidTargetError` (decode needs non-nil pointer) |
 | `ErrValidation` | `*ValidationError{Err}` (unwraps to the cause) |

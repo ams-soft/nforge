@@ -577,7 +577,7 @@ func (d *xmlDecoder) value(start xml.StartElement, v reflect.Value, path *xpath,
 			return err
 		}
 		if err := u.UnmarshalText([]byte(text)); err != nil {
-			return &TypeError{Format: "xml", Field: path.String(), Expected: t.String(), Got: strconv.Quote(text)}
+			return &TypeError{Format: "xml", Field: path.String(), Expected: t.String(), Wire: WireType(t), Got: strconv.Quote(text)}
 		}
 		return nil
 	}
@@ -789,7 +789,7 @@ func (d *xmlDecoder) leafText(start xml.StartElement, t reflect.Type, path *xpat
 		case xml.CharData:
 			text = append(text, tk...)
 		case xml.StartElement:
-			return "", &TypeError{Format: "xml", Field: path.or(start.Name.Local), Expected: t.String(), Got: "elemento <" + tk.Name.Local + ">"}
+			return "", &TypeError{Format: "xml", Field: path.or(start.Name.Local), Expected: t.String(), Wire: WireType(t), Got: "element <" + tk.Name.Local + ">"}
 		case xml.EndElement:
 			return string(text), nil
 		}
@@ -818,7 +818,7 @@ func setText(v reflect.Value, text string, path *xpath) error {
 	}
 	t := v.Type()
 	mismatch := func() error {
-		return &TypeError{Format: "xml", Field: path.String(), Expected: t.String(), Got: strconv.Quote(text)}
+		return &TypeError{Format: "xml", Field: path.String(), Expected: t.String(), Wire: WireType(t), Got: strconv.Quote(text)}
 	}
 	if u, ok := asInterface[encoding.TextUnmarshaler](v); ok {
 		if err := u.UnmarshalText([]byte(text)); err != nil {

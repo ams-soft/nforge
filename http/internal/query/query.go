@@ -239,7 +239,7 @@ func Set(v reflect.Value, vals []string, name string) error {
 
 func setScalar(v reflect.Value, s, name string) error {
 	typeErr := func() error {
-		return &codec.TypeError{Format: "query", Field: name, Expected: v.Type().String(), Got: strconv.Quote(s)}
+		return &codec.TypeError{Format: "query", Field: name, Expected: v.Type().String(), Wire: codec.WireType(v.Type()), Got: strconv.Quote(s)}
 	}
 	if u, ok := v.Addr().Interface().(encoding.TextUnmarshaler); ok {
 		if err := u.UnmarshalText([]byte(s)); err != nil {

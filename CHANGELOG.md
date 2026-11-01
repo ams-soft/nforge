@@ -129,6 +129,14 @@ All notable changes to nForge are documented here. The format follows
   floating `@5`, unverified), and the page's `script-src` is the per-render
   nonce alone instead of the nonce plus all of `cdn.jsdelivr.net`.
 
+- **Decode errors no longer name Go types.** A type mismatch answered
+  `field "addr" expects nhttp.Address, got value string`, disclosing package
+  and type names to clients. The message now says `expects object` (`integer`,
+  `string`, `array`, ...) through the new `codec.WireType`; `TypeError.Expected`
+  still holds the Go type for logs and `errors.As` callers, and a new
+  `TypeError.Wire` holds the payload-level name. One XML error message that was
+  in Portuguese is now English.
+
 ### Notes
 
 - **Upgrading:** requests that decode into types with a nested `Validate()`
