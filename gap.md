@@ -1,7 +1,14 @@
 # gap.md — nForge audit: vulnerabilities, gaps and bugs
 
 Audit of `main` at `45f67c2` (after the JSON decode work and the HTTPS/HTTP3 merge).
-Go 1.27.3, linux/amd64. Nothing in this file was fixed: it is a findings log.
+Go 1.27.3, linux/amd64.
+
+**Status: all 40 items are resolved on `main`.** Each item below carries a
+`[RESOLVED]` tag and a "Resolved in" note naming the commit subject, what
+changed and the tests that pin it; the findings text is kept as it was written
+at audit time (corrections made while fixing are called out inside the item,
+for example G-21 and G-38). The sections after "Summary" are the audit record,
+section 7 is the work log.
 
 **Evidence levels** (used on every item):
 
@@ -1189,40 +1196,59 @@ same unsynchronised write.
 
 ---
 
-## 7. Suggested order of work
+## 7. Work log
 
-No fixes have been made; this is the proposed order once the scan is accepted
-as complete.
+All items were fixed in the order below, each in a commit that carries its
+regression tests, the documentation change (`AGENTS.md`, `llms.txt`,
+`CHANGELOG.md`) and the `[RESOLVED]` mark in this file. Every commit passed
+`go build`, `go vet`, `gofmt`, the full test suite (the four examples
+included) and `golangci-lint` before it was pushed.
 
-**Tier 1 - crash, data exposure, fail-open (do first)**
+| Commit | Items |
+|---|---|
+| `fix(config): redact secrets in every print path` | G-30, G-34 |
+| `fix(codec): bound XML nesting and make error locations lazy` | G-01, G-05 |
+| `fix(codec): reject reference cycles instead of crashing` | G-27, G-28 |
+| `fix(config): fail on configuration typos instead of defaulting` | G-02, G-13, G-16, G-22, G-25 |
+| `fix(deps): report fatal startup errors and add NewDepsE` | G-03 |
+| `fix(config): reject byte sizes that overflow` | G-36 |
+| `fix(config): take env-file values literally` | G-21 |
+| `fix(cache): reload undecodable GetOrLoad entries` | G-15, G-37 |
+| `fix(codec): run Validate on nested values` | G-29 |
+| `fix(http): pin Swagger UI with SRI and drop the CDN from script-src` | G-04 |
+| `fix(codec): describe type mismatches in payload terms` | G-06, G-07 |
+| `fix(config): cap risky limits and warn about weak transports` | G-09, G-24, G-26, G-31, G-32 |
+| `fix: bearer scheme, log source, Round and concurrent shutdown` | G-14, G-18, G-38, G-40 |
+| `fix(http): bound request context, body and statement time` | G-12, G-23, G-35, G-39 |
+| `feat(cache): add IncrementWithTTL` | G-33 |
+| `feat(http): reload TLS certificates and JOSE keys without a restart` | G-08, G-10, G-19 |
+| `feat(telemetry): sample traces and optionally distrust the caller` | G-17 |
+| `fix(http): cache the public spec and warn about docs in production` | G-11, G-20 |
 
-1. **G-30** secret redaction on `config.Config` / `database.Config` (secrets in
-   logs are irreversible once shipped).
-2. **G-01 + G-05** path handling (stack instead of eager strings) and an XML
-   depth limit: removes the 10 GB request.
-3. **G-27** cycle detection in `checkRequired`, the XML encoder and CBOR:
-   removes a handler bug turning into a process crash.
-4. **G-02 + G-22 + G-16** reject unknown YAML keys, unmatched env-file keys and
-   an unknown `env`: one "strict configuration" change.
-5. **G-03** never swallow a fatal startup error.
+**Verified against real servers** (Docker): the integration tests of
+`database`, `cache` and the four examples ran with PostgreSQL 18 and Redis 8
+under `-race`; the Lua script of `IncrementWithTTL` and the server-side
+`statement_timeout` are proven there, not only against fakes. `govulncheck`
+reports nothing reachable; the fuzzers (`FuzzPresenceJSON` and the four JOSE
+ones) found nothing.
 
-**Tier 2 - correctness**
+**Decisions worth knowing about**
 
-6. **G-36** `ByteSize` overflow (share code with `cache.ByteSize`).
-7. **G-21** env-file `$VAR` expansion.
-8. **G-15 + G-37** `GetOrLoad` self-heal and limit consistency.
-9. **G-29** nested `Validate()`.
-10. **G-34** DSN query-parameter redaction.
-11. **G-04** embed or pin Swagger UI.
-
-**Tier 3 - hardening and operability**
-
-12. **G-35** handler timeout and `statement_timeout`.
-13. **G-23** require `Content-Type` when there is a body.
-14. **G-28** skip `CheckRequired` when no `required` tags.
-15. **G-08, G-09, G-10** TLS rotation, key permissions, `Srv` propagation.
-16. G-11, G-12, G-13, G-17, G-18, G-24..G-26, G-31..G-33, G-38..G-40, then the
-    Info items (G-14, G-19, G-20).
-
-Every fix should ship with a regression test that reproduces the PoC in the
-item (the reproductions are written down in each section).
+- Several fixes change behavior on purpose and are listed under "Upgrading" in
+  `CHANGELOG.md`: unknown configuration keys and unknown env-file keys are
+  errors, `env` must be `local|dev|stg|prd`, a request body needs a
+  `Content-Type`, nested `Validate()` now runs, requests have a 30 s handler
+  deadline and a body limit, PostgreSQL gets `statement_timeout` 30 s, HSTS
+  `includeSubDomains` is opt-in, and SIGHUP is handled.
+- Some items are mitigations rather than eliminations, and say so in their
+  note: G-11 (the docs and `/ready` stay public; they are cached and a
+  production warning is logged), G-09 and G-32 (warnings, not errors, because
+  orchestrators mount keys 0644 and private networks carry plain traffic),
+  G-19 (the replaced JOSE snapshot is documented as not wiped), G-38 (the
+  two-decimal limit of `Money.Format` is documented as a limit of the
+  package) and G-17 (`trust_incoming` defaults to true, so a deployment must
+  turn it off on its public edge).
+- Two statements in the original findings were wrong and were corrected where
+  they appear: G-21 (godotenv expands from earlier keys of the same file, not
+  from the process environment) and the documented `Round(2.675, 2)` example
+  (it is 2.68; `1.005` shows the imprecision).
