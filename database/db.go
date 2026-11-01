@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"fmt"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -76,9 +77,11 @@ func (db *DB) Ping(ctx context.Context) error {
 	return db.pool.Ping(ctx)
 }
 
-// Shutdown closes the pool. pgxpool.Close takes no context: it blocks until
-// every acquired connection is released, so call it after the services that
-// use the database have stopped. Calling it twice is safe.
+// Shutdown closes the pool. pgxpool.Close takes no context and blocks until
+// every acquired connection is released, so it runs in a goroutine and ctx
+// bounds the wait: on expiry Shutdown returns the context error while the pool
+// finishes closing in the background. Call it after the services that use the
+// database have stopped. Calling it twice is safe.
 func (db *DB) Shutdown(ctx context.Context) error {
 	if db.transaction {
 		return ErrShutdownInTransaction
@@ -87,9 +90,17 @@ func (db *DB) Shutdown(ctx context.Context) error {
 		return ErrShutdownTenantScoped
 	}
 
-	db.pool.Close()
-
-	return nil
+	done := make(chan struct{})
+	go func() {
+		db.pool.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("close database pool: %w", ctx.Err())
+	}
 }
 
 func newStatementBuilder() sq.StatementBuilderType {

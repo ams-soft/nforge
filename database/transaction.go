@@ -3,11 +3,16 @@ package database
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/ams-soft/nforge/database/internal/rlsexec"
 
 	"github.com/jackc/pgx/v5"
 )
+
+// rollbackTimeout bounds the rollback that follows a failed or abandoned
+// transaction.
+const rollbackTimeout = 5 * time.Second
 
 // Transaction runs fn inside a transaction with the server's default options.
 // See TransactionWithOptions.
@@ -42,8 +47,13 @@ func (db *DB) TransactionWithOptions(
 
 	// Runs on every exit path; after a successful commit it returns
 	// pgx.ErrTxClosed, which is deliberately ignored. Panics are not recovered.
+	// It does not use ctx: a canceled caller context (the usual reason fn
+	// failed) would make the rollback fail and the pool discard the connection
+	// with the transaction still open on the server.
 	defer func() {
-		_ = tx.Rollback(ctx)
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
+		defer cancel()
+		_ = tx.Rollback(rctx)
 	}()
 
 	if db.tenantID != "" && db.tenancy.Mode == TenancyRLS {
