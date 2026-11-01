@@ -39,7 +39,7 @@ PoC files were temporary and are deleted; each item says how to reproduce.
 | G-18 | Low | CODE | `logs/logs.go` | `AddSource: true` on every record, including OTel export |
 | G-19 | Info | CODE | `jose/service.go` | `Reload` is never triggered by the framework; the replaced snapshot is not wiped |
 | G-20 | Info | CODE | `cache/load.go` | A shared load runs with the first caller's context values and hands its error to every waiter |
-| G-21 | Medium | PoC | `config/env.go` | Env-file values undergo `$VAR` expansion from the process env; passwords with `$NAME` are corrupted |
+| G-21 | Medium | PoC | `config/env.go` | **RESOLVED** Env-file values undergo `$VAR` expansion from the process env; passwords with `$NAME` are corrupted |
 | G-22 | Medium | PoC | `config/env.go` | **RESOLVED** Env-file keys that match no field are ignored (`HTTP_CORS_ORIGNS`) |
 | G-23 | Low-Med | CODE | `http/response.go` | Missing `Content-Type` is accepted: cross-site JSON POSTs without preflight |
 | G-24 | Low | CODE | `config/security.go` | HSTS `includeSubDomains` on by default |
@@ -660,14 +660,14 @@ sentence in the `GetOrLoad` doc comment and in `AGENTS.md` section 11.3.
 
 Findings from reading the remaining modules in full. Same evidence labels.
 
-### G-21 — Env-file values go through `$VAR` expansion (Medium, PoC)
+### G-21 — Env-file values go through `$VAR` expansion (Medium, PoC) [RESOLVED]
 
 **Where.** `config/env.go:17` `applyEnvFile` uses `godotenv.Read`, which
-expands `$NAME` / `${NAME}` in values using the **process environment** (the
-variable name must be upper-case). `AGENTS.md` states the opposite for the env
-file ("real process env vars are only used via `${VAR}` in YAML", "the env
-file does not feed `${VAR}`"); that is true of YAML, not of the env file's own
-values.
+expands `$NAME` / `${NAME}` in unquoted and double-quoted values (the name
+must be upper-case). *Correction after the fix:* the expansion looks names up
+among the keys **defined earlier in the same file**, not in the process
+environment; an undefined name becomes empty. (The first version of this item
+said "process environment"; that was wrong, the PoC output below is right.)
 
 **Reproduction** (temporary test, `LoadFlags(yaml, envfile)`), env file:
 
@@ -676,26 +676,29 @@ DATABASE_PASSWORD=pa$sword$HOME
 DATABASE_HOST="h$USER"
 ```
 
-with `USER` and `HOME` unset in the test process. Result:
+Neither `USER` nor `HOME` is defined in the file. Result:
 
 ```
 password="pa$sword"   host="h"
 ```
 
-`$USER` was replaced by the (empty) process variable, silently shortening the
-host. Lower-case names such as `$sword` are left alone, so the bug is
-inconsistent and hard to notice.
+`$USER` was replaced by an empty string, silently shortening the host.
+Lower-case names such as `$sword` are left alone, so the bug is inconsistent
+and hard to notice.
 
 **Impact.** A password, token or DSN that contains `$` followed by an
 upper-case identifier is silently truncated, which shows up as a mysterious
-authentication failure at startup (and, per G-03, with no message). The
-reverse is worse: the value depends on whatever the process environment
-happens to contain, so the same file loads differently in two environments.
+authentication failure at startup (and, per G-03, with no message).
+A reference to a key defined earlier in the file (`B=$A`) was also expanded,
+which is surprising in a file that is documented as plain `KEY=value`.
 
 **Fix direction.** Read the file with a parser that does not expand
 (`godotenv.Unmarshal` on the raw text after disabling expansion, or
 single-quote semantics for every value), document that `$` is literal, and
 add a test with `$` in a password.
+
+
+> **Resolved** in `fix(config): take env-file values literally`. readEnvFile hides every $ from godotenv and restores it, so nothing is expanded. Test: TestEnvFileValuesAreLiteral. (The first description said the expansion used the process environment; it uses earlier keys of the same file, corrected in the item.)
 
 ---
 

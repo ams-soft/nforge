@@ -291,7 +291,9 @@ Built-in routes registered by `NewHTTPServer`:
      on raw text, so values with YAML special characters are safe. For
      unquoted scalars the tag is reset so `port: ${DB_PORT}` still decodes as
      an int; quoted scalars stay strings.
-3. **Env file** (`-envfile`, read with godotenv): each leaf field is set from a
+3. **Env file** (`-envfile`, parsed with godotenv but with every value taken
+   literally: `$` is an ordinary character, nothing is expanded, so a
+   password like `pa$SWORD` is kept intact): each leaf field is set from a
    key made of its YAML path, upper-cased, joined by `_`:
    `http.server.port` → `HTTP_SERVER_PORT`, `database.pool.max_conns` →
    `DATABASE_POOL_MAX_CONNS`, `codec.max_payload_bytes` →

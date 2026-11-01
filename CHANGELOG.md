@@ -103,6 +103,12 @@ All notable changes to nForge are documented here. The format follows
   `float64` to `int64` conversion) without any error. It now shares the
   parser of `cache.ByteSize`: whole numbers are exact and overflow is rejected.
 
+- **Env-file values are literal.** godotenv expanded `$NAME` / `${NAME}` in
+  unquoted and double-quoted values from the keys defined earlier in the file
+  (an unknown name became empty), so a password such as `pa$SWORD` silently
+  lost a piece. `$` is now an ordinary character in every value. A value
+  that relied on `B=$A` expansion must be written out.
+
 ### Notes
 
 - **Upgrading:** configs and env files with keys that match no field now

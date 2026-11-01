@@ -1,8 +1,11 @@
 package config
 
 import (
+	"bytes"
 	"encoding"
+	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"slices"
 	"strconv"
@@ -12,8 +15,33 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// readEnvFile parses an env file with every value taken literally.
+// godotenv expands $NAME and ${NAME} in unquoted and double-quoted values from
+// the keys defined earlier in the file (an undefined name becomes empty), so a
+// password such as "pa$SWORD" would silently lose a piece. Hiding each "$"
+// from the parser and restoring it afterwards makes "$" an ordinary character
+// in every kind of value.
+func readEnvFile(path string) (map[string]string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if bytes.IndexByte(raw, 0) >= 0 {
+		return nil, errors.New("the file contains a NUL byte")
+	}
+	parsed, err := godotenv.Unmarshal(string(bytes.ReplaceAll(raw, []byte("$"), []byte{0})))
+	if err != nil {
+		return nil, err
+	}
+	vars := make(map[string]string, len(parsed))
+	for key, value := range parsed {
+		vars[strings.ReplaceAll(key, "\x00", "$")] = strings.ReplaceAll(value, "\x00", "$")
+	}
+	return vars, nil
+}
+
 func applyEnvFile(path string, cfg *Config) error {
-	vars, err := godotenv.Read(path)
+	vars, err := readEnvFile(path)
 	if err != nil {
 		return err
 	}

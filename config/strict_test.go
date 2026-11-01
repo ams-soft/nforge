@@ -177,3 +177,45 @@ func TestUnsetEnvVariablesAreReported(t *testing.T) {
 		}
 	}
 }
+
+// "$" is an ordinary character in env-file values: godotenv used to expand
+// $NAME from earlier keys of the file (an unknown name became empty), so
+// "pa$SWORD" lost a piece of the password (G-21).
+func TestEnvFileValuesAreLiteral(t *testing.T) {
+	env := writeEnv(t, strings.Join([]string{
+		"DATABASE_PASSWORD=pa$SWORD$HOME",
+		`DATABASE_HOST="h$USER"`,
+		"DATABASE_NAME='lit$X'",
+		"DATABASE_USER=${APP_NAME}",
+		"APP_NAME=a",
+		"APP_VERSION=1 # a comment is still a comment",
+		"export CACHE_PREFIX=cost$$",
+		"# DATABASE_PORT=1 is commented out",
+		`HTTP_DOCS_TITLE="a \"quoted\" $T"`,
+		"",
+	}, "\n"))
+	cfg, err := LoadFlags("", env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checks := map[string][2]string{
+		"password":   {cfg.Database.Password, "pa$SWORD$HOME"},
+		"host":       {cfg.Database.Host, "h$USER"},
+		"name":       {cfg.Database.Name, "lit$X"},
+		"user":       {cfg.Database.User, "${APP_NAME}"},
+		"version":    {cfg.App.Version, "1"},
+		"prefix":     {cfg.Cache.Prefix, "cost$$"},
+		"docs title": {cfg.HTTP.Docs.Title, `a "quoted" $T`},
+	}
+	for name, c := range checks {
+		if c[0] != c[1] {
+			t.Errorf("%s = %q, want %q", name, c[0], c[1])
+		}
+	}
+	if cfg.Database.Port != 0 {
+		t.Errorf("a commented key must not be read: port %d", cfg.Database.Port)
+	}
+	if _, err := LoadFlags("", writeEnv(t, "APP_NAME=a\x00b\n")); err == nil {
+		t.Error("a NUL byte must be rejected")
+	}
+}
