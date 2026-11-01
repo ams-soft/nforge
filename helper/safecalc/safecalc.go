@@ -24,6 +24,26 @@ type MoneyOpt struct {
 	Suffix       string // text after the amount, e.g. " BRL"
 	DecimalSep   string // decimal separator, e.g. ","
 	ThousandsSep string // thousands grouping separator, e.g. "."; "" disables grouping
+
+	// Decimals is the number of minor-unit digits of the currency, which Value
+	// counts: nil means 2 (BRL, USD, EUR); use Places(0) for JPY and Places(3)
+	// for KWD or BHD. Values outside 0..MaxDecimals are clamped by Format.
+	Decimals *int
+}
+
+// MaxDecimals is the largest supported number of minor-unit digits: 10^18 is
+// the biggest power of ten that fits in a uint64.
+const MaxDecimals = 18
+
+// Places returns n for MoneyOpt.Decimals, so a literal can say Decimals: safecalc.Places(0).
+func Places(n int) *int { return &n }
+
+// decimals is the effective, clamped number of minor-unit digits.
+func (o MoneyOpt) decimals() int {
+	if o.Decimals == nil {
+		return 2
+	}
+	return min(max(*o.Decimals, 0), MaxDecimals)
 }
 
 // BRL returns the Brazilian real format ("R$ 1.234,56"). It is a function,
@@ -35,7 +55,7 @@ func BRL() MoneyOpt {
 // Money is an amount in cents plus its display options.
 type Money struct {
 	Opt   MoneyOpt
-	Value int64 // cents: 123456 is 1234.56
+	Value int64 // minor units: 123456 is 1234.56 (or 123456 for Places(0), 123.456 for Places(3))
 }
 
 // New builds an amount from cents, the exact and preferred constructor. A nil
@@ -44,6 +64,9 @@ func New(cents int64, opts *MoneyOpt) Money {
 	o := BRL()
 	if opts != nil {
 		o = *opts
+		if o.Decimals != nil {
+			o.Decimals = Places(*o.Decimals) // not shared with the caller's variable
+		}
 	}
 	return Money{Opt: o, Value: cents}
 }
@@ -51,12 +74,25 @@ func New(cents int64, opts *MoneyOpt) Money {
 // twoTo63 is 2^63 as a float64, the first value above the int64 range.
 const twoTo63 = float64(1 << 63)
 
-// NewFromFloat converts value (in currency units, e.g. 19.99) to cents,
-// rounding half to even. The float itself may already be inexact (1.005 is
+// pow10 holds 10^0 .. 10^MaxDecimals.
+var pow10 = func() (p [MaxDecimals + 1]uint64) {
+	p[0] = 1
+	for i := 1; i <= MaxDecimals; i++ {
+		p[i] = p[i-1] * 10
+	}
+	return
+}()
+
+// NewFromFloat converts value (in currency units, e.g. 19.99) to minor units
+// (cents, or 10^-Decimals of the unit), rounding half to even. The float itself may already be inexact (1.005 is
 // stored as 1.00499…, so it becomes 100 cents): prefer New with integer cents
 // from the source (database, parsed decimal string) whenever possible.
 func NewFromFloat(value float64, opts *MoneyOpt) (Money, error) {
-	cents := math.RoundToEven(value * 100)
+	d := MoneyOpt{}
+	if opts != nil {
+		d = *opts
+	}
+	cents := math.RoundToEven(value * float64(pow10[d.decimals()]))
 	if math.IsNaN(cents) || cents < -twoTo63 || cents >= twoTo63 {
 		return Money{}, ErrInvalidAmount
 	}
@@ -81,15 +117,17 @@ func Round(val float64, places int) float64 {
 }
 
 // Format renders the amount as Prefix, a space, an optional "-", the grouped
-// integer part, DecimalSep, two decimal digits and Suffix:
-// New(-123456, nil).Format() is "R$ -1.234,56".
+// integer part, DecimalSep, Decimals digits (two by default; none, and no
+// DecimalSep, for Places(0)) and Suffix: New(-123456, nil).Format() is
+// "R$ -1.234,56".
 func (m Money) Format() string {
 	// The magnitude as uint64 is exact even for math.MinInt64.
 	abs := uint64(m.Value)
 	if m.Value < 0 {
 		abs = -abs
 	}
-	digits := strconv.FormatUint(abs/100, 10)
+	places := m.Opt.decimals()
+	digits := strconv.FormatUint(abs/pow10[places], 10)
 
 	var b strings.Builder
 	if m.Opt.Prefix != "" {
@@ -105,10 +143,13 @@ func (m Money) Format() string {
 		}
 		b.WriteByte(digits[i])
 	}
-	b.WriteString(m.Opt.DecimalSep)
-	cents := abs % 100
-	b.WriteByte(byte('0' + cents/10))
-	b.WriteByte(byte('0' + cents%10))
+	if places > 0 {
+		b.WriteString(m.Opt.DecimalSep)
+		frac := abs % pow10[places]
+		for i := places - 1; i >= 0; i-- { // zero-padded to the full width
+			b.WriteByte(byte('0' + frac/pow10[i]%10))
+		}
+	}
 	b.WriteString(m.Opt.Suffix)
 	return b.String()
 }

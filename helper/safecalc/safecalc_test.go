@@ -140,3 +140,56 @@ func TestRoundNeverProducesNonFiniteValues(t *testing.T) {
 		t.Errorf("Round(+Inf) = %v", got)
 	}
 }
+
+// Currencies with 0 or 3 minor digits (G-38).
+func TestFormatDecimals(t *testing.T) {
+	jpy := MoneyOpt{Prefix: "¥", DecimalSep: ".", ThousandsSep: ",", Decimals: Places(0)}
+	kwd := MoneyOpt{Prefix: "KD", DecimalSep: ".", ThousandsSep: ",", Decimals: Places(3)}
+	cases := []struct {
+		name  string
+		cents int64
+		opt   MoneyOpt
+		want  string
+	}{
+		{"jpy", 1234567, jpy, "¥ 1,234,567"},
+		{"jpy zero", 0, jpy, "¥ 0"},
+		{"jpy negative", -5, jpy, "¥ -5"},
+		{"kwd", 1234567, kwd, "KD 1,234.567"},
+		{"kwd small", 7, kwd, "KD 0.007"},
+		{"kwd negative", -1005, kwd, "KD -1.005"},
+		{"kwd min int64", math.MinInt64, kwd, "KD -9,223,372,036,854,775.808"},
+		{"clamped low", 12, MoneyOpt{DecimalSep: ".", Decimals: Places(-4)}, "12"},
+		{"clamped high", 5, MoneyOpt{DecimalSep: ".", Decimals: Places(99)}, "0.000000000000000005"},
+	}
+	for _, c := range cases {
+		if got := New(c.cents, &c.opt).Format(); got != c.want {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+func TestNewFromFloatDecimals(t *testing.T) {
+	m, err := NewFromFloat(1234, &MoneyOpt{Decimals: Places(0)})
+	if err != nil || m.Value != 1234 {
+		t.Fatalf("0 decimals: %v %v", m, err)
+	}
+	m, err = NewFromFloat(1.2345, &MoneyOpt{Decimals: Places(3)})
+	if err != nil || m.Value != 1234 { // half to even on 1234.5
+		t.Fatalf("3 decimals: %v %v", m, err)
+	}
+	if _, err = NewFromFloat(1e15, &MoneyOpt{Decimals: Places(3)}); err != nil {
+		t.Fatalf("in range: %v", err)
+	}
+	if _, err = NewFromFloat(1e15, &MoneyOpt{Decimals: Places(18)}); err == nil {
+		t.Fatal("1e15 with 18 decimals overflows int64")
+	}
+}
+
+func TestNewDoesNotShareDecimals(t *testing.T) {
+	n := 3
+	m := New(1, &MoneyOpt{Decimals: &n})
+	n = 0
+	if *m.Opt.Decimals != 3 {
+		t.Fatal("New must copy Decimals")
+	}
+}
