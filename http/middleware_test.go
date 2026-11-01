@@ -54,7 +54,7 @@ func TestTracingSpanNameAndOriginalRequestID(t *testing.T) {
 	t.Cleanup(func() { otel.SetTracerProvider(prev) })
 
 	r := router.NewRouter()
-	r.Use(Tracing())
+	r.Use(Tracing(WithTrustedIncomingContext()))
 	r.Route("/api", func(api router.Router) {
 		api.Get("/users/{id}", func(stdhttp.ResponseWriter, *stdhttp.Request) {})
 	})

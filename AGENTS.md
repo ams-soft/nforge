@@ -439,7 +439,7 @@ tracing:
     endpoint: ""
     insecure: false
     sample_ratio: <1>         # *float64, 0..1; nil = 1 (every request); ParentBased(TraceIDRatioBased)
-    trust_incoming: <true>    # *bool; false: ignore the caller's traceparent/tracestate/baggage/X-Request-Id (public edge)
+    trust_incoming: <false>   # *bool; true: continue the caller's traceparent, adopt X-Request-Id, keep baggage (behind a gateway)
 
 codec:
   formats: { enabled: [json] }      # json | cbor | xml
@@ -582,21 +582,22 @@ fatal startup errors use `[Fatal ERROR] ...`.
 
 ### 6.1 request_id == trace_id (HTTP `Tracing()` middleware)
 
-By default the caller's trace context is **trusted** (that is what links
-services behind a gateway). On an edge exposed to the internet set
-`tracing.otel.trust_incoming: false` (`WithoutIncomingContext()`): the
+By default the caller's trace context is **not trusted**: the
 `traceparent`, `tracestate`, `baggage` and `X-Request-Id` of the request are
 ignored, every request starts its own trace, and a client can neither force
 sampling, nor reuse another request's trace id, nor inject baggage downstream.
+Services behind a gateway (or calling each other) set
+`tracing.otel.trust_incoming: true` (`WithTrustedIncomingContext()` on the raw
+middleware) to link their traces.
 `tracing.otel.sample_ratio` (default 1) records that fraction of traces by
 trace id; with trust on, a sampled parent is still honored and a client that
 picks the trace id also picks the sampling decision.
 
 The chain is `traceIDFromRequestID → otelhttp → requestIDFromTrace → handler`:
 
-1. If the incoming `X-Request-Id` looks like a trace ID (32 hex / UUID), it is
+1. With `trust_incoming`, if the incoming `X-Request-Id` looks like a trace ID (32 hex / UUID), it is
    put in the context so the root span gets that trace ID.
-2. `otelhttp` creates the span (continuing an incoming `traceparent` if any —
+2. `otelhttp` creates the span (continuing an incoming `traceparent` if trusted —
    in that case the parent's trace ID wins).
 3. `X-Request-Id` is overwritten with the span's trace ID, set as the
    `request_id` span attribute, and go-ams-router's `middleware.RequestID`
@@ -1443,8 +1444,8 @@ and slog.
   no watcher and is never triggered by tokens. `nhttp` triggers it on
   **SIGHUP** (`Deps.ReloadJOSE`, together with the TLS certificates); an
   application with another trigger calls `Deps.ReloadJOSE(ctx)` itself. The
-  replaced snapshot is dropped to the GC, not wiped: operations admitted
-  before the swap may still be using it.
+  replaced snapshot is wiped (best effort) as soon as the operations admitted
+  before the swap have finished; each snapshot counts its users.
 - Rotation: deploy config with old **and** new kids, switch the producer
   key, keep the old consumer key until tokens expire + skew + JWKS cache
   age; publish a new public key before signing with it. Replacing material
@@ -1805,8 +1806,10 @@ safecalc.Round(0.125, 2)                             // 0.12 (float display help
   non-empty), `-` for negatives, the integer part grouped in thousands by
   `ThousandsSep` (`""` disables grouping), `DecimalSep`, two digits,
   `Suffix` verbatim (`" €"`). `BRL()` gives `R$ 1.234,56`; it is a function so callers cannot
-  change the default for everyone. `Value` is always hundredths of the unit:
-  currencies with 0 (JPY) or 3 (KWD, BHD) minor digits are not supported.
+  change the default for everyone. `Value` counts the currency's minor units:
+  hundredths by default, or `MoneyOpt.Decimals: safecalc.Places(0)` (JPY) /
+  `Places(3)` (KWD, BHD), 0..18 (clamped). With 0 decimals there is no
+  `DecimalSep`; `NewFromFloat` scales by 10^Decimals.
 - `Round(float64, places)` is a float helper for display (half to even,
   float imprecision included: 1.005 → 1), never for money arithmetic.
 - No currency arithmetic helpers (overflow-checked add, allocation/split,

@@ -194,11 +194,13 @@ All notable changes to nForge are documented here. The format follows
 
 - **Tracing can be sampled and can distrust the caller.** New
   `tracing.otel.sample_ratio` (default 1) records a fraction of traces, and
-  `tracing.otel.trust_incoming: false` (default true, unchanged) makes the HTTP
-  middleware ignore a caller's `traceparent`, `tracestate`, `baggage` and
-  `X-Request-Id`, so on a public edge a client can no longer force sampling,
-  join another request's trace or inject baggage into downstream calls.
-  `nhttp.Tracing` takes options (`WithoutIncomingContext`) and
+  `tracing.otel.trust_incoming` (default **false**) makes the HTTP middleware
+  ignore a caller's `traceparent`, `tracestate`, `baggage` and
+  `X-Request-Id`, so a client can no longer force sampling, join another
+  request's trace or inject baggage into downstream calls. Services behind a
+  gateway set it to `true` to keep linking traces.
+  `nhttp.Tracing` takes options (`WithTrustedIncomingContext`,
+  `WithoutIncomingContext`; untrusted by default) and
   `telemetry.IDGenerator` is exported.
 
 - **The public spec endpoints are cached.** `/docs/swagger.json` and
@@ -209,6 +211,14 @@ All notable changes to nForge are documented here. The format follows
 
 ### Notes
 
+- `safecalc.MoneyOpt.Decimals` (`safecalc.Places(n)`, 0..18, default 2) supports
+  currencies with 0 (JPY) or 3 (KWD, BHD) minor digits in `Format` and
+  `NewFromFloat`.
+
+- **Upgrading:** `tracing.otel.trust_incoming` now defaults to `false` and
+  `nhttp.Tracing()` ignores the caller's trace context unless given
+  `WithTrustedIncomingContext()`. Services that relied on a gateway's
+  `traceparent` or `X-Request-Id` must set `trust_incoming: true`.
 - **Upgrading:** the process now handles SIGHUP (it reloads credentials)
   instead of terminating on it.
 - **Upgrading:** clients that send a body with no `Content-Type` header now

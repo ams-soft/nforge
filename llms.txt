@@ -248,7 +248,7 @@ tracing:
     endpoint: ""
     insecure: false
     sample_ratio: <1>         # *float64, 0..1; nil = 1 (every request); ParentBased(TraceIDRatioBased)
-    trust_incoming: <true>    # *bool; false: ignore the caller's traceparent/tracestate/baggage/X-Request-Id (public edge)
+    trust_incoming: <false>   # *bool; true: continue the caller's traceparent, adopt X-Request-Id, keep baggage (behind a gateway)
 
 codec:
   formats: { enabled: [json] }      # json | cbor | xml
@@ -565,6 +565,8 @@ total.Format()                                   // "R$ 59,97"
 m, err := safecalc.NewFromFloat(12.5, nil)       // half-to-even to cents; ErrInvalidAmount on NaN/Inf/overflow
 usd := safecalc.MoneyOpt{Prefix: "US$", DecimalSep: ".", ThousandsSep: ","}
 safecalc.New(123456789, &usd).Format()           // "US$ 1,234,567.89"
+jpy := safecalc.MoneyOpt{Prefix: "¥", DecimalSep: ".", ThousandsSep: ",", Decimals: safecalc.Places(0)}
+safecalc.New(1234567, &jpy).Format()                // "¥ 1,234,567" (Places(3) for KWD/BHD)
 safecalc.Round(0.125, 2)                         // 0.12 (float display helper)
 ```
 

@@ -1244,10 +1244,9 @@ ones) found nothing.
   note: G-11 (the docs and `/ready` stay public; they are cached and a
   production warning is logged), G-09 and G-32 (warnings, not errors, because
   orchestrators mount keys 0644 and private networks carry plain traffic),
-  G-19 (the replaced JOSE snapshot is documented as not wiped), G-38 (the
-  two-decimal limit of `Money.Format` is documented as a limit of the
-  package) and G-17 (`trust_incoming` defaults to true, so a deployment must
-  turn it off on its public edge).
+  (G-19, G-38 and G-17 were later closed in code: the replaced JOSE snapshot
+  is wiped after its last user, `Money` takes `Decimals`, and
+  `trust_incoming` defaults to false.)
 - Two statements in the original findings were wrong and were corrected where
   they appear: G-21 (godotenv expands from earlier keys of the same file, not
   from the process environment) and the documented `Round(2.675, 2)` example

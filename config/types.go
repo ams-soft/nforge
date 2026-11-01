@@ -233,15 +233,15 @@ type TracingOtel struct {
 
 	// SampleRatio is the fraction of requests whose spans are recorded and
 	// exported, decided from the trace id; a request that arrives with a
-	// sampled parent is still recorded while trust_incoming is on.
+	// sampled parent is still recorded when trust_incoming is on.
 	SampleRatio *float64 `yaml:"sample_ratio"` // 0..1; default: 1 (every request)
 	// TrustIncoming makes the HTTP middleware continue a traceparent, adopt a
 	// valid X-Request-Id as the trace id and propagate baggage received from
 	// the caller. Behind a gateway or between services that is what links the
-	// traces. On an edge exposed to the internet turn it off: every request then
-	// starts its own trace, so a client can neither force sampling, nor reuse
-	// someone else's trace id, nor inject baggage.
-	TrustIncoming *bool `yaml:"trust_incoming"` // default: true
+	// traces, so turn it on there. It is off by default: every request then
+	// starts its own trace, so a client of an exposed API can neither force
+	// sampling, nor reuse someone else's trace id, nor inject baggage.
+	TrustIncoming *bool `yaml:"trust_incoming"` // default: false
 }
 
 // Ratio returns the effective sample ratio.
@@ -252,8 +252,8 @@ func (t TracingOtel) Ratio() float64 {
 	return *t.SampleRatio
 }
 
-// TrustsIncoming reports whether inbound trace context is trusted (the default).
-func (t TracingOtel) TrustsIncoming() bool { return t.TrustIncoming == nil || *t.TrustIncoming }
+// TrustsIncoming reports whether inbound trace context is trusted (opt-in).
+func (t TracingOtel) TrustsIncoming() bool { return t.TrustIncoming != nil && *t.TrustIncoming }
 
 type CodecConfig struct {
 	Formats             CodecFormats   `yaml:"formats"`

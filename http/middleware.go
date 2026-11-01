@@ -16,11 +16,13 @@ import (
 // It must be the first middleware (it replaces the router's middleware.RequestID),
 // so that the following ones and the logs already see the span and the id in the ctx.
 //
-// By default the caller's trace context is trusted. WithoutIncomingContext makes
-// every request start its own trace (use it on a public edge); the server
-// applies it when tracing.otel.trust_incoming is false.
+// By default the caller's trace context is NOT trusted: every request starts
+// its own trace, so a client cannot force sampling, join another request's
+// trace or inject baggage. WithTrustedIncomingContext restores the behavior
+// above for services behind a gateway or calling each other; the server
+// applies it when tracing.otel.trust_incoming is true.
 func Tracing(opts ...TracingOption) func(stdhttp.Handler) stdhttp.Handler {
-	o := tracing.Options{TrustIncoming: true}
+	o := tracing.Options{}
 	for _, opt := range opts {
 		opt(&o)
 	}
@@ -30,8 +32,17 @@ func Tracing(opts ...TracingOption) func(stdhttp.Handler) stdhttp.Handler {
 // TracingOption configures Tracing.
 type TracingOption func(*tracing.Options)
 
+// WithTrustedIncomingContext continues the traceparent, adopts a valid
+// X-Request-Id as the trace id and propagates the baggage of the request.
+// Use it only when every caller is trusted (an internal network or a gateway
+// that strips these headers from the internet).
+func WithTrustedIncomingContext() TracingOption {
+	return func(o *tracing.Options) { o.TrustIncoming = true }
+}
+
 // WithoutIncomingContext ignores the traceparent, tracestate, baggage and
 // X-Request-Id of the request: it always starts a new trace with a new id.
+// It is the default; it overrides an earlier WithTrustedIncomingContext.
 func WithoutIncomingContext() TracingOption {
 	return func(o *tracing.Options) { o.TrustIncoming = false }
 }

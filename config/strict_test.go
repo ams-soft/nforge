@@ -250,11 +250,11 @@ func TestTracingSampleRatioAndTrust(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Tracing.Otel.Ratio() != 1 || !cfg.Tracing.Otel.TrustsIncoming() {
-		t.Fatalf("defaults must keep every request and trust the caller: %+v", cfg.Tracing.Otel)
+	if cfg.Tracing.Otel.Ratio() != 1 || cfg.Tracing.Otel.TrustsIncoming() {
+		t.Fatalf("defaults must keep every request and distrust the caller: %+v", cfg.Tracing.Otel)
 	}
-	cfg, err = LoadFlags(writeConfig(t, baseYAML+"tracing: {otel: {sample_ratio: 0.1, trust_incoming: false}}\n"), "")
-	if err != nil || cfg.Tracing.Otel.Ratio() != 0.1 || cfg.Tracing.Otel.TrustsIncoming() {
+	cfg, err = LoadFlags(writeConfig(t, baseYAML+"tracing: {otel: {sample_ratio: 0.1, trust_incoming: true}}\n"), "")
+	if err != nil || cfg.Tracing.Otel.Ratio() != 0.1 || !cfg.Tracing.Otel.TrustsIncoming() {
 		t.Fatalf("configured: %v %+v", err, cfg.Tracing.Otel)
 	}
 	if cfg, err = LoadFlags(writeConfig(t, baseYAML+"tracing: {otel: {sample_ratio: 0}}\n"), ""); err != nil || cfg.Tracing.Otel.Ratio() != 0 {
@@ -265,8 +265,8 @@ func TestTracingSampleRatioAndTrust(t *testing.T) {
 			t.Errorf("sample_ratio %s must be refused", bad)
 		}
 	}
-	if cfg, err = LoadFlags(writeConfig(t, baseYAML), writeEnv(t, "TRACING_OTEL_SAMPLE_RATIO=0.5\nTRACING_OTEL_TRUST_INCOMING=false\n")); err != nil ||
-		cfg.Tracing.Otel.Ratio() != 0.5 || cfg.Tracing.Otel.TrustsIncoming() {
+	if cfg, err = LoadFlags(writeConfig(t, baseYAML), writeEnv(t, "TRACING_OTEL_SAMPLE_RATIO=0.5\nTRACING_OTEL_TRUST_INCOMING=true\n")); err != nil ||
+		cfg.Tracing.Otel.Ratio() != 0.5 || !cfg.Tracing.Otel.TrustsIncoming() {
 		t.Fatalf("env file: %v %+v", err, cfg.Tracing.Otel)
 	}
 }

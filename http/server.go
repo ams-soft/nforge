@@ -64,8 +64,8 @@ func (s *ServerHttp) setStandardHandler() {
 	// Security and CORS (before routing, so preflights reach every path)
 	if s.Deps.Config.IsTracingEnabled() {
 		var tracingOpts []TracingOption
-		if !s.Deps.Config.Tracing.Otel.TrustsIncoming() {
-			tracingOpts = append(tracingOpts, WithoutIncomingContext())
+		if s.Deps.Config.Tracing.Otel.TrustsIncoming() {
+			tracingOpts = append(tracingOpts, WithTrustedIncomingContext())
 		}
 		handler.Use(Tracing(tracingOpts...))
 	}
