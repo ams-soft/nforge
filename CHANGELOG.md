@@ -118,8 +118,17 @@ All notable changes to nForge are documented here. The format follows
 - `cache.limits.max_value_bytes` larger than `codec.max_payload_bytes` is now
   a configuration error: such values could be stored but never read back.
 
+- **`Validate()` now runs on nested values.** The registry called
+  `Validate() error` on the decoded root only, so a method on a nested struct,
+  a slice element or a map value was silently never called. It now runs on
+  every value inside the target (children before parents, pointer or value
+  receiver, location in the message) for all formats and for query strings.
+
 ### Notes
 
+- **Upgrading:** requests that decode into types with a nested `Validate()`
+  are now validated by it, so some payloads that were accepted may start to
+  answer 422.
 - **Upgrading:** configs and env files with keys that match no field now
   fail to load; rename or remove them (or move application data under a
   top-level `x-` key).

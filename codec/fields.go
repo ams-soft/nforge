@@ -134,9 +134,10 @@ func absent(fl *field, v reflect.Value) bool {
 	return omitField(fl, v)
 }
 
-// Validate runs the Registry's post-decode validation (Validator and
-// Config.Validate) on v, which must be a pointer when Validate has a
-// pointer receiver. Useful for values that did not come from a decode.
+// Validate runs the Registry's post-decode validation (the Validator methods
+// of v and of everything inside it, then Config.Validate) on v, which should
+// be a pointer so pointer-receiver methods are found. Useful for values that
+// did not come from a decode; the fields visited are the JSON ones.
 func (r *Registry) Validate(v any) error {
-	return r.runValidation(v)
+	return r.runValidation(fmtJSON, v)
 }

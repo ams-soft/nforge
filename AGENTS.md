@@ -1093,9 +1093,15 @@ r, err := codec.New(codec.Config{
   `DecodeFrom` (limit-enforced reader: returns `ErrPayloadTooLarge` without
   reading the rest), `Lookup`, `Formats`, `DefaultFormat`, `Register`
   (init-time only), `Validate`.
-- Post-decode validation: type's `Validate() error` (the `Validator`
-  interface — usually pointer receiver), then `Config.Validate`; failures are
-  wrapped in `ValidationError` (`ErrValidation` → 422).
+- Post-decode validation: `Validate() error` (the `Validator` interface —
+  pointer or value receiver) on **every value inside the target** that has
+  it (nested structs, pointers, slice elements, map values), children before
+  parents, then `Config.Validate` on the root; failures are wrapped in
+  `ValidationError` (`ErrValidation` → 422). A nested failure is prefixed with
+  its location (`tags[1]: label is empty`; `errors.Is` reaches the cause).
+  Only the fields the format decodes are visited (`json:"-"` is skipped), a
+  type graph with no validator skips the walk (`hasValidator`), and map values
+  are validated as copies.
 - Strict mode / required fields need to know which keys the payload had.
   JSON (`presence_json.go`) walks the payload's tokens with
   `encoding/json/jsontext` alongside the target type, skipping values whose

@@ -47,7 +47,7 @@ PoC files were temporary and are deleted; each item says how to reproduce.
 | G-26 | Low | CODE | `config/config.go` | `codec.max_payload_bytes` has no upper bound |
 | G-27 | Medium | PoC | `codec/fields.go`, `cbor.go`, `xml.go` | **RESOLVED** Cyclic values crash the process: CBOR/XML encode and `CheckRequired` (fatal stack overflow) |
 | G-28 | Low | PoC | `http/internal/capture` | **RESOLVED** `CheckRequired` walks every response (1.9 ms per MB) even with no `required` tags |
-| G-29 | Low-Med | CODE | `codec/registry.go` | `Validate()` only runs on the root value, never on nested types |
+| G-29 | Low-Med | CODE | `codec/registry.go` | **RESOLVED** `Validate()` only runs on the root value, never on nested types |
 | G-30 | Med-High | PoC | `config`, `database` | **RESOLVED** `config.Config` and `database.Config` print passwords/DSNs; slog JSON leaks every secret incl. JOSE key |
 | G-31 | Low | CODE | `jose/config.go` | No ceiling on JWT `ttl`/`max_ttl` |
 | G-32 | Low | CODE | `cache`, `database` | Credentials allowed over plain TCP to remote hosts, no warning |
@@ -846,7 +846,7 @@ Roughly halves the per-response CPU of large untagged responses.
 
 ---
 
-### G-29 — `Validate()` only runs on the root value (Low-Med, CODE)
+### G-29 — `Validate()` only runs on the root value (Low-Med, CODE) [RESOLVED]
 
 `codec/registry.go` `runValidation` checks `v.(Validator)` on the decode
 target only. A `Validate() error` method on a **nested** struct, on slice
@@ -856,6 +856,9 @@ address. `AGENTS.md` section 8.3 says "type's `Validate() error`" without
 saying "root type only". Either walk the value (like `CheckRequired`) or
 document it prominently; the `Config.Validate` hook (go-playground/validator
 style) does recurse, so the behaviours are inconsistent.
+
+
+> **Resolved** in `fix(codec): run Validate on nested values`. validateTree (codec/validate.go) visits nested structs, pointers, slice elements and map values, children first, with the location in the message. Tests: codec/validate_test.go.
 
 ---
 

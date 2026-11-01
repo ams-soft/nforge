@@ -158,7 +158,7 @@ func (r *Registry) DecodeAs(format string, data []byte, v any) error {
 	if err := c.Decode(data, v); err != nil {
 		return err
 	}
-	return r.runValidation(v)
+	return r.runValidation(formatOf(c), v)
 }
 
 // EncodeTo writes v directly to w (streaming when the codec supports it).
@@ -200,14 +200,14 @@ func (r *Registry) DecodeFrom(format string, rd io.Reader, v any) error {
 	if err != nil {
 		return err
 	}
-	return r.runValidation(v)
+	return r.runValidation(formatOf(c), v)
 }
 
-func (r *Registry) runValidation(v any) error {
-	if val, ok := v.(Validator); ok {
-		if err := val.Validate(); err != nil {
-			return &ValidationError{Err: err}
-		}
+// runValidation runs the Validator methods of v and of everything inside it
+// (children before parents), then Config.Validate on the root.
+func (r *Registry) runValidation(f format, v any) error {
+	if err := validateTree(f, v); err != nil {
+		return err
 	}
 	if r.validate != nil {
 		if err := r.validate(v); err != nil {
