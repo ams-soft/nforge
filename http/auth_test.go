@@ -166,6 +166,8 @@ func TestAuthenticateTransport(t *testing.T) {
 	}{
 		{"missing", nil, 401, "authentication required", `Bearer realm="nforge-api"`},
 		{"other scheme", []string{"Authorization", "Basic dXNlcjpwYXNz"}, 401, "authentication required", `Bearer realm="nforge-api"`},
+		{"scheme that starts with bearer", []string{"Authorization", "Bearerx " + valid}, 401, "authentication required", `Bearer realm="nforge-api"`},
+		{"scheme with bearer prefix and no credentials", []string{"Authorization", "BearerToken"}, 401, "authentication required", `Bearer realm="nforge-api"`},
 		{"empty header", []string{"Authorization", ""}, 400, "invalid authentication request", `Bearer realm="nforge-api", error="invalid_request"`},
 		{"duplicate header", []string{"Authorization", "Bearer " + valid, "Authorization", "Bearer " + valid}, 400, "invalid authentication request", `Bearer realm="nforge-api", error="invalid_request"`},
 		{"scheme only", []string{"Authorization", "Bearer"}, 400, "invalid authentication request", `Bearer realm="nforge-api", error="invalid_request"`},

@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/ams-soft/nforge/config"
@@ -85,5 +87,29 @@ func TestNewDepsPrintsTheFatalReasonToStderr(t *testing.T) {
 	}
 	if out := stderr.String(); !strings.Contains(out, "[Fatal ERROR]") || !strings.Contains(out, "unable to setup database") {
 		t.Fatalf("stderr = %q", out)
+	}
+}
+
+// Shutdown is reachable from StartContext and from an application's own
+// signal handler: a closer must never run twice, and the race detector must
+// stay quiet (G-40).
+func TestShutdownIsSafeToCallConcurrently(t *testing.T) {
+	var runs atomic.Int32
+	d := Deps{Aux: &Aux{ShutdownFuncs: []func(context.Context) error{
+		func(context.Context) error { runs.Add(1); return nil },
+		func(context.Context) error { runs.Add(1); return nil },
+		func(context.Context) error { runs.Add(1); return nil },
+	}}}
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Go(func() { _ = d.Shutdown(context.Background()) })
+	}
+	wg.Wait()
+	if got := runs.Load(); got != 3 {
+		t.Fatalf("closers ran %d times, want exactly 3", got)
+	}
+	d.ClearAux()
+	if err := d.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }

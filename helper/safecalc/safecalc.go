@@ -64,11 +64,20 @@ func NewFromFloat(value float64, opts *MoneyOpt) (Money, error) {
 }
 
 // Round rounds val to the given number of decimal places, half to even. It
-// works on float64 and inherits its imprecision (2.675 is stored as 2.67499…
-// and rounds to 2.67); it is a display helper, not a way to compute money.
+// works on float64 and inherits its imprecision (1.005 is stored as 1.00499…
+// and rounds to 1); it is a display helper, not a way to compute money. A
+// value or a number of places that leaves no digits to round (Round(1e300, 10),
+// Round(1.5, 400)) is returned unchanged, never NaN or Inf.
 func Round(val float64, places int) float64 {
 	shift := math.Pow(10, float64(places))
-	return math.RoundToEven(val*shift) / shift
+	scaled := val * shift
+	if shift == 0 || math.IsInf(shift, 0) || math.IsInf(scaled, 0) || math.IsNaN(scaled) {
+		// Too many places (or too large a value) to round at all: a float64
+		// has no digits left there, so the value is already as rounded as it
+		// can be. Never turn a finite input into NaN or Inf.
+		return val
+	}
+	return math.RoundToEven(scaled) / shift
 }
 
 // Format renders the amount as Prefix, a space, an optional "-", the grouped

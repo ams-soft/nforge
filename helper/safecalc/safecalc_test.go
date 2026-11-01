@@ -108,3 +108,35 @@ func TestRound(t *testing.T) {
 		}
 	}
 }
+
+// Round must never turn a finite number into NaN or Inf (G-38): too many
+// places, or a value too large to scale, leave it as it is.
+func TestRoundNeverProducesNonFiniteValues(t *testing.T) {
+	cases := []struct {
+		val    float64
+		places int
+		want   float64
+	}{
+		{1.5, 400, 1.5},
+		{1.5, 1000, 1.5},
+		{1e300, 10, 1e300},
+		{-1e300, 10, -1e300},
+		{math.MaxFloat64, 2, math.MaxFloat64},
+		{1.005, 2, 1}, // stored as 1.00499999999999989...: float imprecision shows
+		{0.125, 2, 0.12},
+		{1234, -2, 1200}, // negative places still round to tens, hundreds...
+		{2.5, 0, 2},
+	}
+	for _, c := range cases {
+		got := Round(c.val, c.places)
+		if got != c.want || math.IsNaN(got) || math.IsInf(got, 0) {
+			t.Errorf("Round(%v, %d) = %v, want %v", c.val, c.places, got, c.want)
+		}
+	}
+	if got := Round(math.NaN(), 2); !math.IsNaN(got) {
+		t.Errorf("Round(NaN) = %v", got)
+	}
+	if got := Round(math.Inf(1), 2); !math.IsInf(got, 1) {
+		t.Errorf("Round(+Inf) = %v", got)
+	}
+}

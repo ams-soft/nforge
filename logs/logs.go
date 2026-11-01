@@ -22,7 +22,7 @@ func Setup(ctx context.Context, config config.Config) (*slog.Logger, func(contex
 	prettyHandler := tint.NewTextHandler(os.Stdout, &tint.Options{
 		Level:      loglevel,
 		TimeFormat: time.RFC3339,
-		AddSource:  true,
+		AddSource:  loglevel == slog.LevelDebug, // file:line in every record only while developing
 	})
 
 	var handlers []slog.Handler
@@ -43,7 +43,7 @@ func Setup(ctx context.Context, config config.Config) (*slog.Logger, func(contex
 
 		otelHandler := otelslog.NewHandler(config.App.Name,
 			otelslog.WithLoggerProvider(provider),
-			otelslog.WithSource(true),
+			otelslog.WithSource(loglevel == slog.LevelDebug),
 		)
 		handlers = append(handlers, &leveledHandler{Handler: otelHandler, level: min(loglevel, slog.LevelInfo)})
 

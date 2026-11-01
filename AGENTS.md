@@ -533,7 +533,9 @@ contextHandler            // adds request_id from go-ams-router middleware.GetRe
   anything else → DEBUG. The match is **case-sensitive** (use lowercase env).
 - The OTel handler never filters above INFO, so INFO logs always reach the
   collector even in `stg`/`prd`.
-- Terminal output: tint, RFC 3339 time, `AddSource: true`.
+- Terminal output: tint, RFC 3339 time, `AddSource` only while the level is DEBUG
+  (`env: local`; the OTel handler likewise): in stg/prd the file and line of every
+  record are noise and publish build paths to the log backend.
 - OTel: OTLP/gRPC exporter with a batch processor and the shared resource
   (§6). Endpoint containing `://` → `WithEndpointURL` (http:// implies
   insecure), else `WithEndpoint`.
@@ -861,7 +863,9 @@ p.HasScopes("a", "b")                             // every scope, exact and case
   realm) **panic at construction**. Raw middleware errors use the default
   codec; private typed routes use the route codec and `http.auth.realm`.
 - Bearer transport: exactly one `Authorization` header, case-insensitive
-  `Bearer`, one or more spaces, one token. Never query/cookie/body.
+  `Bearer` (the scheme is the token up to the first space or tab, so
+  `Bearerx abc` is another scheme: 401), one or more spaces, one token. Never
+  query/cookie/body.
 - Results (static details, `WWW-Authenticate` challenge; no token data):
 
   | Condition | Status | Detail / challenge |
@@ -1740,9 +1744,10 @@ safecalc.Round(0.125, 2)                             // 0.12 (float display help
   non-empty), `-` for negatives, the integer part grouped in thousands by
   `ThousandsSep` (`""` disables grouping), `DecimalSep`, two digits,
   `Suffix` verbatim (`" €"`). `BRL()` gives `R$ 1.234,56`; it is a function so callers cannot
-  change the default for everyone.
+  change the default for everyone. `Value` is always hundredths of the unit:
+  currencies with 0 (JPY) or 3 (KWD, BHD) minor digits are not supported.
 - `Round(float64, places)` is a float helper for display (half to even,
-  float imprecision included: 2.675 → 2.67), never for money arithmetic.
+  float imprecision included: 1.005 → 1), never for money arithmetic.
 - No currency arithmetic helpers (overflow-checked add, allocation/split,
   percentages) yet: callers add and multiply the int64 cents themselves and
   own overflow at their magnitudes.

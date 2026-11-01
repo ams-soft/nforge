@@ -22,13 +22,19 @@ func BearerToken(r *stdhttp.Request, maxBytes int64) (string, int) {
 		return "", stdhttp.StatusBadRequest
 	}
 	v := values[0]
-	if len(v) < 6 || !strings.EqualFold(v[:6], "bearer") {
+	// The scheme is the token up to the first space or tab (RFC 9110): a
+	// header such as "Bearerx abc" is another scheme, not a malformed bearer.
+	end := strings.IndexAny(v, " \t")
+	if end < 0 {
+		end = len(v)
+	}
+	if !strings.EqualFold(v[:end], "bearer") {
 		if strings.TrimSpace(v) == "" {
 			return "", stdhttp.StatusBadRequest
 		}
 		return "", stdhttp.StatusUnauthorized // another scheme: no bearer credentials
 	}
-	rest := v[6:]
+	rest := v[end:]
 	if rest == "" || rest[0] != ' ' {
 		return "", stdhttp.StatusBadRequest
 	}

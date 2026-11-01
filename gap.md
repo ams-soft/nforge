@@ -32,11 +32,11 @@ PoC files were temporary and are deleted; each item says how to reproduce.
 | G-11 | Low | CODE | `http/routes.go` | Docs, spec and readiness endpoints are public; spec rebuilt per request |
 | G-12 | Low | CODE | `http/` | Raw (untyped) routes have no request-body limit |
 | G-13 | Low | CODE | `config/config.go` | **RESOLVED** `${VAR}` that is unset silently becomes `""`; a missing `-config` file is silently ignored |
-| G-14 | Info | CODE | `http/internal/authn` | `Bearerx token` answers 400 instead of 401 |
+| G-14 | Info | CODE | `http/internal/authn` | **RESOLVED** `Bearerx token` answers 400 instead of 401 |
 | G-15 | Medium | PoC | `cache/load.go` | **RESOLVED** `GetOrLoad` hard-fails on an undecodable entry and never calls the loader until the TTL ends |
 | G-16 | Medium | CODE | `config`, `logs` | **RESOLVED** `env` is never validated: `production`/`prod` runs at DEBUG and skips the prd overlay |
 | G-17 | Low | CODE | `telemetry`, `http/internal/tracing` | 100 % sampling, no sampler setting; client picks the trace/request id and baggage |
-| G-18 | Low | CODE | `logs/logs.go` | `AddSource: true` on every record, including OTel export |
+| G-18 | Low | CODE | `logs/logs.go` | **RESOLVED** `AddSource: true` on every record, including OTel export |
 | G-19 | Info | CODE | `jose/service.go` | `Reload` is never triggered by the framework; the replaced snapshot is not wiped |
 | G-20 | Info | CODE | `cache/load.go` | A shared load runs with the first caller's context values and hands its error to every waiter |
 | G-21 | Medium | PoC | `config/env.go` | **RESOLVED** Env-file values undergo `$VAR` expansion from the process env; passwords with `$NAME` are corrupted |
@@ -56,9 +56,9 @@ PoC files were temporary and are deleted; each item says how to reproduce.
 | G-35 | Low-Med | CODE | `http/server.go`, `database` | No handler timeout and no `statement_timeout` by default |
 | G-36 | Medium | PoC | `config/bytesize.go` | **RESOLVED** `ByteSize` overflows to `MinInt64` with no error (cache copy is correct) |
 | G-37 | Low | CODE | `cache`, `codec` | **RESOLVED** `cache.max_value_bytes` can exceed `codec.max_payload_bytes`: stored but unreadable |
-| G-38 | Low | PoC | `helper/safecalc` | `Round` returns NaN/Inf for finite input; fixed two decimals |
+| G-38 | Low | PoC | `helper/safecalc` | **RESOLVED** `Round` returns NaN/Inf for finite input; fixed two decimals |
 | G-39 | Low | CODE | `config/security.go` | Security headers and cache control off by default |
-| G-40 | Info | CODE | `deps/deps.go` | `Shutdown` not safe for concurrent calls |
+| G-40 | Info | CODE | `deps/deps.go` | **RESOLVED** `Shutdown` not safe for concurrent calls |
 
 Non-findings (checked and fine) are listed in section 3.
 Coverage limits are in section 4.
@@ -426,13 +426,16 @@ ignore the default `./config.yaml`.
 
 ---
 
-### G-14 — `Bearerx token` is 400, not 401 (Info, CODE)
+### G-14 — `Bearerx token` is 400, not 401 (Info, CODE) [RESOLVED]
 
 `http/internal/authn/authn.go:16` `BearerToken`: the scheme test uses the first
 six characters, so `Authorization: Bearerx abc` or `BearerFoo abc` passes the
 prefix check and then fails `rest[0] != ' '` -> 400 `invalid_request`. A
 different scheme should be 401 with a challenge (RFC 6750 / 9110). Harmless,
 but it makes clients that probe schemes see an inconsistent contract.
+
+
+> **Resolved** in `fix: bearer scheme, log source, Round and concurrent shutdown`. authn.BearerToken takes the scheme up to the first SP/HTAB, so Bearerx is another scheme (401). Test cases in http/auth_test.go.
 
 ---
 
@@ -634,13 +637,16 @@ document that the correlation id is client-influenced.
 
 ---
 
-### G-18 — `AddSource: true` everywhere (Low, CODE)
+### G-18 — `AddSource: true` everywhere (Low, CODE) [RESOLVED]
 
 `logs/logs.go` sets `AddSource: true` on the terminal handler and
 `otelslog.WithSource(true)` on the exporter. Every record carries the
 source file and line of the call, in every environment. That is useful in
 `local`, noisy in `prd`, and publishes build-path information to the log
 backend. Make it conditional on `env`/level.
+
+
+> **Resolved** in `fix: bearer scheme, log source, Round and concurrent shutdown`. AddSource / OTel WithSource only at the DEBUG level (env local). logs/logs_test.go.
 
 ---
 
@@ -1075,7 +1081,7 @@ cached bytes without the HTTP payload limit.
 
 ---
 
-### G-38 — `safecalc.Round` returns NaN/Inf for finite input (Low, PoC)
+### G-38 — `safecalc.Round` returns NaN/Inf for finite input (Low, PoC) [RESOLVED]
 
 `helper/safecalc/safecalc.go` `Round`: `math.RoundToEven(val*shift) / shift`
 with `shift = 10^places` and no guard.
@@ -1095,6 +1101,9 @@ finite.
 Also: `Money.Format` always prints exactly two decimal digits and `Value` is
 "cents", so currencies with 0 (JPY) or 3 (KWD, BHD) minor digits cannot be
 represented correctly; the `MoneyOpt` has no `Decimals` field.
+
+
+> **Resolved** in `fix: bearer scheme, log source, Round and concurrent shutdown`. Round returns its input when nothing is left to round (TestRoundNeverProducesNonFiniteValues); the fixed two-decimal Format is documented as a limit of the package (0/3-digit currencies unsupported). Also corrected the documented Round example (2.675 does round to 2.68; 1.005 shows the imprecision).
 
 ---
 
@@ -1131,7 +1140,7 @@ from docs/JWKS are `text/plain` and rely on Go's own `nosniff`.
 
 ---
 
-### G-40 — `Deps.Shutdown` is not guarded against concurrent calls (Info, CODE)
+### G-40 — `Deps.Shutdown` is not guarded against concurrent calls (Info, CODE) [RESOLVED]
 
 `deps/deps.go` `Shutdown` reads `d.Aux.ShutdownFuncs`, runs them and then sets
 the slice to nil with no mutex or `sync.Once`. `AGENTS.md` says
@@ -1141,6 +1150,9 @@ calls `dps.Shutdown(ctx)` from its own signal handler while `StartContext`
 is draining races on the slice and may run a closer twice (closing the pool
 or the cache twice). Guard with `sync.Once` or a mutex; `ClearAux` has the
 same unsynchronised write.
+
+
+> **Resolved** in `fix: bearer scheme, log source, Round and concurrent shutdown`. Aux has a mutex; Shutdown and ClearAux take the closers out under it (TestShutdownIsSafeToCallConcurrently, run with -race).
 
 ---
 

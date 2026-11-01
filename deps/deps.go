@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ams-soft/nforge"
@@ -21,6 +22,8 @@ import (
 
 type Aux struct {
 	ShutdownFuncs []func(context.Context) error
+
+	mu sync.Mutex // guards ShutdownFuncs: Shutdown may be called from two places
 }
 type Deps struct {
 	Context context.Context
@@ -54,6 +57,8 @@ const (
 )
 
 func (d *Deps) addShutdownFunc(fn func(context.Context) error) {
+	d.Aux.mu.Lock()
+	defer d.Aux.mu.Unlock()
 	d.Aux.ShutdownFuncs = append(d.Aux.ShutdownFuncs, fn)
 }
 
@@ -66,14 +71,19 @@ func (d *Deps) Shutdown(ctx context.Context) error {
 	if d.Aux == nil {
 		return nil
 	}
-	var errs []error
+	// Take the functions out under the lock, so a second (concurrent or later)
+	// call finds nothing and no closer runs twice.
+	d.Aux.mu.Lock()
 	fns := d.Aux.ShutdownFuncs
+	d.Aux.ShutdownFuncs = nil
+	d.Aux.mu.Unlock()
+
+	var errs []error
 	for i := len(fns) - 1; i >= 0; i-- {
 		if err := fns[i](ctx); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	d.Aux.ShutdownFuncs = nil
 	return errors.Join(errs...)
 }
 
@@ -105,7 +115,12 @@ func (d *Deps) PingCache(ctx context.Context) error {
 }
 
 func (d *Deps) ClearAux() {
-	d.Aux = nil
+	if d.Aux == nil {
+		return
+	}
+	d.Aux.mu.Lock()
+	defer d.Aux.mu.Unlock()
+	d.Aux.ShutdownFuncs = nil
 }
 func (d *Deps) setupLogger(ctx context.Context, config config.Config) error {
 	if !config.IsLoggingEnabled() {

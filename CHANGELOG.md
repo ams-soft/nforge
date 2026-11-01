@@ -148,6 +148,16 @@ All notable changes to nForge are documented here. The format follows
   which breaks unrelated HTTP-only services when the API is served from an apex
   or shared domain; set it to `true` explicitly for a dedicated host.
 
+- `Authorization: Bearerx token` (any scheme that merely starts with
+  "Bearer") is now 401 `authentication required` like every other scheme, not
+  a 400 malformed bearer request.
+- Log records carry `source` (file:line) only in `env: local`, not in
+  dev/stg/prd or the OTel export.
+- `safecalc.Round` returns its input unchanged when there are no digits left to
+  round (`Round(1.5, 400)` was NaN, `Round(1e300, 10)` was +Inf).
+- `Deps.Shutdown` and `ClearAux` are safe to call concurrently: a closer never
+  runs twice when an application also shuts down on its own signal.
+
 ### Notes
 
 - **Upgrading:** requests that decode into types with a nested `Validate()`
