@@ -231,3 +231,26 @@ func TestReloadWipesTheReplacedSnapshotAfterItsLastUser(t *testing.T) {
 		}
 	}
 }
+
+// A jws profile must not share a typ with a jwt profile: whoever can make the
+// application sign bytes would mint that JWT.
+func TestJWSProfileCannotShareAJWTTyp(t *testing.T) {
+	cfg := testConfig(t)
+	var jwtTyp string
+	for _, p := range cfg.Profiles {
+		if p.Kind == KindJWTSigned {
+			jwtTyp = p.Typ
+			break
+		}
+	}
+	if jwtTyp == "" {
+		t.Fatal("test config has no jwt_signed profile")
+	}
+	for i, p := range cfg.Profiles {
+		if p.Kind == KindJWS {
+			cfg.Profiles[i].Typ = jwtTyp
+			break
+		}
+	}
+	mustIs(t, ValidateConfig(cfg), ErrInvalidConfig)
+}

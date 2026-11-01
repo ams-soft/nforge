@@ -58,7 +58,7 @@ type KeySourceConfig struct {
 type ProfileConfig struct {
 	Name                   string    `yaml:"name"`                    // required, [A-Za-z0-9_-]{1,64}
 	Kind                   string    `yaml:"kind"`                    // required: jws | jwe | jwt_signed | jwt_nested
-	Typ                    string    `yaml:"typ"`                     // required, case-sensitive; unique across JWT profiles
+	Typ                    string    `yaml:"typ"`                     // required, case-sensitive; unique across JWT profiles, and never a JWT profile's typ on a jws profile
 	SigningAlgorithm       string    `yaml:"signing_algorithm"`       // with signing_key: enables Sign / IssueJWT
 	SigningKey             string    `yaml:"signing_key"`             // kid with the sign operation
 	VerificationAlgorithms []string  `yaml:"verification_algorithms"` // with verification_keys: enables Verify / ValidateJWT
@@ -252,6 +252,14 @@ func ValidateConfig(cfg Config) error {
 				return configError(field+".typ", "jwt profiles must have distinct typ values")
 			}
 			typs[p.Typ] = true
+		}
+	}
+	// A JWS profile signs arbitrary bytes for the application. With a JWT
+	// profile's typ (and key) its output could pass as that JWT, so the two
+	// never share a typ.
+	for i := range cfg.Profiles {
+		if p := &cfg.Profiles[i]; p.Kind == KindJWS && typs[p.Typ] {
+			return configError(fmt.Sprintf("jose.profiles[%d].typ", i), "a jws profile cannot use the typ of a jwt profile")
 		}
 	}
 
