@@ -36,6 +36,12 @@ type snapshot struct {
 	profiles    map[string]*profile
 	jwks        []byte
 	fingerprint [32]byte
+
+	// users counts the admitted operations running on this snapshot and
+	// retired marks one that Reload replaced; both are guarded by
+	// Service.mu. A retired snapshot is wiped when its last user leaves.
+	users   int
+	retired bool
 }
 
 // profile is the resolved runtime policy of a ProfileConfig.
@@ -242,15 +248,28 @@ func (s *Service) acquire(ctx context.Context, op, profile string) (*snapshot, e
 		return nil, newError(ErrClosed, op, profile, "", "")
 	}
 	s.active++
-	return s.state.Load(), nil
+	snap := s.state.Load()
+	snap.users++
+	return snap, nil
 }
 
-func (s *Service) release() {
+func (s *Service) release(snap *snapshot) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.active--
+	snap.users--
+	if snap.retired && snap.users == 0 {
+		snap.wipe()
+	}
 	if s.closed && s.active == 0 {
 		s.drainOnce.Do(func() { close(s.drained) })
+	}
+}
+
+// wipe clears the secret material of every key of the snapshot.
+func (snap *snapshot) wipe() {
+	for _, k := range snap.keys {
+		k.wipe()
 	}
 }
 
@@ -287,7 +306,7 @@ func (s *Service) Check(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer s.release()
+	defer s.release(snap)
 	for _, p := range snap.profiles {
 		if !p.canProduce() && !p.canConsume() {
 			return newError(ErrOperationUnavailable, "check", p.name, "", "profile has no usable capability")
@@ -304,7 +323,7 @@ func (s *Service) PublicJWKS(ctx context.Context) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer s.release()
+	defer s.release(snap)
 	return slices.Clone(snap.jwks), nil
 }
 
@@ -313,10 +332,11 @@ func (s *Service) PublicJWKS(ctx context.Context) ([]byte, error) {
 // change profile policy. On failure the previous snapshot stays active.
 // In-flight operations finish on the snapshot they started with.
 func (s *Service) Reload(ctx context.Context) error {
-	if _, err := s.acquire(ctx, "reload", ""); err != nil {
+	snap, err := s.acquire(ctx, "reload", "")
+	if err != nil {
 		return err
 	}
-	defer s.release()
+	defer s.release(snap)
 	s.reloadMu.Lock()
 	defer s.reloadMu.Unlock()
 
@@ -330,7 +350,16 @@ func (s *Service) Reload(ctx context.Context) error {
 		}
 		return nil // identical material: keep the current snapshot
 	}
+	old := s.state.Load()
 	s.state.Store(next)
+	// The replaced snapshot is wiped as soon as the operations admitted
+	// before the swap have finished (possibly right now, by this release).
+	s.mu.Lock()
+	old.retired = true
+	if old.users == 0 {
+		old.wipe()
+	}
+	s.mu.Unlock()
 	return nil
 }
 
@@ -352,9 +381,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	select {
 	case <-s.drained:
 		s.wipeOnce.Do(func() {
-			for _, k := range s.state.Load().keys {
-				k.wipe()
-			}
+			s.state.Load().wipe()
 		})
 		return nil
 	case <-ctx.Done():

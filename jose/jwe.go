@@ -25,7 +25,7 @@ func (s *Service) Encrypt(ctx context.Context, profile string, plaintext []byte)
 	if err != nil {
 		return "", err
 	}
-	defer s.release()
+	defer s.release(snap)
 	p, err := snap.resolve(op, profile, KindJWE)
 	if err != nil {
 		return "", err
@@ -47,7 +47,7 @@ func (s *Service) Decrypt(ctx context.Context, profile, compact string) (*Decryp
 	if err != nil {
 		return nil, err
 	}
-	defer s.release()
+	defer s.release(snap)
 	p, err := snap.resolve(op, profile, KindJWE)
 	if err != nil {
 		return nil, err

@@ -23,7 +23,7 @@ func (s *Service) Sign(ctx context.Context, profile string, payload []byte) (str
 	if err != nil {
 		return "", err
 	}
-	defer s.release()
+	defer s.release(snap)
 	p, err := snap.resolve(op, profile, KindJWS)
 	if err != nil {
 		return "", err
@@ -45,7 +45,7 @@ func (s *Service) Verify(ctx context.Context, profile, compact string) (*Verifie
 	if err != nil {
 		return nil, err
 	}
-	defer s.release()
+	defer s.release(snap)
 	p, err := snap.resolve(op, profile, KindJWS)
 	if err != nil {
 		return nil, err

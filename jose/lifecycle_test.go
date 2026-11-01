@@ -20,7 +20,8 @@ func TestShutdownLifecycle(t *testing.T) {
 	}
 
 	// an admitted operation blocks the drain until released
-	if _, err := s.acquire(ctx, "test", ""); err != nil {
+	held, err := s.acquire(ctx, "test", "")
+	if err != nil {
 		t.Fatal(err)
 	}
 	short, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
@@ -35,7 +36,7 @@ func TestShutdownLifecycle(t *testing.T) {
 	_, err = s.PublicJWKS(ctx)
 	mustIs(t, err, ErrClosed)
 
-	s.release()
+	s.release(held)
 	if err := s.Shutdown(ctx); err != nil {
 		t.Fatalf("second shutdown must finish the drain: %v", err)
 	}
@@ -160,5 +161,73 @@ func TestIndependentInstances(t *testing.T) {
 	}
 	if _, err := b.Sign(ctx, "msg-ed", nil); err != nil {
 		t.Fatalf("shutting down one instance affected another: %v", err)
+	}
+}
+
+// A snapshot replaced by Reload is wiped once the operations admitted before
+// the swap have finished, not before and not never (G-19).
+func TestReloadWipesTheReplacedSnapshotAfterItsLastUser(t *testing.T) {
+	cfg := testConfig(t)
+	m := testMaterial(t)
+	s := newService(t, cfg, newTestClock().Option())
+
+	held, err := s.acquire(ctx, "test", "") // an in-flight operation on the old snapshot
+	if err != nil {
+		t.Fatal(err)
+	}
+	var secret []byte
+	for _, k := range held.keys {
+		if len(k.secret) > 0 {
+			secret = k.secret
+			break
+		}
+	}
+	if secret == nil {
+		t.Fatal("test config has no key with secret bytes")
+	}
+	if err := os.WriteFile(cfg.Keys[0].Source.File, pkcs8PEM(t, m.ed2), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reload(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s.state.Load() == held {
+		t.Fatal("reload did not replace the snapshot")
+	}
+	zero := func() bool {
+		for _, b := range secret {
+			if b != 0 {
+				return false
+			}
+		}
+		return true
+	}
+	if zero() {
+		t.Fatal("old snapshot wiped while an operation still uses it")
+	}
+	s.release(held)
+	if !zero() {
+		t.Fatal("old snapshot not wiped after its last user left")
+	}
+
+	// no in-flight user: wiped right at the swap
+	old := s.state.Load()
+	var oldSecret []byte
+	for _, k := range old.keys {
+		if len(k.secret) > 0 {
+			oldSecret = k.secret
+			break
+		}
+	}
+	if err := os.WriteFile(cfg.Keys[0].Source.File, pkcs8PEM(t, m.ed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reload(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range oldSecret {
+		if b != 0 {
+			t.Fatal("idle old snapshot must be wiped at the swap")
+		}
 	}
 }

@@ -32,7 +32,7 @@ func (s *Service) IssueJWT(ctx context.Context, profile string, registered Regis
 	if err != nil {
 		return "", err
 	}
-	defer s.release()
+	defer s.release(snap)
 	p, err := snap.resolve(op, profile, KindJWTSigned, KindJWTNested)
 	if err != nil {
 		return "", err
@@ -244,7 +244,7 @@ func (s *Service) ValidateJWT(ctx context.Context, profile, compact string, priv
 	if err != nil {
 		return nil, err
 	}
-	defer s.release()
+	defer s.release(snap)
 	p, err := snap.resolve(op, profile, KindJWTSigned, KindJWTNested)
 	if err != nil {
 		return nil, err
