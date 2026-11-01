@@ -20,7 +20,7 @@ PoC files were temporary and are deleted; each item says how to reproduce.
 | # | Sev | Evidence | Where | One line |
 |---|---|---|---|---|
 | G-01 | High | PoC | `codec/xml.go` | **RESOLVED** XML decode memory is quadratic in nesting depth: 683 KB -> 10 GB |
-| G-02 | Med-High | PoC | `config/config.go` | Unknown YAML keys ignored outside `jose`; a typo in `cors.origins` means "any origin" |
+| G-02 | Med-High | PoC | `config/config.go` | **RESOLVED** Unknown YAML keys ignored outside `jose`; a typo in `cors.origins` means "any origin" |
 | G-03 | Medium | PoC | `deps/deps.go` | Fatal startup errors are silent with default logging; no flush with OTel |
 | G-04 | Medium | CODE | `http/internal/openapi` | Docs page loads Swagger UI from a floating CDN version, no SRI, host-wide CSP allowlist |
 | G-05 | Medium | PoC | `codec/presence*.go` | **RESOLVED** JSON tree fallback is quadratic: 131 KB -> 337 MB |
@@ -31,19 +31,19 @@ PoC files were temporary and are deleted; each item says how to reproduce.
 | G-10 | Low | CODE | `http/transport.go` | HTTPS and HTTP/3 servers ignore customisations of `ServerHttp.Srv` |
 | G-11 | Low | CODE | `http/routes.go` | Docs, spec and readiness endpoints are public; spec rebuilt per request |
 | G-12 | Low | CODE | `http/` | Raw (untyped) routes have no request-body limit |
-| G-13 | Low | CODE | `config/config.go` | `${VAR}` that is unset silently becomes `""`; a missing `-config` file is silently ignored |
+| G-13 | Low | CODE | `config/config.go` | **RESOLVED** `${VAR}` that is unset silently becomes `""`; a missing `-config` file is silently ignored |
 | G-14 | Info | CODE | `http/internal/authn` | `Bearerx token` answers 400 instead of 401 |
 | G-15 | Medium | PoC | `cache/load.go` | `GetOrLoad` hard-fails on an undecodable entry and never calls the loader until the TTL ends |
-| G-16 | Medium | CODE | `config`, `logs` | `env` is never validated: `production`/`prod` runs at DEBUG and skips the prd overlay |
+| G-16 | Medium | CODE | `config`, `logs` | **RESOLVED** `env` is never validated: `production`/`prod` runs at DEBUG and skips the prd overlay |
 | G-17 | Low | CODE | `telemetry`, `http/internal/tracing` | 100 % sampling, no sampler setting; client picks the trace/request id and baggage |
 | G-18 | Low | CODE | `logs/logs.go` | `AddSource: true` on every record, including OTel export |
 | G-19 | Info | CODE | `jose/service.go` | `Reload` is never triggered by the framework; the replaced snapshot is not wiped |
 | G-20 | Info | CODE | `cache/load.go` | A shared load runs with the first caller's context values and hands its error to every waiter |
 | G-21 | Medium | PoC | `config/env.go` | Env-file values undergo `$VAR` expansion from the process env; passwords with `$NAME` are corrupted |
-| G-22 | Medium | PoC | `config/env.go` | Env-file keys that match no field are ignored (`HTTP_CORS_ORIGNS`) |
+| G-22 | Medium | PoC | `config/env.go` | **RESOLVED** Env-file keys that match no field are ignored (`HTTP_CORS_ORIGNS`) |
 | G-23 | Low-Med | CODE | `http/response.go` | Missing `Content-Type` is accepted: cross-site JSON POSTs without preflight |
 | G-24 | Low | CODE | `config/security.go` | HSTS `includeSubDomains` on by default |
-| G-25 | Low | CODE | `config/config.go` | Unreadable overlay file is skipped silently |
+| G-25 | Low | CODE | `config/config.go` | **RESOLVED** Unreadable overlay file is skipped silently |
 | G-26 | Low | CODE | `config/config.go` | `codec.max_payload_bytes` has no upper bound |
 | G-27 | Medium | PoC | `codec/fields.go`, `cbor.go`, `xml.go` | **RESOLVED** Cyclic values crash the process: CBOR/XML encode and `CheckRequired` (fatal stack overflow) |
 | G-28 | Low | PoC | `http/internal/capture` | **RESOLVED** `CheckRequired` walks every response (1.9 ms per MB) even with no `required` tags |
@@ -125,7 +125,7 @@ before decoding, public ones do not).
 
 ---
 
-### G-02 — Unknown config keys are ignored outside `jose` (Med-High, PoC)
+### G-02 — Unknown config keys are ignored outside `jose` (Med-High, PoC) [RESOLVED]
 
 **Where.** `config/config.go:255` `loadYAMLFile` ends with `root.Decode(cfg)`,
 which is permissive. Only `checkJOSEKeys` (line ~293) calls
@@ -169,6 +169,9 @@ the YAML path is the outlier.
 `jose` special handling if its message matters) and fail startup on unknown
 keys, naming the key and line. Keep a flag to opt out if existing deployments
 carry extra keys. Add tests for a typo in each security-relevant section.
+
+
+> **Resolved** in `fix(config): fail on configuration typos instead of defaulting`. Strict YAML (KnownFields) with top-level x- extension keys, strict env-file keys, env validated and normalized, explicit -config must exist, unreadable overlay is an error, unset ${VAR} reported in Config.Warnings and logged by deps. Tests: config/strict_test.go, deps TestConfigWarningsAreLogged.
 
 ---
 
@@ -389,7 +392,7 @@ at `codec.max_payload_bytes` (opt out per route).
 
 ---
 
-### G-13 — Silent configuration fallbacks (Low, CODE)
+### G-13 — Silent configuration fallbacks (Low, CODE) [RESOLVED]
 
 - `config/config.go` `expandEnvNodes`: an undefined `${VAR}` becomes `""`
   (documented). For `database.password`, `tls.cert_file`, `cache.redis.url`
@@ -402,6 +405,9 @@ at `codec.max_payload_bytes` (opt out per route).
 **Fix direction.** Log (or fail with an opt-out) when a `${VAR}` is unset;
 treat a missing file as an error when the path was given explicitly, and only
 ignore the default `./config.yaml`.
+
+
+> **Resolved** in `fix(config): fail on configuration typos instead of defaulting`. Strict YAML (KnownFields) with top-level x- extension keys, strict env-file keys, env validated and normalized, explicit -config must exist, unreadable overlay is an error, unset ${VAR} reported in Config.Warnings and logged by deps. Tests: config/strict_test.go, deps TestConfigWarningsAreLogged.
 
 ---
 
@@ -550,7 +556,7 @@ required-field case.
 
 ---
 
-### G-16 — `env` is never validated (Medium, CODE)
+### G-16 — `env` is never validated (Medium, CODE) [RESOLVED]
 
 **Where.** `config/config.go` `validateRequiredConfig` does not mention `Env`.
 `overlayFileFor` (`config/config.go:~327`) maps only `prd`/`stg`/`dev`
@@ -575,6 +581,9 @@ string, so `Prd` and `prd` would not share keys.
 **Fix direction.** Validate `env` against `local|dev|stg|prd` after trimming
 and lower-casing it (store the normalised value), and fail startup otherwise.
 Make the log-level function default to a *quieter* level, not DEBUG.
+
+
+> **Resolved** in `fix(config): fail on configuration typos instead of defaulting`. Strict YAML (KnownFields) with top-level x- extension keys, strict env-file keys, env validated and normalized, explicit -config must exist, unreadable overlay is an error, unset ${VAR} reported in Config.Warnings and logged by deps. Tests: config/strict_test.go, deps TestConfigWarningsAreLogged.
 
 ---
 
@@ -687,7 +696,7 @@ add a test with `$` in a password.
 
 ---
 
-### G-22 — Env-file keys that match nothing are ignored (Medium, PoC)
+### G-22 — Env-file keys that match nothing are ignored (Medium, PoC) [RESOLVED]
 
 Same root cause as G-02 but for the env file: `applyEnvVars` only *looks up*
 the keys of known fields (`vars[envKey]`), never iterates the file. Confirmed
@@ -697,6 +706,9 @@ with `HTTP_CORS_ORIGNS=https://a.example`: load succeeds and
 after a field was renamed: all silently ignored. Fix together with G-02:
 collect the file's keys, subtract the consumed ones and fail on leftovers
 (allow an opt-out prefix for variables meant for other tools).
+
+
+> **Resolved** in `fix(config): fail on configuration typos instead of defaulting`. Strict YAML (KnownFields) with top-level x- extension keys, strict env-file keys, env validated and normalized, explicit -config must exist, unreadable overlay is an error, unset ${VAR} reported in Config.Warnings and logged by deps. Tests: config/strict_test.go, deps TestConfigWarningsAreLogged.
 
 ---
 
@@ -739,13 +751,16 @@ Consider defaulting to `false` and documenting the trade-off.
 
 ---
 
-### G-25 — Overlay load errors are skipped silently (Low, CODE)
+### G-25 — Overlay load errors are skipped silently (Low, CODE) [RESOLVED]
 
 `config/config.go:~54`: `if _, err := os.Stat(overlay); err == nil { load }`.
 Any `Stat` error other than "not exist" (permission denied on the file or its
 directory, a stale NFS handle) is treated as "no overlay", so the production
 overlay is silently not applied. Same fail-open family as G-02/G-13/G-16.
 Treat `!errors.Is(err, fs.ErrNotExist)` as a startup error.
+
+
+> **Resolved** in `fix(config): fail on configuration typos instead of defaulting`. Strict YAML (KnownFields) with top-level x- extension keys, strict env-file keys, env validated and normalized, explicit -config must exist, unreadable overlay is an error, unset ${VAR} reported in Config.Warnings and logged by deps. Tests: config/strict_test.go, deps TestConfigWarningsAreLogged.
 
 ---
 

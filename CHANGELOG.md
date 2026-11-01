@@ -79,8 +79,22 @@ All notable changes to nForge are documented here. The format follows
   `codec:"required"` field and reaches no interface: it took about 1.9 ms per
   MB of response for nothing.
 
+- **Configuration typos fail the load instead of silently using a default.**
+  Unknown YAML keys are now an error in every section (they were ignored
+  outside `jose`: `http.cors.origns` left `origins` empty, which means "any
+  origin", and `http.security.enabld` left the security headers off).
+  Env-file keys that match no field are an error too. `env` must be `local`,
+  `dev`, `stg` or `prd` (it is lower-cased; `production`/`prod` used to run
+  at DEBUG without the production overlay). A `-config` file that does not
+  exist, and an overlay that cannot be read, are errors. Unset `${VAR}`
+  references are reported in `Config.Warnings` and logged at startup.
+  Top-level `x-*` keys are ignored, for application data.
+
 ### Notes
 
+- **Upgrading:** configs and env files with keys that match no field now
+  fail to load; rename or remove them (or move application data under a
+  top-level `x-` key).
 - Nothing changes for existing apps: with no `tls`/`http3` section the server
   is the same plain HTTP server, and `ServerHttp.Srv` is still that
   `*http.Server`.

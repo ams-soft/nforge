@@ -6,9 +6,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -41,7 +43,10 @@ func LoadFlags(configPath, envFilePath string) (*Config, error) {
 		basePath = filepath.Join(root, defaultConfigFileName)
 	}
 
-	if err := loadYAMLFile(basePath, cfg); err != nil {
+	// The default ./config.yaml may be absent (everything can come from the
+	// env file and defaults); a path the caller named must exist, otherwise a
+	// typo in -config silently starts the app with an empty configuration.
+	if err := loadYAMLFile(basePath, cfg, configPath != ""); err != nil {
 		return nil, fmt.Errorf("load base config %q: %w", basePath, err)
 	}
 
@@ -51,13 +56,27 @@ func LoadFlags(configPath, envFilePath string) (*Config, error) {
 		}
 	}
 
+	env, err := normalizeEnv(cfg.Env)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Env = env
+
 	if overlay := overlayFileFor(cfg.Env); overlay != "" {
+		// Only a missing overlay is skipped: an unreadable one (permissions,
+		// I/O error) must not silently drop the environment's settings.
 		if _, err := os.Stat(overlay); err == nil {
-			if err := loadYAMLFile(overlay, cfg); err != nil {
+			if err := loadYAMLFile(overlay, cfg, true); err != nil {
 				return nil, fmt.Errorf("load overlay %q: %w", overlay, err)
 			}
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("stat overlay %q: %w", overlay, err)
 		}
 	}
+	if env, err = normalizeEnv(cfg.Env); err != nil { // an overlay may set env too
+		return nil, err
+	}
+	cfg.Env = env
 
 	cfg = feedDefaults(cfg)
 
@@ -66,6 +85,21 @@ func LoadFlags(configPath, envFilePath string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// environments are the accepted values of env, in the form they are stored.
+var environments = []string{"local", "dev", "stg", "prd"}
+
+// normalizeEnv lower-cases env and rejects anything but local, dev, stg or
+// prd. Both the config overlay and the log level are chosen from it, so a
+// misspelling ("production", "prod") would otherwise run production with
+// debug logging and without its overlay.
+func normalizeEnv(env string) (string, error) {
+	n := strings.ToLower(strings.TrimSpace(env))
+	if !slices.Contains(environments, n) {
+		return "", fmt.Errorf("env must be one of %s, got %q", strings.Join(environments, ", "), env)
+	}
+	return n, nil
 }
 
 func feedDefaults(cfg *Config) *Config {
@@ -251,10 +285,15 @@ func validateAuth(cfg *Config) error {
 	return fmt.Errorf("http.auth.default_profile %q is not a configured jose profile", name)
 }
 
-func loadYAMLFile(path string, cfg *Config) error {
+// loadYAMLFile reads path into cfg. A missing file is an error only when
+// mustExist. Unknown keys are errors everywhere (a typo in a security setting
+// must not silently fall back to a default, which for http.cors.origins means
+// "any origin"); top-level keys starting with "x-" are ignored, as a place for
+// application-specific data in the same file.
+func loadYAMLFile(path string, cfg *Config, mustExist bool) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) && !mustExist {
 			return nil
 		}
 		return err
@@ -263,11 +302,41 @@ func loadYAMLFile(path string, cfg *Config) error {
 	if err := yaml.Unmarshal(data, &root); err != nil {
 		return err
 	}
-	expandEnvNodes(&root)
+	cfg.Warnings = append(cfg.Warnings, expandEnvNodes(&root)...)
+	dropExtensionKeys(&root)
 	if err := checkJOSEKeys(&root); err != nil {
 		return err
 	}
-	return root.Decode(cfg)
+	// Re-encode the expanded tree so the decoder can enforce KnownFields.
+	expanded, err := yaml.Marshal(&root)
+	if err != nil {
+		return err
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(expanded))
+	dec.KnownFields(true)
+	if err := dec.Decode(cfg); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	return nil
+}
+
+// dropExtensionKeys removes the top-level keys that start with "x-".
+func dropExtensionKeys(root *yaml.Node) {
+	doc := root
+	if doc.Kind == yaml.DocumentNode && len(doc.Content) > 0 {
+		doc = doc.Content[0]
+	}
+	if doc.Kind != yaml.MappingNode {
+		return
+	}
+	kept := doc.Content[:0]
+	for i := 0; i+1 < len(doc.Content); i += 2 {
+		if strings.HasPrefix(doc.Content[i].Value, "x-") {
+			continue
+		}
+		kept = append(kept, doc.Content[i], doc.Content[i+1])
+	}
+	doc.Content = kept
 }
 
 // checkJOSEKeys rejects unknown keys inside the `jose` section only (a typo
@@ -302,13 +371,34 @@ func checkJOSEKeys(root *yaml.Node) error {
 var envRefRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
 // expandEnvNodes replaces ${VAR} with the environment variable's value in all
-// YAML scalars; undefined variables become an empty string. Expansion is done
-// per node (not on the raw text) so that values with special YAML characters
-// do not break parsing.
-func expandEnvNodes(n *yaml.Node) {
+// YAML scalars; undefined variables become an empty string and are returned
+// (sorted, once each) so the caller can warn about them. Expansion is done per
+// node (not on the raw text) so that values with special YAML characters do
+// not break parsing.
+func expandEnvNodes(n *yaml.Node) []string {
+	unset := map[string]bool{}
+	expandEnv(n, unset)
+	names := make([]string, 0, len(unset))
+	for name := range unset {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	warnings := make([]string, len(names))
+	for i, name := range names {
+		warnings[i] = "environment variable " + name + " is referenced as ${" + name + "} in the configuration but is not set; it expands to an empty string"
+	}
+	return warnings
+}
+
+func expandEnv(n *yaml.Node, unset map[string]bool) {
 	if n.Kind == yaml.ScalarNode && strings.Contains(n.Value, "${") {
 		n.Value = envRefRe.ReplaceAllStringFunc(n.Value, func(ref string) string {
-			return os.Getenv(envRefRe.FindStringSubmatch(ref)[1])
+			name := envRefRe.FindStringSubmatch(ref)[1]
+			v, ok := os.LookupEnv(name)
+			if !ok {
+				unset[name] = true
+			}
+			return v
 		})
 		if n.Style&(yaml.SingleQuotedStyle|yaml.DoubleQuotedStyle) == 0 {
 			n.Tag = "" // re-resolve: `port: ${DB_PORT}` must become int, not !!str
@@ -316,7 +406,7 @@ func expandEnvNodes(n *yaml.Node) {
 		return
 	}
 	for _, c := range n.Content {
-		expandEnvNodes(c)
+		expandEnv(c, unset)
 	}
 }
 

@@ -230,6 +230,14 @@ func tenantFromContext(ctx context.Context) (string, error) {
 	return "", database.ErrNoTenant
 }
 
+// logConfigWarnings reports what the configuration loader accepted but the
+// operator should know about (an unset ${VAR} that expanded to nothing).
+func (d *Deps) logConfigWarnings() {
+	for _, w := range d.Config.Warnings {
+		d.Logger.WarnContext(d.Context, "[ConfigModule] "+w)
+	}
+}
+
 func NewDeps(config config.Config) Deps {
 	ctx := context.Background()
 
@@ -254,6 +262,7 @@ func NewDeps(config config.Config) Deps {
 		deps.Logger.InfoContext(deps.Context, "  [LoggerModule] Logger setup completed")
 	}
 
+	deps.logConfigWarnings()
 	deps.setupCodec(config)
 	deps.setupDatabase(config)
 	deps.setupJOSE(config)

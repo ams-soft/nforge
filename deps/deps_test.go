@@ -1,6 +1,7 @@
 package deps
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -169,5 +170,19 @@ func TestErrorPrefix(t *testing.T) {
 		if !strings.HasPrefix(err.Error(), "deps: ") {
 			t.Errorf("%q lacks the package prefix", err)
 		}
+	}
+}
+
+func TestConfigWarningsAreLogged(t *testing.T) {
+	var buf bytes.Buffer
+	d := Deps{
+		Context: context.Background(),
+		Logger:  *slog.New(slog.NewTextHandler(&buf, nil)),
+		Config:  config.Config{Warnings: []string{"environment variable DB_PASSWORD is not set"}},
+	}
+	d.logConfigWarnings()
+	out := buf.String()
+	if !strings.Contains(out, "level=WARN") || !strings.Contains(out, "[ConfigModule]") || !strings.Contains(out, "DB_PASSWORD") {
+		t.Fatalf("warning not logged: %q", out)
 	}
 }

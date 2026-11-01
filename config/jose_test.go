@@ -80,10 +80,10 @@ func TestJOSEUnknownKeysRejected(t *testing.T) {
 	if _, err := LoadFlags(writeConfig(t, text), ""); err == nil || !strings.Contains(err.Error(), "publsh") {
 		t.Fatalf("typo inside jose must fail: %v", err)
 	}
-	// outside jose, unknown keys keep being ignored
+	// unknown keys are rejected everywhere (see strict_test.go)
 	text = joseYAML + "\nunknown_section:\n  a: 1\n"
-	if _, err := LoadFlags(writeConfig(t, text), ""); err != nil {
-		t.Fatalf("unknown keys outside jose: %v", err)
+	if _, err := LoadFlags(writeConfig(t, text), ""); err == nil || !strings.Contains(err.Error(), "unknown_section") {
+		t.Fatalf("unknown keys outside jose must fail: %v", err)
 	}
 }
 

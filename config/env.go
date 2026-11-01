@@ -4,6 +4,7 @@ import (
 	"encoding"
 	"fmt"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -16,20 +17,40 @@ func applyEnvFile(path string, cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	return applyEnvVars(reflect.ValueOf(cfg).Elem(), nil, vars)
+	used := map[string]bool{}
+	if err := applyEnvVars(reflect.ValueOf(cfg).Elem(), nil, vars, used); err != nil {
+		return err
+	}
+	// A key that names no field is a typo (HTTP_CORS_ORIGNS) or a stale
+	// leftover, and ignoring it would silently keep the default, which for a
+	// security setting is the unsafe one.
+	var unknown []string
+	for key := range vars {
+		if !used[key] {
+			unknown = append(unknown, key)
+		}
+	}
+	if len(unknown) > 0 {
+		slices.Sort(unknown)
+		return fmt.Errorf("unknown keys %s: a key is the YAML path in upper case joined by \"_\" (for example HTTP_SERVER_PORT)", strings.Join(unknown, ", "))
+	}
+	return nil
 }
 
-func applyEnvVars(v reflect.Value, prefix []string, vars map[string]string) error {
+func applyEnvVars(v reflect.Value, prefix []string, vars map[string]string, used map[string]bool) error {
 	t := v.Type()
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		fv := v.Field(i)
+		if !field.IsExported() || field.Tag.Get("yaml") == "-" {
+			continue // not configuration (load-time values such as OnlineSince, Warnings)
+		}
 
 		name := yamlFieldName(field)
 		path := append(append([]string{}, prefix...), name)
 
 		if fv.Kind() == reflect.Struct {
-			if err := applyEnvVars(fv, path, vars); err != nil {
+			if err := applyEnvVars(fv, path, vars, used); err != nil {
 				return err
 			}
 			continue
@@ -40,6 +61,7 @@ func applyEnvVars(v reflect.Value, prefix []string, vars map[string]string) erro
 		if !ok {
 			continue // includes sequences of structs (jose.keys, jose.profiles): YAML only
 		}
+		used[envKey] = true
 		if fv.Kind() == reflect.Map {
 			return fmt.Errorf("field %s (env %s): maps cannot be set from the env file; use YAML", strings.Join(path, "."), envKey)
 		}

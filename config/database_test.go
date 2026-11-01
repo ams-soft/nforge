@@ -34,7 +34,7 @@ database:
 	}
 
 	var cfg Config
-	if err := loadYAMLFile(path, &cfg); err != nil {
+	if err := loadYAMLFile(path, &cfg, true); err != nil {
 		t.Fatal(err)
 	}
 	db := cfg.Database

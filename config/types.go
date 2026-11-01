@@ -18,12 +18,16 @@ type Config struct {
 	Codec    CodecConfig     `yaml:"codec"`
 	JOSE     jose.Config     `yaml:"jose"`  // JWS/JWE/JWT; disabled by default (deps.JOSE is nil)
 	Cache    cache.Config    `yaml:"cache"` // Redis or memory cache; disabled by default (deps.Cache is nil)
+
+	// Warnings are problems the loader accepted (an unset ${VAR} that expanded
+	// to an empty string, ...). deps.NewDeps logs them once the logger exists.
+	Warnings []string `yaml:"-"`
 }
 
 type AppConfig struct {
 	Name        string `yaml:"name"`
 	Version     string `yaml:"version"`
-	OnlineSince string
+	OnlineSince string `yaml:"-"` // set at load time
 }
 
 type HealthConfig struct {

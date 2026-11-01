@@ -279,10 +279,15 @@ Built-in routes registered by `NewHTTPServer`:
 
 1. Start with `Config{Env: "local"}`.
 2. **Base YAML**: `-config` path, or `./config.yaml` in the **current working
-   directory**. A missing file is *not* an error (it just yields empty config,
-   which then fails validation on `app.name`).
+   directory**. A `-config` path that does not exist is an error; only the
+   default `./config.yaml` may be absent (it just yields empty config, which
+   then fails validation on `app.name`). **Unknown keys are errors** in every
+   section (`KnownFields`): a typo such as `http.cors.origns` would otherwise
+   leave `origins` empty, which means "any origin". Top-level keys starting
+   with `x-` are ignored (room for application data in the same file).
    - `${VAR}` references in any YAML scalar are expanded from the **process
-     environment** (undefined → empty string). Expansion is per YAML node, not
+     environment** (undefined → empty string, reported in `Config.Warnings`
+     and logged as WARN by `deps.NewDeps`). Expansion is per YAML node, not
      on raw text, so values with YAML special characters are safe. For
      unquoted scalars the tag is reset so `port: ${DB_PORT}` still decodes as
      an int; quoted scalars stay strings.
@@ -294,16 +299,20 @@ Built-in routes registered by `NewHTTPServer`:
    checked), bool, floats, `time.Duration` (`"5s"`), pointers, `[]string`
    (comma-separated), and any `encoding.TextUnmarshaler` (e.g. `ByteSize`).
    Note: only the env **file** is read this way — real process env vars are
-   only used via `${VAR}` in YAML. Sequences of structs (`jose.keys`,
+   only used via `${VAR}` in YAML. A key that matches no field is an error
+   (`unknown keys ...`), as are lower-case keys; `Warnings` and `OnlineSince`
+   are load-time values and cannot be set. Sequences of structs (`jose.keys`,
    `jose.profiles`) are YAML-only: they are skipped, and an env key naming
    one (e.g. `JOSE_KEYS`) is an explicit error; use `${VAR}` inside the YAML
    entries instead. Scalar JOSE leaves work (`JOSE_LIMITS_MAX_TOKEN_BYTES`,
    `JOSE_JWKS_CACHE_MAX_AGE`, `HTTP_AUTH_REALM`).
-4. **Overlay**: based on the (possibly overridden) `env`, case-insensitive:
-   `prd` → `config.prd.yaml`, `stg` → `config.stg.yaml`, `dev` →
-   `config.dev.yaml`; `local` has none. Path is relative to the **CWD**, not
-   to the base config's directory. Loaded only if it exists; it overrides the
-   env file too.
+4. **Overlay**: based on the (possibly overridden) `env`, which must be one of
+   `local`, `dev`, `stg`, `prd` (case-insensitive; stored lower-case; anything
+   else is a load error): `prd` → `config.prd.yaml`, `stg` →
+   `config.stg.yaml`, `dev` → `config.dev.yaml`; `local` has none. Path is
+   relative to the **CWD**, not to the base config's directory. A missing file
+   is skipped; any other `Stat` or read error is a load error. It overrides
+   the env file too.
 5. **Defaults** (`feedDefaults`).
 6. **Validation** (`validateRequiredConfig`).
 
@@ -1918,7 +1927,7 @@ algorithm/kid/typ, boundaries), not only round trips.
     `http.docs.auth: none` panics at startup. On `AddDocRoute` it is still
     documentation only — raw routes need `Authenticate` explicitly.
 14. **`deps.JOSE` is nil when `jose.enabled: false`**; `Authenticate(nil, …)`
-    panics. `jose` YAML rejects unknown keys (typos fail at load time).
+    panics. Unknown YAML keys fail at load time in every section.
 15. **JOSE defaults to HS256**: a key without `algorithm` is HS256 (so a
     `dir` key must say `algorithm: dir`, and an EdDSA/RSA file must declare
     its algorithm). A token whose `typ`, `kid` or `alg` does not match the
