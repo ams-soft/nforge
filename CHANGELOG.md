@@ -37,6 +37,18 @@ All notable changes to nForge are documented here. The format follows
   every listener before serving and is all-or-nothing.
 - The default `http.docs.hosts` uses `https://…:{tls.port}` when HTTPS is on
   and plain HTTP only redirects or is closed.
+- **JSON decode is 37-55% faster, and strict or `codec:"required"` decode
+  49-57% faster.** Targets that cannot reach an interface (`any`,
+  `map[string]any`, `[]any`) are decoded with `json.Unmarshal` instead of a
+  `Decoder`, which halves the memory of a typical decode (3.9 MB → 1.8 MB on
+  a ~1 MB payload). Targets that reach an interface keep the `Decoder` with
+  `UseNumber`, so 64-bit integers inside `any` stay exact. Syntax errors are
+  rerun through the `Decoder` path, so error types, messages and offsets are
+  unchanged. The presence walker no longer re-runs the eight `Implements`
+  checks of `isOpaque` for every value (36% of its CPU): the answer is cached
+  per type, as are the walker's descend decision and the field positions.
+  Measured on small (0.6 KB), medium (20 KB) and large (1 MB) payloads.
+  `Codec.DecodeFrom` is unchanged.
 
 ### Notes
 
@@ -44,6 +56,14 @@ All notable changes to nForge are documented here. The format follows
   is the same plain HTTP server, and `ServerHttp.Srv` is still that
   `*http.Server`.
 - Open UDP/8443 in firewalls and load balancers for HTTP/3.
+- The `codec` package imports `encoding/json/jsontext`, so it needs the
+  `jsonv2` experiment, which Go 1.27 enables by default: building with
+  `GOEXPERIMENT=nojsonv2` fails. Benchmarks showed no gain from switching
+  the codec to `encoding/json/v2` (encode ties; decode is within about 10% on
+  medium and large payloads and about 30% on a 0.6 KB one once the changes
+  above are in) and v2 changes `time.Duration`, nil
+  slices, key case matching and numbers in `any`, so the codec stays on
+  `encoding/json`.
 
 ## [v0.1.2] - 2026-10-18
 

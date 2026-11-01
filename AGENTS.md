@@ -1030,8 +1030,13 @@ type User struct {
 
 ### 8.2 Formats
 
-- **JSON**: stdlib; `UseNumber` (no int64 precision loss in `any`); trailing
-  data is an error.
+- **JSON**: stdlib; trailing data is an error. `Decode` uses `json.Unmarshal`
+  when `jsonNeedsNumber(t)` is false (no interface reachable from the target,
+  cached per type), otherwise a `Decoder` with `UseNumber` (no int64
+  precision loss in `any`; `Unmarshal` cannot enable it). A syntax error from
+  `Unmarshal` is rerun through the `Decoder` path so messages and offsets
+  stay identical (`TestJSONDecodeBytesMatchesDecoder`). `DecodeFrom` keeps
+  the `Decoder`.
 - **CBOR** (`fxamacker/cbor/v2`): `time.Time` as RFC 3339 with nanoseconds;
   duplicate map keys rejected; trailing data is an error.
 - **XML**: custom field mapping on top of `encoding/xml` tokens (so the json-tag
@@ -1073,7 +1078,13 @@ r, err := codec.New(codec.Config{
   duplicate names, one field matched by two spellings and names with invalid
   UTF-8. The two must report identical errors: `TestPresenceJSONMatchesTree`
   and `FuzzPresenceJSON` compare them. CBOR still decodes a generic tree
-  (a second pass).
+  (a second pass). The walker asks per value whether to descend, so
+  `isOpaque`, `shouldWalk` and the `posOf` field index are cached per type:
+  an uncached `isOpaque` (eight `Implements` checks) was 36% of strict decode.
+  What remains is mostly `jsontext` tokenizing the payload a second time.
+  Native `encoding/json/v2` was measured and rejected (encode ties; it
+  changes `time.Duration`, nil slices, key case, `any` numbers and has no
+  required fields).
 - Process default: initialized in `init()` with json+cbor+xml, permissive,
   5 MiB; replaced once by `deps.NewDeps` via `SetDefault`.
 
@@ -1939,3 +1950,7 @@ algorithm/kid/typ, boundaries), not only round trips.
 30. **The example certificate is public**: `_examples/basic/certs/localhost.key`
     is committed on purpose. Never deploy or trust it; the framework has no
     default certificate.
+31. **`codec` needs the `jsonv2` Go experiment**: it imports
+    `encoding/json/jsontext` (the presence walker). Go 1.27 enables it by
+    default; `GOEXPERIMENT=nojsonv2` makes `go build ./codec` fail with
+    "build constraints exclude all Go files".
