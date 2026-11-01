@@ -68,6 +68,17 @@ All notable changes to nForge are documented here. The format follows
   is reported, which also removes the same blow-up from the JSON/CBOR presence
   fallback (131 KB -> 337 MB before).
 
+- **A response (or encode input) that contains a reference cycle is an error,
+  not a crash.** The CBOR library and the XML encoder recursed until the Go
+  stack overflowed, which kills the whole process, and `codec.CheckRequired`
+  (run on every typed-route response) did the same. All three now return an
+  `EncodeError` (a typed route answers `500 failed to build the response`).
+  Only fields the format encodes count, and a pointer reached twice by
+  different routes is not a cycle.
+- `codec.CheckRequired` no longer walks a response whose type has no
+  `codec:"required"` field and reaches no interface: it took about 1.9 ms per
+  MB of response for nothing.
+
 ### Notes
 
 - Nothing changes for existing apps: with no `tls`/`http3` section the server

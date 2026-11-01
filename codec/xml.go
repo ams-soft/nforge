@@ -62,6 +62,9 @@ func (c *xmlCodec) EncodeTo(w io.Writer, v any) error {
 	if err := analyze(rv.Type()); err != nil {
 		return err
 	}
+	if err := checkAcyclic(fmtXML, rv); err != nil {
+		return err // before the header: nothing is written
+	}
 	if _, err := io.WriteString(w, xml.Header); err != nil {
 		return err
 	}

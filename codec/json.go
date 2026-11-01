@@ -82,7 +82,7 @@ func (c *jsonCodec) DecodeFrom(r io.Reader, v any) error {
 
 // jsonDecodeBytes decodes data into v. json.Unmarshal is markedly cheaper than
 // a Decoder, but it cannot enable UseNumber, so it is used only when no
-// interface is reachable from t (see jsonNeedsNumber); other targets keep the
+// interface is reachable from t (see reachesInterface); other targets keep the
 // Decoder path and its int64-safe numbers.
 //
 // A syntax error is rerun through jsonDecodeAll so the error (empty payload,
@@ -91,7 +91,7 @@ func (c *jsonCodec) DecodeFrom(r io.Reader, v any) error {
 // UnmarshalJSON that ran before the syntax error was found may run twice, and
 // the target keeps the same partial state a failed decode always left.
 func jsonDecodeBytes(data []byte, v any, t reflect.Type) error {
-	if jsonNeedsNumber(t) {
+	if reachesInterface(t) {
 		return jsonDecodeAll(bytes.NewReader(data), v)
 	}
 	err := json.Unmarshal(data, v)
@@ -107,21 +107,22 @@ func jsonDecodeBytes(data []byte, v any, t reflect.Type) error {
 
 var needsNumberCache sync.Map // reflect.Type -> bool
 
-// jsonNeedsNumber reports whether a value of type t can reach an interface
-// (any, map[string]any, []any, ...), where the decoder must use json.Number so
-// 64-bit integers are not rounded through float64. Types with their own
-// unmarshalers are opaque: they receive raw bytes and the option never
-// applies to them. The result is cached per type.
-func jsonNeedsNumber(t reflect.Type) bool {
+// reachesInterface reports whether a value of type t can reach an interface
+// (any, map[string]any, []any, ...). The JSON decoder then needs json.Number
+// so 64-bit integers are not rounded through float64, and the response and
+// cycle checks must look at the dynamic values. Types with their own
+// (un)marshalers are opaque: the codec never looks inside them. The result is
+// cached per type.
+func reachesInterface(t reflect.Type) bool {
 	if v, ok := needsNumberCache.Load(t); ok {
 		return v.(bool)
 	}
-	r := jsonNeedsNumberRec(t, map[reflect.Type]bool{})
+	r := reachesInterfaceRec(t, map[reflect.Type]bool{})
 	needsNumberCache.Store(t, r)
 	return r
 }
 
-func jsonNeedsNumberRec(t reflect.Type, seen map[reflect.Type]bool) bool {
+func reachesInterfaceRec(t reflect.Type, seen map[reflect.Type]bool) bool {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
@@ -134,10 +135,10 @@ func jsonNeedsNumberRec(t reflect.Type, seen map[reflect.Type]bool) bool {
 	seen[t] = true
 	switch t.Kind() {
 	case reflect.Slice, reflect.Array, reflect.Map:
-		return jsonNeedsNumberRec(t.Elem(), seen)
+		return reachesInterfaceRec(t.Elem(), seen)
 	case reflect.Struct:
 		for i := range t.NumField() {
-			if jsonNeedsNumberRec(t.Field(i).Type, seen) {
+			if reachesInterfaceRec(t.Field(i).Type, seen) {
 				return true
 			}
 		}

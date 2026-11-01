@@ -39,6 +39,9 @@ func (c *cborCodec) Encode(v any) ([]byte, error) {
 	if err := analyze(reflect.TypeOf(v)); err != nil {
 		return nil, err
 	}
+	if err := checkAcyclic(fmtCBOR, reflect.ValueOf(v)); err != nil {
+		return nil, err
+	}
 	b, err := c.enc.Marshal(v)
 	if err != nil {
 		return nil, cborEncodeErr(err)
@@ -48,6 +51,9 @@ func (c *cborCodec) Encode(v any) ([]byte, error) {
 
 func (c *cborCodec) EncodeTo(w io.Writer, v any) error {
 	if err := analyze(reflect.TypeOf(v)); err != nil {
+		return err
+	}
+	if err := checkAcyclic(fmtCBOR, reflect.ValueOf(v)); err != nil {
 		return err
 	}
 	if err := c.enc.NewEncoder(w).Encode(v); err != nil {

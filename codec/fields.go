@@ -2,7 +2,6 @@ package codec
 
 import (
 	"reflect"
-	"strconv"
 )
 
 // FieldInfo describes a struct field as the codec sees it in a format:
@@ -61,11 +60,26 @@ func IsOpaque(t reflect.Type) bool { return isOpaque(t) }
 // it cannot be nil (pointer, slice, map, interface) nor empty when it has
 // omitempty/omitzero. It is the encode-side mirror of the presence check done
 // on decode.
+//
+// It walks the value only when that can find something: the type reaches a
+// `codec:"required"` field (hasRequired) or an interface, whose dynamic value
+// is unknown. A value that contains a reference cycle is an EncodeError
+// instead of an endless recursion.
 func CheckRequired(v any) error {
-	return checkRequired(reflect.ValueOf(v), "")
+	rv := reflect.ValueOf(v)
+	if !rv.IsValid() {
+		return nil
+	}
+	if t := rv.Type(); !hasRequired(t) && !reachesInterface(t) {
+		return nil
+	}
+	if err := checkAcyclic(fmtJSON, rv); err != nil {
+		return err
+	}
+	return checkRequired(rv, nil)
 }
 
-func checkRequired(v reflect.Value, path string) error {
+func checkRequired(v reflect.Value, path *xpath) error {
 	for v.IsValid() && (v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface) {
 		if v.IsNil() {
 			return nil
@@ -80,10 +94,10 @@ func checkRequired(v reflect.Value, path string) error {
 		for _, fl := range getStruct(v.Type()).fields[fmtJSON] {
 			fv, ok := fieldByIndex(v, fl.index)
 			if fl.required && (!ok || absent(fl, fv)) {
-				return &MissingFieldError{Format: "response", Field: joinPath(path, fl.name)}
+				return &MissingFieldError{Format: "response", Field: path.leaf(fl.name)}
 			}
 			if ok {
-				if err := checkRequired(fv, joinPath(path, fl.name)); err != nil {
+				if err := checkRequired(fv, path.field(fl.name)); err != nil {
 					return err
 				}
 			}
@@ -93,7 +107,7 @@ func checkRequired(v reflect.Value, path string) error {
 			return nil
 		}
 		for i := range v.Len() {
-			if err := checkRequired(v.Index(i), path+"["+strconv.Itoa(i)+"]"); err != nil {
+			if err := checkRequired(v.Index(i), path.at(i)); err != nil {
 				return err
 			}
 		}
@@ -101,7 +115,7 @@ func checkRequired(v reflect.Value, path string) error {
 		iter := v.MapRange()
 		for iter.Next() {
 			k, _ := keyText(iter.Key())
-			if err := checkRequired(iter.Value(), joinPath(path, k)); err != nil {
+			if err := checkRequired(iter.Value(), path.field(k)); err != nil {
 				return err
 			}
 		}

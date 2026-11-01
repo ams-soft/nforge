@@ -45,8 +45,8 @@ PoC files were temporary and are deleted; each item says how to reproduce.
 | G-24 | Low | CODE | `config/security.go` | HSTS `includeSubDomains` on by default |
 | G-25 | Low | CODE | `config/config.go` | Unreadable overlay file is skipped silently |
 | G-26 | Low | CODE | `config/config.go` | `codec.max_payload_bytes` has no upper bound |
-| G-27 | Medium | PoC | `codec/fields.go`, `cbor.go`, `xml.go` | Cyclic values crash the process: CBOR/XML encode and `CheckRequired` (fatal stack overflow) |
-| G-28 | Low | PoC | `http/internal/capture` | `CheckRequired` walks every response (1.9 ms per MB) even with no `required` tags |
+| G-27 | Medium | PoC | `codec/fields.go`, `cbor.go`, `xml.go` | **RESOLVED** Cyclic values crash the process: CBOR/XML encode and `CheckRequired` (fatal stack overflow) |
+| G-28 | Low | PoC | `http/internal/capture` | **RESOLVED** `CheckRequired` walks every response (1.9 ms per MB) even with no `required` tags |
 | G-29 | Low-Med | CODE | `codec/registry.go` | `Validate()` only runs on the root value, never on nested types |
 | G-30 | Med-High | PoC | `config`, `database` | **RESOLVED** `config.Config` and `database.Config` print passwords/DSNs; slog JSON leaks every secret incl. JOSE key |
 | G-31 | Low | CODE | `jose/config.go` | No ceiling on JWT `ttl`/`max_ttl` |
@@ -759,7 +759,7 @@ Validate a sane ceiling (for example 64 MiB) and log the effective value.
 
 ---
 
-### G-27 — Cyclic values crash the process in CBOR/XML encode and in `CheckRequired` (Medium, PoC)
+### G-27 — Cyclic values crash the process in CBOR/XML encode and in `CheckRequired` (Medium, PoC) [RESOLVED]
 
 **Where.** `codec/fields.go:84` `checkRequired` (recursive, follows pointers,
 slices and maps with no cycle detection); `codec/cbor.go` `Encode`
@@ -802,9 +802,12 @@ or route with `Codec: "cbor"|"xml"`.
 depth guard (the library has no cycle detection). Return `EncodeError`.
 Regression tests with a self-referential value for each format.
 
+
+> **Resolved** in `fix(codec): reject reference cycles instead of crashing`. checkAcyclic (codec/cycle.go) runs before the CBOR and XML encoders and CheckRequired; typed routes answer 500. Tests: TestEncodeRejectsCycles, TestCheckRequiredHandlesCycles, TestTypedRouteWithCyclicResponseIsA500, plus no-false-positive tests for shared pointers and json:"-" back-references.
+
 ---
 
-### G-28 — `CheckRequired` walks every response even without `required` tags (Low, PoC)
+### G-28 — `CheckRequired` walks every response even without `required` tags (Low, PoC) [RESOLVED]
 
 `http/internal/capture/capture.go` `conform` calls `codec.CheckRequired` for
 every successful typed response. On a 1 MB response (1089 orders x 3 lines)
@@ -813,6 +816,9 @@ with no `codec:"required"` field anywhere the walk takes **1.9 ms per call**
 The decode side already skips the presence pass when `hasRequired(t)` is
 false; the response side should do the same (`if !hasRequired(t) { skip }`).
 Roughly halves the per-response CPU of large untagged responses.
+
+
+> **Resolved** in `fix(codec): reject reference cycles instead of crashing`. CheckRequired returns immediately for types with no required field and no reachable interface (TestCheckRequiredSkipsTypesWithoutRequiredFields: 0 allocations on a 1 MB response).
 
 ---
 

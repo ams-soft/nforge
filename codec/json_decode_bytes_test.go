@@ -52,8 +52,8 @@ func TestJSONNeedsNumber(t *testing.T) {
 		{json.RawMessage{}, false},
 	}
 	for _, c := range cases {
-		if got := jsonNeedsNumber(reflect.TypeOf(c.v)); got != c.want {
-			t.Errorf("jsonNeedsNumber(%T) = %v, want %v", c.v, got, c.want)
+		if got := reachesInterface(reflect.TypeOf(c.v)); got != c.want {
+			t.Errorf("reachesInterface(%T) = %v, want %v", c.v, got, c.want)
 		}
 	}
 }

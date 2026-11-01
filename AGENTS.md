@@ -1052,6 +1052,15 @@ type User struct {
   rendered only when an error is built: never concatenate path strings per
   level, that is O(depth^2) memory.
 
+Cycles: the CBOR and XML encoders and `CheckRequired` run `checkAcyclic`
+(`cycle.go`) first, because a self-referential value overflows the Go stack,
+which is fatal (not a recoverable panic). It walks only types that
+`mayCycle` (a recursive type graph or a reachable interface), follows only the
+fields the format encodes (a `json:"-"` back-reference is fine) and flags
+ancestors only, so shared pointers are not cycles. `CheckRequired` also
+returns at once for types that cannot hold a required field (`hasRequired`)
+or a dynamic value (`reachesInterface`).
+
 ### 8.3 Registry
 
 ```go
