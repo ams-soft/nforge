@@ -11,7 +11,8 @@ import (
 )
 
 // Config is the `database:` section of the Nano Forge configuration.
-// It contains secrets: never log it with %v/%+v (LogValue redacts it for slog).
+// It contains secrets: LogValue and Format redact the password and the DSN
+// for slog and for every fmt verb; encoding/json does not, so never marshal it.
 type Config struct {
 	Enabled bool `yaml:"enabled"` // deps.NewDeps only opens the pool when true
 
@@ -118,12 +119,50 @@ func (c Config) LogValue() slog.Value {
 	)
 }
 
+// secretDSNParams are the DSN query parameters whose values are credentials.
+var secretDSNParams = []string{"password", "sslpassword"}
+
 func redactDSN(dsn string) string {
 	if strings.TrimSpace(dsn) == "" {
 		return ""
 	}
-	if u, err := url.Parse(dsn); err == nil && u.Scheme != "" {
-		return u.Redacted()
+	u, err := url.Parse(dsn)
+	if err != nil || u.Scheme == "" {
+		return "[REDACTED]" // libpq key=value form or anything unparsable
 	}
-	return "[REDACTED]"
+	if q := u.Query(); len(q) > 0 {
+		masked := false
+		for _, name := range secretDSNParams {
+			if q.Has(name) {
+				q.Set(name, "xxxxx")
+				masked = true
+			}
+		}
+		if masked {
+			u.RawQuery = q.Encode()
+		}
+	}
+	return u.Redacted()
+}
+
+// redacted returns a copy that is safe to print: the password is masked and
+// the DSN is redacted (userinfo password and secret query parameters).
+func (c Config) redacted() Config {
+	if c.Password != "" {
+		c.Password = "[REDACTED]"
+	}
+	c.DSN = redactDSN(c.DSN)
+	return c
+}
+
+// RedactedCopy returns the configuration with its secrets masked, for code
+// (such as config.Config.Redacted) that prints larger structures.
+func (c Config) RedactedCopy() Config { return c.redacted() }
+
+// Format redacts the password and the DSN for every fmt verb (%v, %+v, %#v,
+// %s), including when Config is printed as part of a larger struct, where
+// LogValue is not consulted.
+func (c Config) Format(f fmt.State, verb rune) {
+	type plain Config
+	_, _ = fmt.Fprintf(f, fmt.FormatString(f, verb), plain(c.redacted()))
 }

@@ -48,11 +48,11 @@ PoC files were temporary and are deleted; each item says how to reproduce.
 | G-27 | Medium | PoC | `codec/fields.go`, `cbor.go`, `xml.go` | Cyclic values crash the process: CBOR/XML encode and `CheckRequired` (fatal stack overflow) |
 | G-28 | Low | PoC | `http/internal/capture` | `CheckRequired` walks every response (1.9 ms per MB) even with no `required` tags |
 | G-29 | Low-Med | CODE | `codec/registry.go` | `Validate()` only runs on the root value, never on nested types |
-| G-30 | Med-High | PoC | `config`, `database` | `config.Config` and `database.Config` print passwords/DSNs; slog JSON leaks every secret incl. JOSE key |
+| G-30 | Med-High | PoC | `config`, `database` | **RESOLVED** `config.Config` and `database.Config` print passwords/DSNs; slog JSON leaks every secret incl. JOSE key |
 | G-31 | Low | CODE | `jose/config.go` | No ceiling on JWT `ttl`/`max_ttl` |
 | G-32 | Low | CODE | `cache`, `database` | Credentials allowed over plain TCP to remote hosts, no warning |
 | G-33 | Low | CODE | `cache` | No atomic increment-with-TTL: counters can live forever |
-| G-34 | Low-Med | PoC | `database/config.go` | `redactDSN` leaves `?password=` and `?sslpassword=` visible |
+| G-34 | Low-Med | PoC | `database/config.go` | **RESOLVED** `redactDSN` leaves `?password=` and `?sslpassword=` visible |
 | G-35 | Low-Med | CODE | `http/server.go`, `database` | No handler timeout and no `statement_timeout` by default |
 | G-36 | Medium | PoC | `config/bytesize.go` | `ByteSize` overflows to `MinInt64` with no error (cache copy is correct) |
 | G-37 | Low | CODE | `cache`, `codec` | `cache.max_value_bytes` can exceed `codec.max_payload_bytes`: stored but unreadable |
@@ -823,7 +823,7 @@ style) does recurse, so the behaviours are inconsistent.
 
 ---
 
-### G-30 — Secret redaction is incomplete: `config.Config` prints database passwords and DSNs (Medium-High, PoC)
+### G-30 — Secret redaction is incomplete: `config.Config` prints database passwords and DSNs (Medium-High, PoC) [RESOLVED]
 
 **What `AGENTS.md` promises.** Section 9: "`LogValue` redacts the password/DSN
 for slog"; section 16: "redacted DB config"; JOSE and cache redact "in every
@@ -873,6 +873,9 @@ backend.
    `%v/%+v/%#v`, slog text, slog JSON and `json.Marshal` and fails if any
    planted secret appears.
 
+
+> **Resolved** in `fix(config): redact secrets in every print path`. config.Config now has String, GoString, LogValue, MarshalJSON and MarshalYAML that print a redacted copy (database password/DSN, Redis password/URL/CA path, JOSE key secrets and key file paths, TLS key paths, OTel endpoint userinfo). database.Config has Format for every verb. Regression tests print a fully populated config through fmt, slog text/JSON, json and yaml.
+
 ---
 
 ### G-31 — No ceiling on JWT `ttl` / `max_ttl` (Low, CODE)
@@ -912,7 +915,7 @@ lock) that sets the TTL only when it creates the key.
 
 ---
 
-### G-34 — `database.Config.LogValue` does not redact secrets in DSN query parameters (Low-Med, PoC)
+### G-34 — `database.Config.LogValue` does not redact secrets in DSN query parameters (Low-Med, PoC) [RESOLVED]
 
 `database/config.go` `redactDSN` relies on `url.URL.Redacted()`, which masks
 only the password in the userinfo part. pgx/libpq accept the password and
@@ -928,6 +931,9 @@ the client-key password as query parameters. Measured:
 The DSN is logged by `Config.LogValue` whenever the database section is
 logged. Parse the query, mask `password`, `sslpassword` (and `passfile`,
 `sslkey`, `sslcert`, `sslrootcert` as paths), or print only host/port/name.
+
+
+> **Resolved** in `fix(config): redact secrets in every print path`. redactDSN masks password and sslpassword query parameters (tests in database/redact_test.go).
 
 ---
 

@@ -50,6 +50,17 @@ All notable changes to nForge are documented here. The format follows
   Measured on small (0.6 KB), medium (20 KB) and large (1 MB) payloads.
   `Codec.DecodeFrom` is unchanged.
 
+### Fixed
+
+- **Secrets no longer leak when a whole `config.Config` is printed or
+  logged.** `Config` (and `database.Config`) now redact the database
+  password and DSN, Redis password, URL and CA path, JOSE key secrets and key
+  file paths, TLS key paths and OTel endpoint credentials in `fmt`, `slog`
+  (text and JSON), `encoding/json` and YAML output. Previously the slog JSON
+  handler printed every secret, including the JOSE HS256 key.
+  `database.Config`'s DSN redaction also covers the `password` and
+  `sslpassword` query parameters.
+
 ### Notes
 
 - Nothing changes for existing apps: with no `tls`/`http3` section the server

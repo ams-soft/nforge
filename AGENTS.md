@@ -1160,8 +1160,15 @@ Config rules (`database.Config`):
 - Pool/connection values: only **positive** values override (zero keeps pgx
   defaults or DSN values); negatives are errors; `min_conns > max_conns` is an
   error.
-- **Secrets**: never log `Config` with `%v`/`%+v`. `LogValue` redacts the
-  password/DSN for slog. `ConnectionString()` output must never be logged.
+- **Secrets**: `database.Config` redacts its password and DSN (userinfo
+  password plus `password`/`sslpassword` query parameters) in `LogValue` and
+  in every `fmt` verb (`Format`), and `config.Config` prints a redacted copy
+  (`Config.Redacted()`: database, Redis, JOSE keys and key paths, TLS key
+  paths, OTel endpoint userinfo) through `String`, `GoString`, `LogValue`,
+  `MarshalJSON` and `MarshalYAML`, so a whole `Deps.Config` can be logged with
+  any handler. `ConnectionString()` output must never be logged.
+  `TestConfigNeverPrintsSecrets` plants a secret in every such field: extend
+  it when you add one.
 
 Health: `deps.PingDatabase(ctx)` returns `deps.ErrDatabaseDisabled` when the
 DB is off; `db.Ping` always pings the pool (even from a tx-scoped DB).
