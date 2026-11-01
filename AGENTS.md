@@ -828,8 +828,14 @@ func (q *ListUsers) Validate() error { ... }         // → 422 on failure
 
 ### 7.8 OpenAPI / docs (`routes.go`, `internal/openapi`)
 
-- Spec is **rebuilt on every request** from `ServerHttp.TypedRoutes`, so
-  routes registered after server creation are included.
+- Spec is built from `ServerHttp.TypedRoutes` and **cached per route count**
+  (`speccache.go`): routes registered after server creation are included
+  (the count changes), a repeat request costs a map lookup, and the response
+  carries an `ETag` and answers `If-None-Match` with 304. The docs page, the
+  spec and `/ready` are **public** (a browser cannot send a bearer token on a
+  navigation) and list every route, auth profile and scope: keep
+  `http.docs.enabled` off in production or restrict the path at the gateway
+  (startup warns when `env: prd` has docs enabled).
 - OpenAPI **3.1.0**. Schemas use JSON names; where XML differs (name,
   attribute, root `XMLName`) an `xml` object is added. Named structs go to
   `components.schemas` (unique names, recursion-safe); success responses get
@@ -1621,7 +1627,14 @@ retries and no "unknown outcome".
    `Shutdown` `ErrClosed`; targets are only assigned on success.
 
 Loader errors are returned **unchanged** (branchable with `errors.Is/As`,
-never cached; don't send them blindly to clients). Not a distributed lock:
+never cached; don't send them blindly to clients). **A shared load belongs to
+its first caller**: the loader runs with that caller's context *values*
+(principal, tenant, request id; cancellation is detached) and every
+concurrent caller of the same key gets the same bytes and, on failure, the
+same error value. So a loader must not authorize by what it finds in `ctx`
+(the result may be handed to a caller who was not checked), and a loader error
+must not carry one caller's secrets; put the identity that matters in the
+cache key. Not a distributed lock:
 other instances may load the same key; callers of one key must use
 compatible loaders/TTLs (the leader's win); a concurrent unrelated `Set`
 can be overwritten by the loaded value.

@@ -35,6 +35,11 @@ type flight struct {
 //     The leader's loader and TTL govern the flight, so callers of one key
 //     must use compatible loaders and TTLs. It is not a distributed lock:
 //     other instances may load the same key concurrently.
+//   - The shared load belongs to the first caller: the loader sees that
+//     caller's context values (not its cancellation), and all concurrent
+//     callers of the key receive its result or its error value. Do not let a
+//     loader authorize from ctx, and keep caller-specific data out of its
+//     errors; put the identity that matters in the key.
 //   - Load errors are returned unchanged (and not cached); application
 //     errors must not be sent blindly to HTTP clients. A panic in load
 //     becomes ErrLoaderPanic for every caller.

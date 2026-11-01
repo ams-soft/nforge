@@ -201,6 +201,12 @@ All notable changes to nForge are documented here. The format follows
   `nhttp.Tracing` takes options (`WithoutIncomingContext`) and
   `telemetry.IDGenerator` is exported.
 
+- **The public spec endpoints are cached.** `/docs/swagger.json` and
+  `.yaml` were rebuilt by reflection on every unauthenticated request; they are
+  now rendered once per route set, carry an `ETag` and answer `If-None-Match`
+  with 304. Startup warns when `http.docs` is enabled in `env: prd`, because
+  the page and the spec are public and list every route, auth profile and scope.
+
 ### Notes
 
 - **Upgrading:** the process now handles SIGHUP (it reloads credentials)

@@ -102,3 +102,27 @@ func TestTLSKeyPermissionWarning(t *testing.T) {
 		t.Fatal("a 0644 key must be reported")
 	}
 }
+
+func TestDocsInProductionWarning(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir) // no overlay file: only the base config
+	cfg, err := LoadFlags(writeConfig(t, "env: prd\n"+baseYAML+"http: {docs: {enabled: true}}\n"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasWarning(cfg.Warnings, "http.docs is enabled in prd") {
+		t.Fatalf("docs in prd must be reported: %q", cfg.Warnings)
+	}
+	for name, yaml := range map[string]string{
+		"dev":           "env: dev\n" + baseYAML + "http: {docs: {enabled: true}}\n",
+		"prd, disabled": "env: prd\n" + baseYAML,
+	} {
+		cfg, err := LoadFlags(writeConfig(t, yaml), "")
+		if err != nil {
+			t.Fatal(name, err)
+		}
+		if hasWarning(cfg.Warnings, "http.docs is enabled") {
+			t.Errorf("%s: unexpected warning %q", name, cfg.Warnings)
+		}
+	}
+}

@@ -145,14 +145,22 @@ func (s *ServerHttp) registerDocs(r router.Router) {
 
 func (s *ServerHttp) serveSpec(contentType string, render func(*openapi.Doc) ([]byte, error)) stdhttp.HandlerFunc {
 	return func(w stdhttp.ResponseWriter, req *stdhttp.Request) {
-		data, err := render(buildOpenAPI(s.Deps.Config.HTTP.Docs, s.TypedRoutes))
+		spec, err := s.specs.get(contentType, len(s.TypedRoutes), func() ([]byte, error) {
+			return render(buildOpenAPI(s.Deps.Config.HTTP.Docs, s.TypedRoutes))
+		})
 		if err != nil {
 			s.Deps.Logger.ErrorContext(req.Context(), "failed to generate OpenAPI spec", "error", err)
 			stdhttp.Error(w, "failed to generate spec", stdhttp.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", contentType+"; charset=utf-8")
-		_, _ = w.Write(data)
+		w.Header().Set("ETag", spec.etag)
+		w.Header().Set("Cache-Control", "no-cache") // reuse only after revalidating
+		if req.Header.Get("If-None-Match") == spec.etag {
+			w.WriteHeader(stdhttp.StatusNotModified)
+			return
+		}
+		_, _ = w.Write(spec.data)
 	}
 }
 

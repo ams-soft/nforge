@@ -29,7 +29,7 @@ PoC files were temporary and are deleted; each item says how to reproduce.
 | G-08 | Low | CODE | `http/transport.go` | **RESOLVED** TLS/QUIC certificates are loaded once; no rotation without restart |
 | G-09 | Low | CODE | `config/server.go` | **RESOLVED** TLS private key file permissions are never checked |
 | G-10 | Low | CODE | `http/transport.go` | **RESOLVED** HTTPS and HTTP/3 servers ignore customisations of `ServerHttp.Srv` |
-| G-11 | Low | CODE | `http/routes.go` | Docs, spec and readiness endpoints are public; spec rebuilt per request |
+| G-11 | Low | CODE | `http/routes.go` | **RESOLVED** Docs, spec and readiness endpoints are public; spec rebuilt per request |
 | G-12 | Low | CODE | `http/` | **RESOLVED** Raw (untyped) routes have no request-body limit |
 | G-13 | Low | CODE | `config/config.go` | **RESOLVED** `${VAR}` that is unset silently becomes `""`; a missing `-config` file is silently ignored |
 | G-14 | Info | CODE | `http/internal/authn` | **RESOLVED** `Bearerx token` answers 400 instead of 401 |
@@ -38,7 +38,7 @@ PoC files were temporary and are deleted; each item says how to reproduce.
 | G-17 | Low | CODE | `telemetry`, `http/internal/tracing` | **RESOLVED** 100 % sampling, no sampler setting; client picks the trace/request id and baggage |
 | G-18 | Low | CODE | `logs/logs.go` | **RESOLVED** `AddSource: true` on every record, including OTel export |
 | G-19 | Info | CODE | `jose/service.go` | **RESOLVED** `Reload` is never triggered by the framework; the replaced snapshot is not wiped |
-| G-20 | Info | CODE | `cache/load.go` | A shared load runs with the first caller's context values and hands its error to every waiter |
+| G-20 | Info | CODE | `cache/load.go` | **RESOLVED** A shared load runs with the first caller's context values and hands its error to every waiter |
 | G-21 | Medium | PoC | `config/env.go` | **RESOLVED** Env-file values undergo `$VAR` expansion from the process env; passwords with `$NAME` are corrupted |
 | G-22 | Medium | PoC | `config/env.go` | **RESOLVED** Env-file keys that match no field are ignored (`HTTP_CORS_ORIGNS`) |
 | G-23 | Low-Med | CODE | `http/response.go` | **RESOLVED** Missing `Content-Type` is accepted: cross-site JSON POSTs without preflight |
@@ -385,7 +385,7 @@ customisation is dropped entirely. The HTTP/3 server has no counterpart at all
 
 ---
 
-### G-11 — Public docs/spec/readiness (Low, CODE)
+### G-11 — Public docs/spec/readiness (Low, CODE) [RESOLVED]
 
 `http/routes.go`. `http.docs.auth: bearer` only changes how the spec
 *describes* security; it does not protect `/docs`, `/docs/swagger.json` or
@@ -397,6 +397,9 @@ large API the unauthenticated spec endpoint is a CPU amplifier.
 
 **Fix direction.** An option to put docs/readiness behind a middleware or a
 shared secret; cache the rendered spec until a route is added.
+
+
+> **Resolved** in `fix(http): cache the public spec and warn about docs in production`. The spec is cached per route count with an ETag (TestSpecIsCachedAndConditional) and startup warns when docs are enabled with env prd (TestDocsInProductionWarning). Protecting the endpoints is left to the gateway/disabling docs, documented in AGENTS 7.8 (a browser cannot send a bearer token on a navigation).
 
 ---
 
@@ -678,7 +681,7 @@ it.
 
 ---
 
-### G-20 — Shared loads run as the first caller (Info, CODE)
+### G-20 — Shared loads run as the first caller (Info, CODE) [RESOLVED]
 
 `cache/load.go` `join`: the loader gets
 `context.WithoutCancel(first caller's ctx)`, so it runs with the first
@@ -689,6 +692,9 @@ and the doc already says a tenant namespace "isolates data, it does not
 authorize"; but a loader that consults the principal in `ctx` will have its
 authorization applied to whichever caller happened to arrive first. Worth a
 sentence in the `GetOrLoad` doc comment and in `AGENTS.md` section 11.3.
+
+
+> **Resolved** in `fix(http): cache the public spec and warn about docs in production`. Documented in the GetOrLoad doc comment and AGENTS 11.3: the shared load runs with the first caller's context values and every waiter gets its result or error.
 
 ---
 

@@ -17,7 +17,19 @@ func transportWarnings(cfg *Config) []string {
 	w = append(w, keyFileWarnings(cfg)...)
 	w = append(w, redisWarnings(cfg)...)
 	w = append(w, databaseWarnings(cfg)...)
+	w = append(w, docsWarnings(cfg)...)
 	return w
+}
+
+// docsWarnings flags the documentation endpoints in production. They are
+// public by design (a browser cannot send a bearer token on navigation), and
+// they list every route with its auth profile and scopes and the names of the
+// Go packages the schemas come from.
+func docsWarnings(cfg *Config) []string {
+	if cfg.Env == "prd" && cfg.HTTP.Docs.Enabled {
+		return []string{"http.docs is enabled in prd: the page and the OpenAPI spec are public and list every route, auth profile and scope; disable them or restrict the path at the gateway"}
+	}
+	return nil
 }
 
 // keyFileWarnings flags TLS private keys that group or others can read, the

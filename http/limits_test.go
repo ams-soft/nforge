@@ -205,3 +205,40 @@ func TestTracingTrustIncomingFollowsTheConfig(t *testing.T) {
 		}
 	}
 }
+
+// The spec endpoints are public: rendering walks every route type, so it is
+// done once per route set and conditional requests are answered with 304 (G-11).
+func TestSpecIsCachedAndConditional(t *testing.T) {
+	s := newSecurityServer(t, func(c *config.Config) {})
+	get := func(path, etag string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", path, nil)
+		if etag != "" {
+			req.Header.Set("If-None-Match", etag)
+		}
+		return serveReq(s, req)
+	}
+	for _, path := range []string{"/docs/swagger.json", "/docs/swagger.yaml"} {
+		first := get(path, "")
+		if first.Code != stdhttp.StatusOK || first.Header().Get("ETag") == "" {
+			t.Fatalf("%s: %d etag=%q", path, first.Code, first.Header().Get("ETag"))
+		}
+		again := get(path, "")
+		if again.Header().Get("ETag") != first.Header().Get("ETag") || again.Body.String() != first.Body.String() {
+			t.Errorf("%s: a second request must return the same document", path)
+		}
+		if cached := get(path, first.Header().Get("ETag")); cached.Code != stdhttp.StatusNotModified || cached.Body.Len() != 0 {
+			t.Errorf("%s: If-None-Match must answer 304 without a body, got %d", path, cached.Code)
+		}
+		if stale := get(path, `"other"`); stale.Code != stdhttp.StatusOK {
+			t.Errorf("%s: a different ETag must get the document, got %d", path, stale.Code)
+		}
+	}
+
+	// a route added later (what AddDocRoute does) invalidates the cache
+	before := get("/docs/swagger.json", "")
+	s.TypedRoutes = append(s.TypedRoutes, TypedRoute{Method: "GET", Path: "/added/later", Codec: "application/json"})
+	after := get("/docs/swagger.json", "")
+	if after.Header().Get("ETag") == before.Header().Get("ETag") || !strings.Contains(after.Body.String(), "/added/later") {
+		t.Error("the spec must include a route registered after it was first served")
+	}
+}

@@ -22,6 +22,8 @@ type ServerHttp struct {
 	// TypedRoutes holds the typed routes (and those from AddDocRoute), the source
 	// for the documentation generator.
 	TypedRoutes []TypedRoute
+
+	specs specCache
 }
 
 func NewHTTPServer(deps deps.Deps) *ServerHttp {
