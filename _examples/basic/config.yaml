@@ -24,7 +24,7 @@ http:
     write_timeout: 30s # default: 30s, raise it for slow handlers
     idle_timeout: 120s # default: 120s, keep-alive
   docs:
-    enabled: true # default: false
+    enabled: true # default: true; false turns the headers off
     path: /docs # optional, default: /docs (spec at /docs/swagger.json and /docs/swagger.yaml)
     title: Basic Example API # optional, default: app.name
     auth: bearer # optional, default: bearer; private routes are documented with the bearer scheme

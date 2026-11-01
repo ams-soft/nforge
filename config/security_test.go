@@ -12,8 +12,8 @@ func TestSecurityAndCORSDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	sec, cors := cfg.HTTP.Security, cfg.HTTP.CORS
-	if sec.Enabled || cors.Enabled {
-		t.Fatal("security and cors must be disabled by default")
+	if !sec.IsEnabled() || cors.Enabled {
+		t.Fatal("security must be enabled by default and cors disabled")
 	}
 	if sec.FrameOptions != "SAMEORIGIN" || strings.Join(sec.ReferrerPolicy, ",") != "no-referrer" ||
 		sec.CrossOriginOpenerPolicy != "same-origin" || sec.CrossOriginResourcePolicy != "same-origin" ||
@@ -100,7 +100,7 @@ func TestSecurityAndCORSValidation(t *testing.T) {
 	}
 
 	// Disabled sections are not validated.
-	if _, err := loadTenantConfig(t, "http:\n  server: {port: 8080}\n  security: {frame_options: x}\n  cors: {credentials: true}\n", ""); err != nil {
+	if _, err := loadTenantConfig(t, "http:\n  server: {port: 8080}\n  security: {enabled: false, frame_options: x}\n  cors: {credentials: true}\n", ""); err != nil {
 		t.Errorf("disabled sections: %v", err)
 	}
 	// Maps are YAML only.

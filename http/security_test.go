@@ -41,7 +41,6 @@ func TestSecurityHeaders(t *testing.T) {
 	include := false
 	s := newSecurityServer(t, func(c *config.Config) {
 		c.HTTP.Security = config.SecurityConfig{
-			Enabled: true,
 			Disable: []string{"X-Frame-Options"},
 			CSP: config.CSPConfig{Directives: map[string][]string{
 				"script-src":                {"'self'", "https://cdn.example.com"},
@@ -75,15 +74,16 @@ func TestSecurityHeaders(t *testing.T) {
 var nonceRe = regexp.MustCompile(`<script nonce="([^"]+)"`)
 
 func TestDocsPageCSP(t *testing.T) {
+	off := false
 	cases := []struct {
 		name         string
 		sec          config.SecurityConfig
 		header, none string
 	}{
-		{"enforced", config.SecurityConfig{Enabled: true}, "Content-Security-Policy", "Content-Security-Policy-Report-Only"},
-		{"report only", config.SecurityConfig{Enabled: true, CSP: config.CSPConfig{ReportOnly: true}}, "Content-Security-Policy-Report-Only", "Content-Security-Policy"},
-		{"csp disabled", config.SecurityConfig{Enabled: true, Disable: []string{"content-security-policy"}}, "", "Content-Security-Policy"},
-		{"security off", config.SecurityConfig{}, "", "Content-Security-Policy"},
+		{"enforced", config.SecurityConfig{}, "Content-Security-Policy", "Content-Security-Policy-Report-Only"},
+		{"report only", config.SecurityConfig{CSP: config.CSPConfig{ReportOnly: true}}, "Content-Security-Policy-Report-Only", "Content-Security-Policy"},
+		{"csp disabled", config.SecurityConfig{Disable: []string{"content-security-policy"}}, "", "Content-Security-Policy"},
+		{"security off", config.SecurityConfig{Enabled: &off}, "", "Content-Security-Policy"},
 	}
 	for _, c := range cases {
 		s := newSecurityServer(t, func(cfg *config.Config) { cfg.HTTP.Security = c.sec })
@@ -107,7 +107,7 @@ func TestDocsPageCSP(t *testing.T) {
 	}
 
 	// A fresh nonce per render.
-	s := newSecurityServer(t, func(cfg *config.Config) { cfg.HTTP.Security.Enabled = true })
+	s := newSecurityServer(t, func(cfg *config.Config) {})
 	a := nonceRe.FindStringSubmatch(serveReq(s, httptest.NewRequest("GET", "/docs", nil)).Body.String())
 	b := nonceRe.FindStringSubmatch(serveReq(s, httptest.NewRequest("GET", "/docs", nil)).Body.String())
 	if a[1] == b[1] {
@@ -191,5 +191,19 @@ func TestDocsPageAssetsArePinnedWithIntegrity(t *testing.T) {
 	}
 	if len(cdn) != 2 {
 		t.Fatalf("expected the Swagger UI script and stylesheet, found %v", cdn)
+	}
+}
+
+// Security headers are sent unless explicitly turned off (G-39).
+func TestSecurityHeadersAreOnByDefault(t *testing.T) {
+	s := newSecurityServer(t, func(c *config.Config) { c.HTTP.Security = config.SecurityConfig{} })
+	h := serveReq(s, httptest.NewRequest("GET", "/health", nil)).Header()
+	if h.Get("Content-Security-Policy") == "" || h.Get("X-Frame-Options") == "" {
+		t.Errorf("default headers missing: %v", h)
+	}
+	off := false
+	s = newSecurityServer(t, func(c *config.Config) { c.HTTP.Security = config.SecurityConfig{Enabled: &off} })
+	if h := serveReq(s, httptest.NewRequest("GET", "/health", nil)).Header(); h.Get("Content-Security-Policy") != "" {
+		t.Errorf("enabled: false must send none: %v", h)
 	}
 }

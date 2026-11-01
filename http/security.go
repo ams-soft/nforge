@@ -93,7 +93,7 @@ func corsOptions(c config.CORSConfig) middleware.CORSOptions {
 // docsCSPHeader returns the CSP header name http.security uses, or "" when
 // it sends none; the docs page then replaces that header with its own policy.
 func docsCSPHeader(sec config.SecurityConfig) string {
-	if !sec.Enabled {
+	if !sec.IsEnabled() {
 		return ""
 	}
 	for _, h := range sec.Disable {

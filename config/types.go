@@ -60,7 +60,9 @@ type HTTPConfig struct {
 // Referrer-Policy, Cross-Origin-*, nosniff…). Only what differs from the
 // defaults needs to be set. Values are validated at load.
 type SecurityConfig struct {
-	Enabled bool `yaml:"enabled"` // default: false
+	// Enabled is on unless set to false: an API answers with these headers
+	// by default and opting out is explicit.
+	Enabled *bool `yaml:"enabled"` // default: true
 	// Disable lists response headers not to send, case-insensitive (e.g.
 	// [x-frame-options, origin-agent-cluster]); default: none.
 	Disable                   []string   `yaml:"disable"`

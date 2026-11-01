@@ -77,8 +77,10 @@ func (s *ServerHttp) setStandardHandler() {
 	config.ApplyServerDefaults(&limits)
 	handler.Use(bodyLimit(s.maxBodyBytes(limits)))
 	handler.Use(handlerTimeout(limits.HandlerTimeout))
-	if s.Deps.Config.HTTP.Security.Enabled {
-		handler.Use(middleware.Security(securityOptions(s.Deps.Config.HTTP.Security)))
+	sec := s.Deps.Config.HTTP.Security
+	config.ApplySecurityDefaults(&sec) // a Config built without config.Load has none
+	if sec.IsEnabled() {
+		handler.Use(middleware.Security(securityOptions(sec)))
 	}
 	if s.Deps.Config.HTTP.CORS.Enabled {
 		handler.Use(middleware.CORS(corsOptions(s.Deps.Config.HTTP.CORS)))

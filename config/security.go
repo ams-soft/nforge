@@ -9,6 +9,13 @@ import (
 	"time"
 )
 
+// IsEnabled reports whether the security headers are sent (the default).
+func (s SecurityConfig) IsEnabled() bool { return s.Enabled == nil || *s.Enabled }
+
+// ApplySecurityDefaults fills the unset http.security fields on sec, for a
+// Config built by hand (Load already did it).
+func ApplySecurityDefaults(sec *SecurityConfig) { feedSecurityDefaults(sec) }
+
 // feedSecurityDefaults writes helmet's defaults into http.security so the
 // loaded config shows what is sent.
 func feedSecurityDefaults(sec *SecurityConfig) {
@@ -67,7 +74,7 @@ var cspDirectiveRe = regexp.MustCompile(`^[a-z][a-z0-9-]*[a-z0-9]$`)
 // as the router's middleware.Security (which would otherwise panic when the
 // server is built).
 func validateSecurity(sec SecurityConfig) error {
-	if !sec.Enabled {
+	if !sec.IsEnabled() {
 		return nil
 	}
 	for _, h := range sec.Disable {
