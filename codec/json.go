@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"sync"
 )
 
 type jsonCodec struct {
@@ -55,7 +56,7 @@ func (c *jsonCodec) Decode(data []byte, v any) error {
 			return err
 		}
 	}
-	return jsonDecodeAll(bytes.NewReader(data), v)
+	return jsonDecodeBytes(data, v, t)
 }
 
 // DecodeFrom decodes directly from the reader. With strict mode or required
@@ -77,6 +78,71 @@ func (c *jsonCodec) DecodeFrom(r io.Reader, v any) error {
 		return err
 	}
 	return jsonDecodeAll(r, v)
+}
+
+// jsonDecodeBytes decodes data into v. json.Unmarshal is markedly cheaper than
+// a Decoder, but it cannot enable UseNumber, so it is used only when no
+// interface is reachable from t (see jsonNeedsNumber); other targets keep the
+// Decoder path and its int64-safe numbers.
+//
+// A syntax error is rerun through jsonDecodeAll so the error (empty payload,
+// truncated payload, data after the value, offsets) stays exactly what the
+// Decoder path reports. The rerun only happens for invalid input; a custom
+// UnmarshalJSON that ran before the syntax error was found may run twice, and
+// the target keeps the same partial state a failed decode always left.
+func jsonDecodeBytes(data []byte, v any, t reflect.Type) error {
+	if jsonNeedsNumber(t) {
+		return jsonDecodeAll(bytes.NewReader(data), v)
+	}
+	err := json.Unmarshal(data, v)
+	if err == nil {
+		return nil
+	}
+	var syn *json.SyntaxError
+	if errors.As(err, &syn) {
+		return jsonDecodeAll(bytes.NewReader(data), v)
+	}
+	return jsonDecodeErr(err)
+}
+
+var needsNumberCache sync.Map // reflect.Type -> bool
+
+// jsonNeedsNumber reports whether a value of type t can reach an interface
+// (any, map[string]any, []any, ...), where the decoder must use json.Number so
+// 64-bit integers are not rounded through float64. Types with their own
+// unmarshalers are opaque: they receive raw bytes and the option never
+// applies to them. The result is cached per type.
+func jsonNeedsNumber(t reflect.Type) bool {
+	if v, ok := needsNumberCache.Load(t); ok {
+		return v.(bool)
+	}
+	r := jsonNeedsNumberRec(t, map[reflect.Type]bool{})
+	needsNumberCache.Store(t, r)
+	return r
+}
+
+func jsonNeedsNumberRec(t reflect.Type, seen map[reflect.Type]bool) bool {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t.Kind() == reflect.Interface {
+		return true
+	}
+	if seen[t] || isOpaque(t) {
+		return false
+	}
+	seen[t] = true
+	switch t.Kind() {
+	case reflect.Slice, reflect.Array, reflect.Map:
+		return jsonNeedsNumberRec(t.Elem(), seen)
+	case reflect.Struct:
+		for i := range t.NumField() {
+			if jsonNeedsNumberRec(t.Field(i).Type, seen) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // jsonDecodeAll decodes a single value and requires nothing after it

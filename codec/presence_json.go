@@ -129,7 +129,7 @@ func (w *jsonWalker) value(t reflect.Type) error {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
-	if isOpaque(t) || !needsWalk(t, w.strict) {
+	if !shouldWalk(t, w.strict) {
 		w.skip()
 		return nil
 	}
@@ -288,12 +288,8 @@ func (w *jsonWalker) readName() bool {
 // lookupFieldIndex is lookupField returning the field's index: exact match
 // first, then case-insensitive, like encoding/json.
 func lookupFieldIndex(si *structInfo, fields []*field, key []byte) int {
-	if fl, ok := si.byName[fmtJSON][string(key)]; ok {
-		for i, f := range fields {
-			if f == fl {
-				return i
-			}
-		}
+	if i, ok := si.posOf[fmtJSON][string(key)]; ok {
+		return i
 	}
 	for i, fl := range fields {
 		if bytes.EqualFold([]byte(fl.name), key) {
@@ -301,6 +297,32 @@ func lookupFieldIndex(si *structInfo, fields []*field, key []byte) int {
 		}
 	}
 	return -1
+}
+
+// walkDecision is the memoized "descend into this type?" answer for both
+// modes. The walker asks it for every value, so it costs one cache lookup
+// instead of the opaque check plus the reachability checks.
+type walkDecision struct{ lenient, strict bool }
+
+var walkCache sync.Map // reflect.Type -> walkDecision
+
+// shouldWalk reports whether the walker must descend into a (non-pointer)
+// value of type t: it is not opaque and needsWalk holds for the mode.
+func shouldWalk(t reflect.Type, strict bool) bool {
+	d, ok := walkCache.Load(t)
+	if !ok {
+		opaque := isOpaque(t)
+		d = walkDecision{
+			lenient: !opaque && needsWalk(t, false),
+			strict:  !opaque && needsWalk(t, true),
+		}
+		walkCache.Store(t, d)
+	}
+	wd, _ := d.(walkDecision)
+	if strict {
+		return wd.strict
+	}
+	return wd.lenient
 }
 
 // needsWalk reports whether a value of type t can hold a presence error:

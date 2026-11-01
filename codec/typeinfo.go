@@ -61,6 +61,7 @@ type field struct {
 type structInfo struct {
 	fields [numFormats][]*field
 	byName [numFormats]map[string]*field // key: name (xml: "@name" for attributes)
+	posOf  [numFormats]map[string]int    // same keys: position of the field in fields[f]
 
 	xmlRoot      xml.Name // root element name taken from the XMLName field's tag
 	xmlNameIndex []int    // index of the XMLName field, if any
@@ -168,8 +169,10 @@ func getStruct(t reflect.Type) *structInfo {
 	for f := range numFormats {
 		si.fields[f] = collectFields(t, f)
 		si.byName[f] = make(map[string]*field, len(si.fields[f]))
-		for _, fl := range si.fields[f] {
+		si.posOf[f] = make(map[string]int, len(si.fields[f]))
+		for i, fl := range si.fields[f] {
 			si.byName[f][fieldKey(fl)] = fl
+			si.posOf[f][fieldKey(fl)] = i
 		}
 	}
 	if sf, ok := t.FieldByName("XMLName"); ok && sf.Type == xmlNameType {
@@ -385,6 +388,21 @@ var (
 // isOpaque reports types with custom (de)serialization: the codec does not
 // look inside them (e.g. time.Time).
 func isOpaque(t reflect.Type) bool {
+	if v, ok := opaqueCache.Load(t); ok {
+		b, _ := v.(bool)
+		return b
+	}
+	r := computeOpaque(t)
+	opaqueCache.Store(t, r)
+	return r
+}
+
+// opaqueCache memoizes isOpaque: the presence walk asks it for every value,
+// and the answer (eight Implements checks plus PointerTo) depends only on the
+// type.
+var opaqueCache sync.Map // reflect.Type -> bool
+
+func computeOpaque(t reflect.Type) bool {
 	for _, it := range []reflect.Type{
 		textMarshalerType, textUnmarshalerType,
 		jsonMarshalerType, jsonUnmarshalerType,
