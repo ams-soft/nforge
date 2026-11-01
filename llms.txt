@@ -247,6 +247,8 @@ tracing:
     enabled: <true>           # *bool; nil = true. Only effective if logging.output.otel.enabled
     endpoint: ""
     insecure: false
+    sample_ratio: <1>         # *float64, 0..1; nil = 1 (every request); ParentBased(TraceIDRatioBased)
+    trust_incoming: <true>    # *bool; false: ignore the caller's traceparent/tracestate/baggage/X-Request-Id (public edge)
 
 codec:
   formats: { enabled: [json] }      # json | cbor | xml

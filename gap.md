@@ -35,7 +35,7 @@ PoC files were temporary and are deleted; each item says how to reproduce.
 | G-14 | Info | CODE | `http/internal/authn` | **RESOLVED** `Bearerx token` answers 400 instead of 401 |
 | G-15 | Medium | PoC | `cache/load.go` | **RESOLVED** `GetOrLoad` hard-fails on an undecodable entry and never calls the loader until the TTL ends |
 | G-16 | Medium | CODE | `config`, `logs` | **RESOLVED** `env` is never validated: `production`/`prod` runs at DEBUG and skips the prd overlay |
-| G-17 | Low | CODE | `telemetry`, `http/internal/tracing` | 100 % sampling, no sampler setting; client picks the trace/request id and baggage |
+| G-17 | Low | CODE | `telemetry`, `http/internal/tracing` | **RESOLVED** 100 % sampling, no sampler setting; client picks the trace/request id and baggage |
 | G-18 | Low | CODE | `logs/logs.go` | **RESOLVED** `AddSource: true` on every record, including OTel export |
 | G-19 | Info | CODE | `jose/service.go` | **RESOLVED** `Reload` is never triggered by the framework; the replaced snapshot is not wiped |
 | G-20 | Info | CODE | `cache/load.go` | A shared load runs with the first caller's context values and hands its error to every waiter |
@@ -617,7 +617,7 @@ Make the log-level function default to a *quieter* level, not DEBUG.
 
 ---
 
-### G-17 — Tracing: no sampler setting, client-controlled identifiers (Low, CODE)
+### G-17 — Tracing: no sampler setting, client-controlled identifiers (Low, CODE) [RESOLVED]
 
 **Where.** `telemetry/tracing.go` builds the provider with
 `sdktrace.NewTracerProvider(WithResource, WithBatcher, WithIDGenerator)` and no
@@ -643,6 +643,9 @@ the W3C `traceparent` and `baggage` headers from any caller.
 **Fix direction.** Add `tracing.otel.sample_ratio` (default 1.0) and a setting
 to ignore inbound `traceparent`/`X-Request-Id`/`baggage` on edge services;
 document that the correlation id is client-influenced.
+
+
+> **Resolved** in `feat(telemetry): sample traces and optionally distrust the caller`. tracing.otel.sample_ratio and trust_incoming; nhttp.Tracing(WithoutIncomingContext()). The correlation id is still client-influenced when trust_incoming is on (documented in AGENTS 6.1). Tests: telemetry TestSampleRatio, tracing TestUntrustedIncomingContextIsIgnored, config TestTracingSampleRatioAndTrust, http TestTracingTrustIncomingFollowsTheConfig.
 
 ---
 

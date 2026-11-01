@@ -20,15 +20,24 @@ import (
 //
 // It must be the first middleware (it replaces the router's middleware.RequestID),
 // so that the following ones and the logs already see the span and the id in the ctx.
-func Middleware() func(stdhttp.Handler) stdhttp.Handler {
+//
+// With TrustIncoming false (a public edge) the request's traceparent,
+// tracestate and baggage are dropped and X-Request-Id is never adopted as the
+// trace id: every request starts its own trace, so a caller cannot force
+// sampling, join someone else's trace or inject baggage.
+func Middleware(o Options) func(stdhttp.Handler) stdhttp.Handler {
 	otelMw := otelhttp.NewMiddleware("http.server",
 		otelhttp.WithSpanNameFormatter(func(_ string, r *stdhttp.Request) string {
 			return r.Method
 		}),
 	)
+	adopt := traceIDFromRequestID
+	if !o.TrustIncoming {
+		adopt = dropIncomingContext
+	}
 
 	return func(next stdhttp.Handler) stdhttp.Handler {
-		return traceIDFromRequestID(otelMw(requestIDFromTrace(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		return adopt(otelMw(requestIDFromTrace(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 			next.ServeHTTP(w, r)
 
 			// The router creates the route context before the root middlewares and
@@ -45,6 +54,24 @@ func Middleware() func(stdhttp.Handler) stdhttp.Handler {
 			}
 		}))))
 	}
+}
+
+// Options configure Middleware.
+type Options struct {
+	// TrustIncoming continues a received traceparent, adopts a valid
+	// X-Request-Id as the trace id and keeps received baggage.
+	TrustIncoming bool
+}
+
+// dropIncomingContext removes the caller's trace context before the span is
+// created, so the request starts a trace of its own.
+func dropIncomingContext(next stdhttp.Handler) stdhttp.Handler {
+	return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		r.Header.Del("Traceparent")
+		r.Header.Del("Tracestate")
+		r.Header.Del("Baggage")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // traceIDFromRequestID runs BEFORE the span is created: if the received

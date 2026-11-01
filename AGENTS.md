@@ -438,6 +438,8 @@ tracing:
     enabled: <true>           # *bool; nil = true. Only effective if logging.output.otel.enabled
     endpoint: ""
     insecure: false
+    sample_ratio: <1>         # *float64, 0..1; nil = 1 (every request); ParentBased(TraceIDRatioBased)
+    trust_incoming: <true>    # *bool; false: ignore the caller's traceparent/tracestate/baggage/X-Request-Id (public edge)
 
 codec:
   formats: { enabled: [json] }      # json | cbor | xml
@@ -579,6 +581,16 @@ fatal startup errors use `[Fatal ERROR] ...`.
   chars or a UUID (hyphens stripped); all-zero is rejected.
 
 ### 6.1 request_id == trace_id (HTTP `Tracing()` middleware)
+
+By default the caller's trace context is **trusted** (that is what links
+services behind a gateway). On an edge exposed to the internet set
+`tracing.otel.trust_incoming: false` (`WithoutIncomingContext()`): the
+`traceparent`, `tracestate`, `baggage` and `X-Request-Id` of the request are
+ignored, every request starts its own trace, and a client can neither force
+sampling, nor reuse another request's trace id, nor inject baggage downstream.
+`tracing.otel.sample_ratio` (default 1) records that fraction of traces by
+trace id; with trust on, a sampled parent is still honored and a client that
+picks the trace id also picks the sampling decision.
 
 The chain is `traceIDFromRequestID → otelhttp → requestIDFromTrace → handler`:
 

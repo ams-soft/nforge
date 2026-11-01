@@ -50,9 +50,21 @@ func SetupTracing(ctx context.Context, config config.Config) (func(context.Conte
 	provider := sdktrace.NewTracerProvider(
 		sdktrace.WithResource(res),
 		sdktrace.WithBatcher(exporter),
-		sdktrace.WithIDGenerator(idGenerator{}), // trace_id taken from X-Request-Id
+		sdktrace.WithIDGenerator(IDGenerator()), // trace_id taken from X-Request-Id
+		sdktrace.WithSampler(newSampler(cfg.Ratio())),
 	)
 	otel.SetTracerProvider(provider)
 
 	return provider.Shutdown, nil
 }
+
+// newSampler records the given fraction of traces, chosen by trace id, and
+// follows the sampling decision of a parent when there is one.
+func newSampler(ratio float64) sdktrace.Sampler {
+	return sdktrace.ParentBased(sdktrace.TraceIDRatioBased(ratio))
+}
+
+// IDGenerator returns the generator that takes the trace id of a root span
+// from the context (ContextWithTraceID), used by the tracing provider and by
+// tests of code that depends on request_id = trace_id.
+func IDGenerator() sdktrace.IDGenerator { return idGenerator{} }

@@ -61,7 +61,11 @@ func (s *ServerHttp) setStandardHandler() {
 	// essential middlewares: Tracing, Logger and Recoverer, then the optional
 	// Security and CORS (before routing, so preflights reach every path)
 	if s.Deps.Config.IsTracingEnabled() {
-		handler.Use(Tracing())
+		var tracingOpts []TracingOption
+		if !s.Deps.Config.Tracing.Otel.TrustsIncoming() {
+			tracingOpts = append(tracingOpts, WithoutIncomingContext())
+		}
+		handler.Use(Tracing(tracingOpts...))
 	}
 	if s.Deps.Config.Logging.Output.Otel.Enabled || s.Deps.Config.Logging.Output.Terminal.Enabled {
 		handler.Use(Logger(&s.Deps.Logger))

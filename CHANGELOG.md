@@ -192,6 +192,15 @@ All notable changes to nForge are documented here. The format follows
   `Protocols` and `HTTP2` were honored by the plain HTTP listener only; HTTPS,
   the redirect listener and HTTP/3 ignored them.
 
+- **Tracing can be sampled and can distrust the caller.** New
+  `tracing.otel.sample_ratio` (default 1) records a fraction of traces, and
+  `tracing.otel.trust_incoming: false` (default true, unchanged) makes the HTTP
+  middleware ignore a caller's `traceparent`, `tracestate`, `baggage` and
+  `X-Request-Id`, so on a public edge a client can no longer force sampling,
+  join another request's trace or inject baggage into downstream calls.
+  `nhttp.Tracing` takes options (`WithoutIncomingContext`) and
+  `telemetry.IDGenerator` is exported.
+
 ### Notes
 
 - **Upgrading:** the process now handles SIGHUP (it reloads credentials)

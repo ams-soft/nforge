@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -203,6 +204,9 @@ func validateRequiredConfig(cfg *Config) (bool, error) {
 	}
 	if err := jose.ValidateConfig(cfg.JOSE); err != nil {
 		return false, err
+	}
+	if r := cfg.Tracing.Otel.Ratio(); r < 0 || r > 1 || math.IsNaN(r) {
+		return false, fmt.Errorf("tracing.otel.sample_ratio must be between 0 and 1, got %v", r)
 	}
 	if err := validateAuth(cfg); err != nil {
 		return false, err

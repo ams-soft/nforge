@@ -15,8 +15,25 @@ import (
 //
 // It must be the first middleware (it replaces the router's middleware.RequestID),
 // so that the following ones and the logs already see the span and the id in the ctx.
-func Tracing() func(stdhttp.Handler) stdhttp.Handler {
-	return tracing.Middleware()
+//
+// By default the caller's trace context is trusted. WithoutIncomingContext makes
+// every request start its own trace (use it on a public edge); the server
+// applies it when tracing.otel.trust_incoming is false.
+func Tracing(opts ...TracingOption) func(stdhttp.Handler) stdhttp.Handler {
+	o := tracing.Options{TrustIncoming: true}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return tracing.Middleware(o)
+}
+
+// TracingOption configures Tracing.
+type TracingOption func(*tracing.Options)
+
+// WithoutIncomingContext ignores the traceparent, tracestate, baggage and
+// X-Request-Id of the request: it always starts a new trace with a new id.
+func WithoutIncomingContext() TracingOption {
+	return func(o *tracing.Options) { o.TrustIncoming = false }
 }
 
 // Logger logs one "request" record per request with method, path, pattern

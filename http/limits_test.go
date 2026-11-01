@@ -13,6 +13,9 @@ import (
 	"github.com/ams-soft/nforge/codec"
 	"github.com/ams-soft/nforge/config"
 	"github.com/ams-soft/nforge/deps"
+	"github.com/ams-soft/nforge/telemetry"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 func limitsServer(t *testing.T, mutate func(*config.Config)) *ServerHttp {
@@ -177,4 +180,28 @@ func TestPrivateResponsesAreNoStoreAndNosniff(t *testing.T) {
 
 type item struct {
 	Name string `json:"name"`
+}
+
+// tracing.otel.trust_incoming wires through to the middleware (G-17).
+func TestTracingTrustIncomingFollowsTheConfig(t *testing.T) {
+	tp := sdktrace.NewTracerProvider(sdktrace.WithIDGenerator(telemetry.IDGenerator()))
+	prev := otel.GetTracerProvider()
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() { otel.SetTracerProvider(prev); _ = tp.Shutdown(t.Context()) })
+
+	const forged = "33333333333333333333333333333333"
+	for _, trust := range []bool{true, false} {
+		s := limitsServer(t, func(c *config.Config) {
+			c.Logging.Output.Otel.Enabled = true // tracing is on when OTel logging is
+			c.Tracing.Otel.TrustIncoming = &trust
+		})
+		s.Router().Get("/id", func(w stdhttp.ResponseWriter, r *stdhttp.Request) { w.WriteHeader(stdhttp.StatusNoContent) })
+		req := httptest.NewRequest("GET", "/id", nil)
+		req.Header.Set("X-Request-Id", forged)
+		rec := serveReq(s, req)
+		adopted := rec.Header().Get("X-Request-Id") == forged
+		if adopted != trust {
+			t.Errorf("trust_incoming=%v: X-Request-Id %q adopted=%v", trust, rec.Header().Get("X-Request-Id"), adopted)
+		}
+	}
 }
