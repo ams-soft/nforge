@@ -98,6 +98,8 @@ type harness struct {
 	http   int
 	tls    int
 	h3     int
+
+	certFile, keyFile string
 }
 
 // start builds a server whose config comes from mutate (on top of a TLS pair
@@ -112,7 +114,7 @@ func start(t *testing.T, mutate func(c *config.ServerConfig)) *harness {
 func newHarness(t *testing.T, mutate func(c *config.ServerConfig)) *harness {
 	t.Helper()
 	certFile, keyFile, pool := writeCert(t)
-	h := &harness{pool: pool, http: freePort(t), tls: freePort(t), h3: freePort(t)}
+	h := &harness{pool: pool, http: freePort(t), tls: freePort(t), h3: freePort(t), certFile: certFile, keyFile: keyFile}
 	var cfg config.Config
 	cfg.HTTP.Server = config.ServerConfig{Host: "127.0.0.1", Port: h.http}
 	cfg.HTTP.Server.TLS = config.ServerTLSConfig{Port: h.tls, CertFile: certFile, KeyFile: keyFile}
@@ -569,4 +571,47 @@ func newReq(t *testing.T, target string) *stdhttp.Request {
 		t.Fatal(err)
 	}
 	return req
+}
+
+// Settings the application put on the exported Srv before Start apply to every
+// transport, not only to the plain HTTP listener (G-10).
+func TestSrvCustomisationReachesEveryTransport(t *testing.T) {
+	var states atomic.Int32
+	h := newHarness(t, func(c *config.ServerConfig) { c.HTTP3.Enabled, c.TLS.Enabled = true, true })
+	h.s.Srv.MaxHeaderBytes = 2048
+	h.s.Srv.ConnState = func(net.Conn, stdhttp.ConnState) { states.Add(1) }
+	h.run(t)
+
+	// well above the limit: net/http does not count header bytes exactly on a
+	// reused connection, so a value just over 2048+4096 can still pass
+	big := strings.Repeat("a", 20000)
+	for name, c := range map[string]struct {
+		client *stdhttp.Client
+		url    string
+	}{
+		"http":  {h.tcpClient(false), addr("http", h.http, "/ping")},
+		"https": {h.tcpClient(false), addr("https", h.tls, "/ping")},
+		"h3":    {h.h3Client(), addr("https", h.h3, "/ping")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			// the request must get through the listener first
+			get(t, c.client, c.url).Body.Close()
+			req, _ := stdhttp.NewRequest("GET", c.url, nil)
+			req.Header.Set("X-Big", big)
+			resp, err := c.client.Do(req)
+			if err != nil && strings.Contains(err.Error(), "larger than peer's advertised limit") {
+				return // HTTP/2: the client refused to send what the server said it would not accept
+			}
+			if err != nil {
+				t.Fatalf("%v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != stdhttp.StatusRequestHeaderFieldsTooLarge {
+				t.Fatalf("status %d, want 431 with MaxHeaderBytes = 2048", resp.StatusCode)
+			}
+		})
+	}
+	if states.Load() == 0 {
+		t.Error("ConnState set on Srv never ran")
+	}
 }

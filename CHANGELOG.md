@@ -181,8 +181,21 @@ All notable changes to nForge are documented here. The format follows
   whenever the process died, timed out or lost the reply between the two calls.
   An existing counter keeps its remaining TTL.
 
+- **TLS certificates and JOSE keys rotate without a restart.** HTTPS and HTTP/3
+  now serve the certificate through `GetCertificate`: a handshake re-reads a
+  changed cert/key pair (checked at most every 30 s), and **SIGHUP** reloads
+  every certificate and the JOSE keys (new `Deps.ReloadJOSE`). A pair that
+  fails to load keeps the previous one. Previously a renewal meant restarting
+  the process and dropping every connection.
+- **Settings on the exported `ServerHttp.Srv` apply to every transport.**
+  `MaxHeaderBytes`, `ErrorLog`, `ConnState`, `BaseContext`, `ConnContext`,
+  `Protocols` and `HTTP2` were honored by the plain HTTP listener only; HTTPS,
+  the redirect listener and HTTP/3 ignored them.
+
 ### Notes
 
+- **Upgrading:** the process now handles SIGHUP (it reloads credentials)
+  instead of terminating on it.
 - **Upgrading:** clients that send a body with no `Content-Type` header now
   get 415; long-running statements and handlers over 30s need
   `database.connection.statement_timeout` / `http.server.handler_timeout`

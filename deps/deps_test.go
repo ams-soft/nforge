@@ -91,6 +91,9 @@ func TestSetupJOSEEnabledRegistersShutdown(t *testing.T) {
 	if err := d.CheckJOSE(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	if err := d.ReloadJOSE(context.Background()); err != nil {
+		t.Fatalf("ReloadJOSE with unchanged keys: %v", err)
+	}
 	if err := d.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -194,5 +197,12 @@ func TestConfigWarningsAreLogged(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, "level=WARN") || !strings.Contains(out, "[ConfigModule]") || !strings.Contains(out, "DB_PASSWORD") {
 		t.Fatalf("warning not logged: %q", out)
+	}
+}
+
+func TestReloadJOSEDisabled(t *testing.T) {
+	var d Deps
+	if err := d.ReloadJOSE(context.Background()); !errors.Is(err, ErrJOSEDisabled) {
+		t.Fatalf("err = %v, want ErrJOSEDisabled", err)
 	}
 }

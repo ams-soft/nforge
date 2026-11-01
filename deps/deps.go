@@ -105,6 +105,15 @@ func (d *Deps) CheckJOSE(ctx context.Context) error {
 	return d.JOSE.Check(ctx)
 }
 
+// ReloadJOSE re-reads the key files of the running JOSE service (key rotation
+// without a restart; see jose.Service.Reload). nhttp calls it on SIGHUP.
+func (d *Deps) ReloadJOSE(ctx context.Context) error {
+	if d.JOSE == nil {
+		return ErrJOSEDisabled
+	}
+	return d.JOSE.Reload(ctx)
+}
+
 // PingCache checks the cache backend (Redis PING; memory: open), for
 // readiness checks. Use a ctx with a short timeout (e.g. 2s).
 func (d *Deps) PingCache(ctx context.Context) error {

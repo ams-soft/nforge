@@ -26,9 +26,9 @@ PoC files were temporary and are deleted; each item says how to reproduce.
 | G-05 | Medium | PoC | `codec/presence*.go` | **RESOLVED** JSON tree fallback is quadratic: 131 KB -> 337 MB |
 | G-06 | Low | PoC | `codec/json.go` | **RESOLVED** Decode errors leak Go package-qualified type names to clients |
 | G-07 | Low | CODE | `codec/xml.go:763` | **RESOLVED** Non-English error text in production code |
-| G-08 | Low | CODE | `http/transport.go` | TLS/QUIC certificates are loaded once; no rotation without restart |
+| G-08 | Low | CODE | `http/transport.go` | **RESOLVED** TLS/QUIC certificates are loaded once; no rotation without restart |
 | G-09 | Low | CODE | `config/server.go` | **RESOLVED** TLS private key file permissions are never checked |
-| G-10 | Low | CODE | `http/transport.go` | HTTPS and HTTP/3 servers ignore customisations of `ServerHttp.Srv` |
+| G-10 | Low | CODE | `http/transport.go` | **RESOLVED** HTTPS and HTTP/3 servers ignore customisations of `ServerHttp.Srv` |
 | G-11 | Low | CODE | `http/routes.go` | Docs, spec and readiness endpoints are public; spec rebuilt per request |
 | G-12 | Low | CODE | `http/` | **RESOLVED** Raw (untyped) routes have no request-body limit |
 | G-13 | Low | CODE | `config/config.go` | **RESOLVED** `${VAR}` that is unset silently becomes `""`; a missing `-config` file is silently ignored |
@@ -37,7 +37,7 @@ PoC files were temporary and are deleted; each item says how to reproduce.
 | G-16 | Medium | CODE | `config`, `logs` | **RESOLVED** `env` is never validated: `production`/`prod` runs at DEBUG and skips the prd overlay |
 | G-17 | Low | CODE | `telemetry`, `http/internal/tracing` | 100 % sampling, no sampler setting; client picks the trace/request id and baggage |
 | G-18 | Low | CODE | `logs/logs.go` | **RESOLVED** `AddSource: true` on every record, including OTel export |
-| G-19 | Info | CODE | `jose/service.go` | `Reload` is never triggered by the framework; the replaced snapshot is not wiped |
+| G-19 | Info | CODE | `jose/service.go` | **RESOLVED** `Reload` is never triggered by the framework; the replaced snapshot is not wiped |
 | G-20 | Info | CODE | `cache/load.go` | A shared load runs with the first caller's context values and hands its error to every waiter |
 | G-21 | Medium | PoC | `config/env.go` | **RESOLVED** Env-file values undergo `$VAR` expansion from the process env; passwords with `$NAME` are corrupted |
 | G-22 | Medium | PoC | `config/env.go` | **RESOLVED** Env-file keys that match no field are ignored (`HTTP_CORS_ORIGNS`) |
@@ -335,7 +335,7 @@ formats (cheap guard).
 
 ---
 
-### G-08 — Certificates are loaded once (Low, CODE)
+### G-08 — Certificates are loaded once (Low, CODE) [RESOLVED]
 
 `http/transport.go:153` and `:161` call `tls.LoadX509KeyPair` once during
 `prepare` and store the result in `tls.Config.Certificates` /
@@ -347,6 +347,9 @@ connections on every renewal (QUIC connections included).
 **Fix direction.** Use `tls.Config.GetCertificate` backed by a cached
 `LoadX509KeyPair` that re-reads when the files' mtime changes (or on SIGHUP).
 Mirror what `jose.Service.Reload` does for keys.
+
+
+> **Resolved** in `feat(http): reload TLS certificates and JOSE keys without a restart`. certReloader (http/certs.go) serves the pair through GetCertificate, re-reads on mtime change (30s) and on SIGHUP; a bad pair keeps the previous one. Tests: TestCertReloaderFollowsItsFiles, TestSIGHUPReloadsTheCertificate (HTTPS and HTTP/3 end to end).
 
 ---
 
@@ -362,7 +365,7 @@ Inconsistent security posture between two key loaders in the same framework.
 
 ---
 
-### G-10 — HTTPS/HTTP3 servers ignore `ServerHttp.Srv` customisation (Low, CODE)
+### G-10 — HTTPS/HTTP3 servers ignore `ServerHttp.Srv` customisation (Low, CODE) [RESOLVED]
 
 `AGENTS.md` section 7.1 invites apps to tune `Srv` "before Start"
 (`MaxHeaderBytes`, `ErrorLog`, `ConnState`, `BaseContext`, `ConnContext`,
@@ -376,6 +379,9 @@ customisation is dropped entirely. The HTTP/3 server has no counterpart at all
 **Fix direction.** Clone the relevant fields of `s.Srv` into the TCP servers
 (`srv := *s.Srv; srv.Addr = ...`), or document the limitation next to the
 `Srv` field and expose a hook (`ConfigureServer func(*http.Server)`).
+
+
+> **Resolved** in `feat(http): reload TLS certificates and JOSE keys without a restart`. newTCPServer and the HTTP/3 server carry the Srv customisation. TestSrvCustomisationReachesEveryTransport (verified to fail without the change).
 
 ---
 
@@ -653,7 +659,7 @@ backend. Make it conditional on `env`/level.
 
 ---
 
-### G-19 — JOSE `Reload` has no trigger; replaced keys are not wiped (Info, CODE)
+### G-19 — JOSE `Reload` has no trigger; replaced keys are not wiped (Info, CODE) [RESOLVED]
 
 `jose/service.go` `Reload` swaps the snapshot atomically, but nothing in the
 framework calls it: no SIGHUP handler, no admin hook, no file watcher (by
@@ -663,6 +669,9 @@ swap the *old* snapshot's key material is simply dropped (garbage collected),
 not `wipe()`d, unlike the identical-material branch which does wipe. In-flight
 operations may still be using it, so wiping is non-trivial; at least document
 it.
+
+
+> **Resolved** in `feat(http): reload TLS certificates and JOSE keys without a restart`. SIGHUP now triggers Deps.ReloadJOSE together with the certificates; the unwiped replaced snapshot is documented (in-flight operations may still use it) rather than changed. TestReloadJOSEDisabled, TestSetupJOSEEnabledRegistersShutdown.
 
 ---
 

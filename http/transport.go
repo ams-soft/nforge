@@ -8,8 +8,11 @@ import (
 	"net"
 	stdhttp "net/http"
 	"net/url"
+	"os"
+	"os/signal"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/ams-soft/nforge/config"
@@ -44,6 +47,9 @@ func (s *ServerHttp) StartContext(ctx context.Context) error {
 		s.Deps.Logger.ErrorContext(ctx, "[HTTPModule] Failed to start server", "err", err)
 		return errors.Join(err, s.shutdownDeps())
 	}
+
+	stopReload := s.reloadOnSIGHUP(ctx, run)
+	defer stopReload()
 
 	errCh := make(chan error, len(run.servers))
 	var wg sync.WaitGroup
@@ -81,6 +87,49 @@ func (s *ServerHttp) StartContext(ctx context.Context) error {
 	return errors.Join(serveErr, stopErr, s.shutdownDeps())
 }
 
+// reloadOnSIGHUP reloads the TLS certificates and the JOSE keys when the
+// process receives SIGHUP, the conventional "re-read your credentials" signal,
+// so a rotation needs no restart and drops no connection. A failed reload
+// keeps what was loaded before. The returned func stops the listener.
+func (s *ServerHttp) reloadOnSIGHUP(ctx context.Context, run *running) (stop func()) {
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-hup:
+				s.reloadCredentials(ctx, run)
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() { signal.Stop(hup); close(done) }
+}
+
+// reloadCredentials re-reads the certificate files and the JOSE key files.
+// Errors are logged without paths or key material.
+func (s *ServerHttp) reloadCredentials(ctx context.Context, run *running) {
+	log := &s.Deps.Logger
+	for _, rl := range run.reloaders {
+		if err := rl.Reload(); err != nil {
+			log.WarnContext(ctx, "[HTTPModule] TLS certificate reload failed; keeping the previous one", "error", err)
+			continue
+		}
+		log.InfoContext(ctx, "[HTTPModule] TLS certificate reloaded")
+	}
+	if s.Deps.JOSE != nil {
+		rctx, cancel := context.WithTimeout(ctx, shutdownTimeout)
+		defer cancel()
+		if err := s.Deps.ReloadJOSE(rctx); err != nil {
+			log.WarnContext(ctx, "[HTTPModule] JOSE key reload failed; keeping the previous keys", "error", err)
+		} else {
+			log.InfoContext(ctx, "[HTTPModule] JOSE keys reloaded")
+		}
+	}
+}
+
 func (s *ServerHttp) shutdownDeps() error {
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
@@ -95,7 +144,10 @@ type transport struct {
 	stop  func(ctx context.Context) error
 }
 
-type running struct{ servers []transport }
+type running struct {
+	servers   []transport
+	reloaders []*certReloader
+}
 
 func (r *running) shutdown(ctx context.Context) error {
 	var (
@@ -140,8 +192,8 @@ func (s *ServerHttp) prepare(ctx context.Context, cfg config.ServerConfig) (_ *r
 		run     running
 		bound   closers
 		app     = s.Srv.Handler
-		h3Certs []tls.Certificate
-		tlsCert []tls.Certificate
+		tlsCert *certReloader
+		h3Cert  *certReloader
 	)
 	defer func() {
 		if err != nil {
@@ -149,20 +201,29 @@ func (s *ServerHttp) prepare(ctx context.Context, cfg config.ServerConfig) (_ *r
 		}
 	}()
 
+	warnReload := func(err error) {
+		s.Deps.Logger.WarnContext(ctx, "[HTTPModule] TLS certificate reload failed; keeping the previous one", "error", err)
+	}
 	if cfg.TLS.Enabled {
-		c, err := tls.LoadX509KeyPair(cfg.TLS.CertFile, cfg.TLS.KeyFile)
+		c, err := newCertReloader(cfg.TLS.CertFile, cfg.TLS.KeyFile, warnReload)
 		if err != nil {
-			return nil, fmt.Errorf("nhttp: load tls certificate: %w", err)
+			return nil, fmt.Errorf("nhttp: %w", err)
 		}
-		tlsCert = []tls.Certificate{c}
+		tlsCert = c
+		run.reloaders = append(run.reloaders, c)
 	}
 	if cfg.HTTP3.Enabled {
 		certFile, keyFile := cfg.HTTP3Credentials()
-		c, err := tls.LoadX509KeyPair(certFile, keyFile)
-		if err != nil {
-			return nil, fmt.Errorf("nhttp: load http3 certificate: %w", err)
+		if tlsCert != nil && certFile == cfg.TLS.CertFile && keyFile == cfg.TLS.KeyFile {
+			h3Cert = tlsCert // the same pair: one reloader, one reload
+		} else {
+			c, err := newCertReloader(certFile, keyFile, warnReload)
+			if err != nil {
+				return nil, fmt.Errorf("nhttp: http3: %w", err)
+			}
+			h3Cert = c
+			run.reloaders = append(run.reloaders, c)
 		}
-		h3Certs = []tls.Certificate{c}
 	}
 
 	// HTTP/3 first: its Alt-Svc advertisement depends on it being bound.
@@ -175,12 +236,14 @@ func (s *ServerHttp) prepare(ctx context.Context, cfg config.ServerConfig) (_ *r
 		}
 		bound = append(bound, pc.Close)
 		h3 = &http3.Server{
-			Addr:        h3Addr,
-			Port:        cfg.HTTP3.Port,
-			TLSConfig:   &tls.Config{Certificates: h3Certs, MinVersion: tls.VersionTLS13},
-			QUICConfig:  &quic.Config{MaxIdleTimeout: cfg.HTTP3.MaxIdleTimeout, Allow0RTT: false},
-			Handler:     streamTimeout(app, cfg.HTTP3.MaxStreamTimeout),
-			IdleTimeout: cfg.IdleTimeout,
+			Addr:           h3Addr,
+			Port:           cfg.HTTP3.Port,
+			TLSConfig:      &tls.Config{GetCertificate: h3Cert.GetCertificate, MinVersion: tls.VersionTLS13},
+			QUICConfig:     &quic.Config{MaxIdleTimeout: cfg.HTTP3.MaxIdleTimeout, Allow0RTT: false},
+			Handler:        streamTimeout(app, cfg.HTTP3.MaxStreamTimeout),
+			IdleTimeout:    cfg.IdleTimeout,
+			MaxHeaderBytes: s.Srv.MaxHeaderBytes,
+			Logger:         &s.Deps.Logger,
 		}
 		run.servers = append(run.servers, transport{
 			name: "http3", addr: h3Addr,
@@ -205,7 +268,7 @@ func (s *ServerHttp) prepare(ctx context.Context, cfg config.ServerConfig) (_ *r
 			handler = altSvc(app, h3)
 		}
 		srv := s.newTCPServer(cfg, addr, handler)
-		srv.TLSConfig = &tls.Config{Certificates: tlsCert, MinVersion: minTLS(cfg.TLS.MinVersion)}
+		srv.TLSConfig = &tls.Config{GetCertificate: tlsCert.GetCertificate, MinVersion: minTLS(cfg.TLS.MinVersion)}
 		run.servers = append(run.servers, tcpTransport("https", addr, srv, func() error { return srv.ServeTLS(ln, "", "") }))
 	}
 
@@ -236,6 +299,11 @@ func (s *ServerHttp) prepare(ctx context.Context, cfg config.ServerConfig) (_ *r
 	return &run, nil
 }
 
+// newTCPServer builds the HTTPS (or redirect) server. http.Server holds locks
+// and cannot be copied, so the settings an application may have put on the
+// exported Srv before Start (header limit, error log, connection hooks,
+// protocol and HTTP/2 settings) are carried over one by one: the application
+// configures Srv once and every transport behaves the same.
 func (s *ServerHttp) newTCPServer(cfg config.ServerConfig, addr string, h stdhttp.Handler) *stdhttp.Server {
 	return &stdhttp.Server{
 		Addr:              addr,
@@ -244,6 +312,15 @@ func (s *ServerHttp) newTCPServer(cfg config.ServerConfig, addr string, h stdhtt
 		ReadTimeout:       cfg.ReadTimeout,
 		WriteTimeout:      cfg.WriteTimeout,
 		IdleTimeout:       cfg.IdleTimeout,
+
+		MaxHeaderBytes:               s.Srv.MaxHeaderBytes,
+		ErrorLog:                     s.Srv.ErrorLog,
+		ConnState:                    s.Srv.ConnState,
+		BaseContext:                  s.Srv.BaseContext,
+		ConnContext:                  s.Srv.ConnContext,
+		DisableGeneralOptionsHandler: s.Srv.DisableGeneralOptionsHandler,
+		Protocols:                    s.Srv.Protocols,
+		HTTP2:                        s.Srv.HTTP2,
 	}
 }
 

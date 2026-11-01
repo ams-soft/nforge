@@ -124,6 +124,8 @@ Run `go run . -config config.yaml` and open `http://localhost:8080/docs`.
 5. `server.Start()` (= `StartContext` canceled by SIGINT/SIGTERM) loads the certificates, binds every enabled listener (plain HTTP :8080/tcp, HTTPS :8443/tcp, HTTP/3 :8443/udp; all-or-nothing) and serves them with the one shared router. On a signal or a listener error: all transports shut down (10 s, then forced), then `Deps.Shutdown` exactly once (also after a failed startup), which runs registered shutdown functions LIFO: cache → JOSE → database → tracing → logs. All run even if one fails; errors are joined.
 6. `ServerHttp.AddShutdownFunc` / `Shutdown()` are a separate app-level list the application calls itself; `Start` does not call them.
 
+Credentials reload without a restart: HTTPS/HTTP3 serve the certificate through `GetCertificate` (a handshake re-reads a changed cert/key pair at most every 30 s) and **SIGHUP** reloads every certificate and the JOSE keys (`Deps.ReloadJOSE`); a pair that fails to load keeps the previous one. Settings on the exported `ServerHttp.Srv` (`MaxHeaderBytes`, `ErrorLog`, `ConnState`, ...) apply to every transport.
+
 Middleware chain (fixed order): `Tracing()` (only with tracing) → `Logger` (only with logging) → `middleware.Recoverer` → body limit (`http.server.max_body_bytes`) → handler timeout (`http.server.handler_timeout`) → `middleware.Security` (`http.security.enabled`) → `middleware.CORS` (`http.cors.enabled`) → app global middlewares. go-ams-router builds the chain lazily on the first request, so `Use` is valid until then, even after routes. For inline routers (`With`/`Group`) add middlewares before routes.
 
 ## 3. Configuration (`config`)

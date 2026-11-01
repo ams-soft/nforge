@@ -1028,6 +1028,19 @@ unquoted `1.3`, but `1.30` or `1.1` fail.
   accepted HTTP/2 connection undrained: the result is the drain deadline
   (`context.DeadlineExceeded` in the joined error) followed by a forced close,
   never a leak.
+- **Credential reload (`certs.go`).** The certificate is served through
+  `tls.Config.GetCertificate` from a `certReloader`: a handshake looks at the
+  cert and key files' modification times at most every 30 s and re-reads a
+  changed pair, and **SIGHUP** reloads every certificate and, with jose
+  enabled, the JOSE keys (`Deps.ReloadJOSE`), so ACME/cert-manager rotation
+  needs no restart and drops no connection. A pair that fails to load or does
+  not match keeps the previous certificate (WARN, no path or key material);
+  HTTP/3 shares the reloader when it uses the same pair.
+- **`Srv` customisation.** `newTCPServer` carries `MaxHeaderBytes`,
+  `ErrorLog`, `ConnState`, `BaseContext`, `ConnContext`,
+  `DisableGeneralOptionsHandler`, `Protocols` and `HTTP2` from the exported
+  `Srv` to the HTTPS and redirect servers, and HTTP/3 gets `MaxHeaderBytes`
+  and the logger, so configuring `Srv` once applies to every transport.
 - **Docs URL.** Default `http.docs.hosts` is `https://…:{tls.port}` when tls
   is on and the plain listener redirects or is closed (or `https://…:{http3.port}`
   for QUIC-only), else `http://…:{port}`; explicit `hosts` win. HTTP/3 is
@@ -1409,7 +1422,11 @@ and slog.
 - `Reload(ctx)` rereads the key files of the **same** config and swaps the
   snapshot atomically only if all keys validate (failure keeps the old one;
   identical material is a no-op). It never reloads YAML or profiles, starts
-  no watcher and is never triggered by tokens.
+  no watcher and is never triggered by tokens. `nhttp` triggers it on
+  **SIGHUP** (`Deps.ReloadJOSE`, together with the TLS certificates); an
+  application with another trigger calls `Deps.ReloadJOSE(ctx)` itself. The
+  replaced snapshot is dropped to the GC, not wiped: operations admitted
+  before the swap may still be using it.
 - Rotation: deploy config with old **and** new kids, switch the producer
   key, keep the old consumer key until tokens expire + skew + JWKS cache
   age; publish a new public key before signing with it. Replacing material
