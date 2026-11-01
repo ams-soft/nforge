@@ -375,7 +375,7 @@ func TestMemoryCapacityRejectionKeepsState(t *testing.T) {
 	}
 	// a counter that would no longer fit fails without changing the entry
 	_ = m.set(bg, "counter-key-xxx", []byte("99999"), 0) // 15 + 5 = 20 bytes: full
-	if _, err := m.incr(bg, "counter-key-xxx", 1); err == nil {
+	if _, err := m.incr(bg, "counter-key-xxx", 1, 0); err == nil {
 		t.Fatal("counter growth over capacity must fail")
 	}
 	if got, _ := m.get(bg, "counter-key-xxx"); string(got) != "99999" {

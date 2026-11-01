@@ -175,6 +175,12 @@ All notable changes to nForge are documented here. The format follows
   private (`IsPrivate`) typed routes, 401/403 included, carry
   `Cache-Control: no-store` unless the handler sets its own.
 
+- **`cache.IncrementWithTTL`** creates a counter and gives it its TTL in one
+  atomic step (Redis: a Lua script; memory: under the lock). Building a
+  rate-limit window from `Increment` + `Expire` left a counter that never reset
+  whenever the process died, timed out or lost the reply between the two calls.
+  An existing counter keeps its remaining TTL.
+
 ### Notes
 
 - **Upgrading:** clients that send a body with no `Content-Type` header now

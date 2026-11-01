@@ -351,3 +351,73 @@ func TestConcurrentOperationsAndShutdown(t *testing.T) {
 	close(stop)
 	wg.Wait()
 }
+
+// A counter that must expire is created with its TTL in the same atomic step
+// (G-33): there is no window in which it exists without one.
+func TestIncrementWithTTL(t *testing.T) {
+	c, clock := openMemory(t, nil)
+
+	n, err := c.IncrementWithTTL(bg, "rate", 1, time.Minute)
+	if err != nil || n != 1 {
+		t.Fatalf("first call: %d %v", n, err)
+	}
+	if exp, _ := c.TTL(bg, "rate"); !exp.Exists || exp.Persistent || exp.Remaining != time.Minute {
+		t.Fatalf("a new counter takes the ttl: %+v", exp)
+	}
+
+	// later calls do not extend the window
+	clock.advance(40 * time.Second)
+	if n, err := c.IncrementWithTTL(bg, "rate", 2, time.Hour); err != nil || n != 3 {
+		t.Fatalf("second call: %d %v", n, err)
+	}
+	if exp, _ := c.TTL(bg, "rate"); exp.Remaining != 20*time.Second {
+		t.Fatalf("an existing counter keeps its remaining ttl, got %+v", exp)
+	}
+
+	// after the window the counter starts again
+	clock.advance(30 * time.Second)
+	if n, err := c.IncrementWithTTL(bg, "rate", 1, time.Minute); err != nil || n != 1 {
+		t.Fatalf("after expiry: %d %v", n, err)
+	}
+	if exp, _ := c.TTL(bg, "rate"); exp.Remaining != time.Minute {
+		t.Fatalf("the new window: %+v", exp)
+	}
+
+	// a persistent counter stays persistent
+	if _, err := c.Increment(bg, "forever", 1); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := c.IncrementWithTTL(bg, "forever", 1, time.Minute); err != nil || n != 2 {
+		t.Fatalf("existing persistent counter: %d %v", n, err)
+	}
+	if exp, _ := c.TTL(bg, "forever"); !exp.Persistent {
+		t.Fatalf("IncrementWithTTL must not add a ttl to an existing counter: %+v", exp)
+	}
+
+	// delta 0 on a missing key creates it with the ttl too
+	if n, err := c.IncrementWithTTL(bg, "zero", 0, time.Minute); err != nil || n != 0 {
+		t.Fatalf("zero delta: %d %v", n, err)
+	}
+	if exp, _ := c.TTL(bg, "zero"); exp.Remaining != time.Minute {
+		t.Fatalf("zero delta ttl: %+v", exp)
+	}
+}
+
+func TestIncrementWithTTLErrors(t *testing.T) {
+	c, _ := openMemory(t, nil)
+	for _, ttl := range []time.Duration{0, -time.Second} {
+		_, err := c.IncrementWithTTL(bg, "k", 1, ttl)
+		mustIs(t, err, ErrInvalidTTL)
+	}
+	_ = c.SetBytes(bg, "text", []byte("abc"), time.Hour)
+	_, err := c.IncrementWithTTL(bg, "text", 1, time.Minute)
+	mustIs(t, err, ErrNotInteger)
+	if exp, _ := c.TTL(bg, "text"); exp.Remaining != time.Hour {
+		t.Errorf("a failed increment must not touch the entry: %+v", exp)
+	}
+	_ = c.SetBytes(bg, "max", []byte("9223372036854775807"), 0)
+	_, err = c.IncrementWithTTL(bg, "max", 1, time.Minute)
+	mustIs(t, err, ErrCounterOverflow)
+	_, err = c.IncrementWithTTL(bg, "", 1, time.Minute)
+	mustIs(t, err, ErrInvalidKey)
+}

@@ -142,9 +142,9 @@ func (f *faultBackend) exists(ctx context.Context, key string) (bool, error) {
 	return f.backend.exists(ctx, key)
 }
 
-func (f *faultBackend) incr(ctx context.Context, key string, d int64) (int64, error) {
+func (f *faultBackend) incr(ctx context.Context, key string, d int64, ttl time.Duration) (int64, error) {
 	f.anyCall.Add(1)
-	return f.backend.incr(ctx, key, d)
+	return f.backend.incr(ctx, key, d, ttl)
 }
 
 func mustIs(t testing.TB, err, target error) {

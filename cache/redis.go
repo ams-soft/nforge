@@ -318,10 +318,25 @@ func (b *redisBackend) ttl(ctx context.Context, key string) (Expiration, error) 
 	}
 }
 
-func (b *redisBackend) incr(ctx context.Context, key string, delta int64) (int64, error) {
+// incrWithTTLScript increments and, only when the call created the key, sets
+// its expiry, in one atomic step. A failed INCRBY (not an integer, overflow)
+// aborts the script before any change.
+var incrWithTTLScript = redis.NewScript(`
+local created = redis.call('EXISTS', KEYS[1]) == 0
+local value = redis.call('INCRBY', KEYS[1], ARGV[1])
+if created then redis.call('PEXPIRE', KEYS[1], ARGV[2]) end
+return value`)
+
+func (b *redisBackend) incr(ctx context.Context, key string, delta int64, ttl time.Duration) (int64, error) {
 	var n int64
 	err := b.write(ctx, func(ctx context.Context) error {
 		var err error
+		if ttl > 0 {
+			// go-redis sends EVALSHA and falls back to EVAL only on NOSCRIPT,
+			// which means the script did not run, so nothing is replayed.
+			n, err = incrWithTTLScript.Run(ctx, b.client, []string{key}, delta, ttl.Milliseconds()).Int64()
+			return err
+		}
 		n, err = b.client.IncrBy(ctx, key, delta).Result()
 		return err
 	})

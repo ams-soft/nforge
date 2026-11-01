@@ -260,12 +260,12 @@ func (m *memory) ttl(_ context.Context, key string) (Expiration, error) {
 	}
 }
 
-func (m *memory) incr(_ context.Context, key string, delta int64) (int64, error) {
+func (m *memory) incr(_ context.Context, key string, delta int64, ttl time.Duration) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.now()
 	var cur int64
-	var deadline time.Time
+	deadline := deadlineFor(now, ttl) // only a new counter takes the ttl
 	if e := m.liveLocked(key, now); e != nil {
 		v, ok := parseCounter(e.value)
 		if !ok {

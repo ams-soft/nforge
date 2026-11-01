@@ -51,7 +51,7 @@ PoC files were temporary and are deleted; each item says how to reproduce.
 | G-30 | Med-High | PoC | `config`, `database` | **RESOLVED** `config.Config` and `database.Config` print passwords/DSNs; slog JSON leaks every secret incl. JOSE key |
 | G-31 | Low | CODE | `jose/config.go` | **RESOLVED** No ceiling on JWT `ttl`/`max_ttl` |
 | G-32 | Low | CODE | `cache`, `database` | **RESOLVED** Credentials allowed over plain TCP to remote hosts, no warning |
-| G-33 | Low | CODE | `cache` | No atomic increment-with-TTL: counters can live forever |
+| G-33 | Low | CODE | `cache` | **RESOLVED** No atomic increment-with-TTL: counters can live forever |
 | G-34 | Low-Med | PoC | `database/config.go` | **RESOLVED** `redactDSN` leaves `?password=` and `?sslpassword=` visible |
 | G-35 | Low-Med | CODE | `http/server.go`, `database` | **RESOLVED** No handler timeout and no `statement_timeout` by default |
 | G-36 | Medium | PoC | `config/bytesize.go` | **RESOLVED** `ByteSize` overflows to `MinInt64` with no error (cache copy is correct) |
@@ -977,7 +977,7 @@ the effective mode can send the password unencrypted.
 
 ---
 
-### G-33 — No atomic "increment with TTL" (Low, CODE)
+### G-33 — No atomic "increment with TTL" (Low, CODE) [RESOLVED]
 
 `cache/cache.go` `Increment` creates a missing counter as **persistent**;
 giving it an expiry is a second call (`Expire`). The two are not atomic: a
@@ -987,6 +987,9 @@ and the API is exactly what people reach for. Offer
 `IncrementWithTTL(ctx, key, delta, ttl)` implemented atomically (Redis: a
 small Lua script or `SET key 0 NX PX` + `INCRBY` in `MULTI`; memory: under the
 lock) that sets the TTL only when it creates the key.
+
+
+> **Resolved** in `feat(cache): add IncrementWithTTL`. Cache.IncrementWithTTL creates the counter and its TTL atomically (memory: under the lock; Redis: Lua script, EVALSHA with EVAL only after NOSCRIPT, never replayed). Tests: TestIncrementWithTTL*, the RESP-fake tests and TestIntegrationIncrementWithTTL, which was run against a real Redis 8.
 
 ---
 

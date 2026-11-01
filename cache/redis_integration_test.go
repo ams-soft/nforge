@@ -364,3 +364,64 @@ func BenchmarkIntegrationRedis(b *testing.B) {
 		}
 	})
 }
+
+// The Lua script of IncrementWithTTL against a real server: the TTL is set
+// only by the call that creates the counter, errors change nothing, and
+// concurrent callers never see a counter without a TTL (G-33).
+func TestIntegrationIncrementWithTTL(t *testing.T) {
+	c, _, _ := integrationCache(t, nil)
+	ctx := context.Background()
+
+	if n, err := c.IncrementWithTTL(ctx, "win", 1, 10*time.Second); err != nil || n != 1 {
+		t.Fatalf("create: %d %v", n, err)
+	}
+	first, _ := c.TTL(ctx, "win")
+	if !first.Exists || first.Persistent || first.Remaining <= 0 || first.Remaining > 10*time.Second {
+		t.Fatalf("a new counter takes the ttl: %+v", first)
+	}
+	if n, err := c.IncrementWithTTL(ctx, "win", 4, time.Hour); err != nil || n != 5 {
+		t.Fatalf("existing: %d %v", n, err)
+	}
+	if second, _ := c.TTL(ctx, "win"); second.Remaining > first.Remaining {
+		t.Fatalf("an existing counter must not get a longer ttl: %+v -> %+v", first, second)
+	}
+
+	// a persistent counter stays persistent
+	_, _ = c.Increment(ctx, "forever", 1)
+	if _, err := c.IncrementWithTTL(ctx, "forever", 1, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if exp, _ := c.TTL(ctx, "forever"); !exp.Persistent {
+		t.Fatalf("persistent counter gained a ttl: %+v", exp)
+	}
+
+	// errors leave no trace
+	_ = c.SetBytes(ctx, "text", []byte("abc"), 0)
+	_, err := c.IncrementWithTTL(ctx, "text", 1, time.Minute)
+	mustIs(t, err, ErrNotInteger)
+	if exp, _ := c.TTL(ctx, "text"); !exp.Persistent {
+		t.Fatalf("a failed increment changed the ttl: %+v", exp)
+	}
+	_ = c.SetBytes(ctx, "max", []byte(strconv.FormatInt(math.MaxInt64, 10)), 0)
+	_, err = c.IncrementWithTTL(ctx, "max", 1, time.Minute)
+	mustIs(t, err, ErrCounterOverflow)
+
+	// many concurrent creators: exactly one total, always with a ttl
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Go(func() {
+			for range 25 {
+				if _, err := c.IncrementWithTTL(ctx, "race", 1, time.Minute); err != nil {
+					t.Error(err)
+				}
+			}
+		})
+	}
+	wg.Wait()
+	if v, _ := c.GetBytes(ctx, "race"); string(v) != "500" {
+		t.Fatalf("race = %s", v)
+	}
+	if exp, _ := c.TTL(ctx, "race"); exp.Persistent || !exp.Exists {
+		t.Fatalf("the counter must carry a ttl: %+v", exp)
+	}
+}

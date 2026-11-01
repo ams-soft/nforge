@@ -102,14 +102,19 @@ func readCommand(r *bufio.Reader) ([]string, error) {
 	n, _ := strconv.Atoi(strings.TrimSpace(line[1:]))
 	out := make([]string, 0, n)
 	for range n {
-		if _, err := r.ReadString('\n'); err != nil { // $len
-			return nil, err
-		}
-		arg, err := r.ReadString('\n')
+		header, err := r.ReadString('\n') // $len
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, strings.TrimSuffix(arg, "\r\n"))
+		size, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(header, "$")))
+		if err != nil || size < 0 {
+			return nil, errors.New("bad bulk length")
+		}
+		arg := make([]byte, size+2) // payload + CRLF; scripts contain newlines
+		if _, err := io.ReadFull(r, arg); err != nil {
+			return nil, err
+		}
+		out = append(out, string(arg[:size]))
 	}
 	return out, nil
 }
@@ -409,5 +414,64 @@ func TestRedisPoolTimeoutIsUnsent(t *testing.T) {
 	}
 	if f.count("INCRBY") != 0 {
 		t.Fatal("INCRBY must not have been sent")
+	}
+}
+
+// IncrementWithTTL is one EVALSHA (EVAL only after NOSCRIPT, which means the
+// script did not run) and is never replayed after a lost reply (G-33).
+func TestRedisIncrementWithTTLUsesOneScriptCall(t *testing.T) {
+	var args []string
+	noscript := true
+	f := newFakeRedis(t, func(cmd []string) string {
+		switch strings.ToUpper(cmd[0]) {
+		case "EVALSHA":
+			if noscript {
+				noscript = false
+				return "-NOSCRIPT No matching script. Please use EVAL.\r\n"
+			}
+			return ":7\r\n"
+		case "EVAL":
+			args = cmd
+			return ":7\r\n"
+		}
+		return "-ERR unexpected\r\n"
+	})
+	c := openRedis(t, redisConfigFor(f.addr, nil))
+	n, err := c.IncrementWithTTL(bg, "rate", 5, 1500*time.Millisecond)
+	if err != nil || n != 7 {
+		t.Fatalf("%d %v", n, err)
+	}
+	if f.count("EVALSHA") != 1 || f.count("EVAL") != 1 || f.count("INCRBY") != 0 {
+		t.Fatalf("commands: %v", f.commands)
+	}
+	// EVAL <script> 1 <key> <delta> <ttl ms>
+	if len(args) != 6 || args[2] != "1" || !strings.HasSuffix(args[3], ":rate") || args[4] != "5" || args[5] != "1500" {
+		t.Fatalf("script call: %q", args)
+	}
+	if !strings.Contains(args[1], "PEXPIRE") || !strings.Contains(args[1], "EXISTS") {
+		t.Fatalf("unexpected script: %q", args[1])
+	}
+}
+
+func TestRedisIncrementWithTTLIsNotReplayedAfterALostReply(t *testing.T) {
+	f := newFakeRedis(t, func(cmd []string) string { return "" })
+	c := openRedis(t, redisConfigFor(f.addr, nil))
+	_, err := c.IncrementWithTTL(bg, "rate", 1, time.Minute)
+	mustIs(t, err, ErrOutcomeUnknown)
+	if n := f.count("EVALSHA") + f.count("EVAL"); n != 1 {
+		t.Fatalf("the script was sent %d times, want exactly 1: %v", n, f.commands)
+	}
+}
+
+func TestRedisIncrementWithTTLMapsServerErrors(t *testing.T) {
+	for reply, want := range map[string]error{
+		"-ERR value is not an integer or out of range script: abc, on @user_script:3.\r\n": ErrNotInteger,
+		"-ERR increment or decrement would overflow script: abc, on @user_script:3.\r\n":   ErrCounterOverflow,
+		"-NOPERM this user has no permissions to run the 'evalsha' command\r\n":            ErrUnavailable,
+	} {
+		f := newFakeRedis(t, func(cmd []string) string { return reply })
+		c := openRedis(t, redisConfigFor(f.addr, nil))
+		_, err := c.IncrementWithTTL(bg, "rate", 1, time.Minute)
+		mustIs(t, err, want)
 	}
 }

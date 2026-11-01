@@ -349,7 +349,35 @@ func (c *Cache) Increment(ctx context.Context, key string, delta int64) (int64, 
 	if err != nil {
 		return 0, c.fail(op, err)
 	}
-	n, err := c.backend.incr(ctx, full, delta)
+	n, err := c.backend.incr(ctx, full, delta, 0)
+	return n, c.fail(op, err)
+}
+
+// IncrementWithTTL is Increment for a counter that must expire, such as a rate
+// limiter window: when the call creates the counter it also gives it ttl, in
+// the same atomic step (Redis: one Lua script; memory: under the lock), so a
+// crash or a lost reply between "increment" and "expire" cannot leave a
+// counter that never resets. An existing counter keeps its remaining TTL (the
+// window is not extended by later increments). ttl must be positive; the
+// Redis driver needs permission to run EVAL.
+func (c *Cache) IncrementWithTTL(ctx context.Context, key string, delta int64, ttl time.Duration) (int64, error) {
+	const op = "increment_with_ttl"
+	if err := c.begin(ctx, op); err != nil {
+		return 0, err
+	}
+	defer c.end()
+	ttl, err := normalizeTTL(ttl)
+	if err == nil && ttl == 0 {
+		err = newError(ErrInvalidTTL, "zero") // use Increment for a persistent counter
+	}
+	if err != nil {
+		return 0, c.fail(op, err)
+	}
+	full, err := c.keys.resolve(ctx, key)
+	if err != nil {
+		return 0, c.fail(op, err)
+	}
+	n, err := c.backend.incr(ctx, full, delta, ttl)
 	return n, c.fail(op, err)
 }
 

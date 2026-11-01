@@ -1452,6 +1452,7 @@ c.GetBytes(ctx, key) ([]byte, error) / c.SetBytes(ctx, key, b, ttl) / c.SetBytes
 c.Delete(ctx, keys...) (int64, error) / c.Exists(ctx, key) (bool, error)
 c.Expire(ctx, key, ttl) (bool, error) / c.TTL(ctx, key) (cache.Expiration, error)
 c.Increment(ctx, key, delta) (int64, error)
+c.IncrementWithTTL(ctx, key, delta, ttl) (int64, error)   // ttl > 0, applied only when the call creates the counter
 c.GetOrLoad(ctx, key, &target, ttl, func(ctx context.Context) (any, error))
 c.Ping(ctx) / c.Shutdown(ctx) / c.Driver()
 cache.ApplyDefaults(&cfg); cache.ValidateConfig(cfg)
@@ -1496,7 +1497,13 @@ cache.ApplyDefaults(&cfg); cache.ValidateConfig(cfg)
   leading zeros; `-0` rejected). Missing → starts at 0, persistent; the
   existing TTL is preserved; bad content → `ErrNotInteger`, overflow →
   `ErrCounterOverflow`, both without changing the entry. Never mix counter
-  and object keys (CBOR objects are not integers).
+  and object keys (CBOR objects are not integers). `IncrementWithTTL` is for
+  counters that must expire (rate-limit windows): the creating call sets the
+  TTL atomically with the increment (Redis: one Lua script via EVALSHA, so
+  the user needs EVAL permission; memory: under the lock), later calls keep
+  the remaining TTL, `ttl <= 0` is `ErrInvalidTTL`. Do not build this from
+  `Increment` + `Expire`: a crash between them leaves a counter that never
+  resets.
 - `Ping` needs no tenant; memory only checks that the cache is open.
 - `max_value_bytes` applies to encoded and raw writes and to values read
   back (Redis: checked after go-redis has read the bulk reply — it does not
@@ -1505,7 +1512,8 @@ cache.ApplyDefaults(&cfg); cache.ValidateConfig(cfg)
 ### 11.2 Drivers
 
 **Redis** (`redis.go`): GET, SET [PX], SET NX [PX], DEL, EXISTS, PEXPIRE,
-PTTL, INCRBY, PING; never EXISTS+SET or GET+SET emulation, never
+PTTL, INCRBY, PING, plus one Lua script (EVALSHA, EVAL only after NOSCRIPT)
+for `IncrementWithTTL`; never EXISTS+SET or GET+SET emulation, never
 `CONFIG SET`/`FLUSHDB`/`FLUSHALL`. Client options: `MaxRetries: -1` (no
 automatic replay), `DialerRetries: 1`, `ContextTimeoutEnabled: true`,
 `DisableIdentity: true`, maintenance notifications disabled, pool/timeouts

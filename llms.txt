@@ -507,7 +507,8 @@ b, err := dps.Cache.GetBytes(ctx, "raw"); err = dps.Cache.SetBytes(ctx, "raw", b
 n, err := dps.Cache.Delete(ctx, "a", "b")
 exists, err := dps.Cache.Exists(ctx, "a"); ok, err = dps.Cache.Expire(ctx, "a", time.Minute)
 exp, err := dps.Cache.TTL(ctx, "a")                         // Expiration{Exists, Persistent, Remaining}
-v, err := dps.Cache.Increment(ctx, "hits", 1)
+v, err := dps.Cache.Increment(ctx, "hits", 1)              // persistent counter
+w, err := dps.Cache.IncrementWithTTL(ctx, "rate:ip", 1, time.Minute) // expiring window, created atomically with its TTL
 err = dps.Cache.GetOrLoad(ctx, "product:1", &p, 5*time.Minute, func(ctx context.Context) (any, error) {
 	return catalog.Find(ctx, 1)
 })
@@ -517,7 +518,7 @@ err = dps.Cache.Ping(ctx); driver := dps.Cache.Driver()     // "redis" | "memory
 - `cache.Open(ctx, cfg, opts...)` (deps does it): options `WithCodecRegistry`, `WithNamespace(env, app)` (required unless `cache.prefix`), `WithTenantResolver`, `WithLogger`. Disabled cfg → `ErrDisabled`. It pings and closes what it created on failure; it never panics or exits.
 - Contract: ctx checked first; after `Shutdown` → `ErrClosed`; empty key or full key > `max_key_bytes` → `ErrInvalidKey`; wildcards are literal. TTL `0` = persistent, negative → `ErrInvalidTTL`, positive rounded **up** to whole ms. `Set*` replaces value and TTL. `Expire` needs ttl > 0 and returns false for a missing key.
 - Objects are encoded with the configured codec (`json` or `cbor`) without an envelope; decode into a fresh value assigned only on success (`codec:"required"`, `Validate()` included). Decode failure is `ErrDecode`, never a miss. Changing `cache.codec` needs a new `cache.prefix` or expiry.
-- `SetIfAbsent`: one atomic `SET NX PX`; a lost Redis reply is `ErrOutcomeUnknown`, never false. `Increment`: decimal ASCII int64; missing key starts at 0; TTL preserved; `ErrNotInteger`, `ErrCounterOverflow`. Never mix counter and object keys.
+- `SetIfAbsent`: one atomic `SET NX PX`; a lost Redis reply is `ErrOutcomeUnknown`, never false. `Increment`: decimal ASCII int64; missing key starts at 0; TTL preserved; `ErrNotInteger`, `ErrCounterOverflow`. `IncrementWithTTL(ctx, key, delta, ttl)`: the call that creates the counter sets the TTL atomically (Redis Lua script, needs EVAL permission), later calls keep the remaining TTL; use it for rate-limit windows, never `Increment`+`Expire`. Never mix counter and object keys.
 - `GetOrLoad`: hit → decode; read errors other than `ErrNotFound` are returned and the loader is **not** called; otherwise one flight per full key in this instance (`max_inflight_loads`, `ErrLoadCapacity`), the leader runs the loader with `load_timeout`, stores best-effort with the leader's TTL; loader panics → `ErrLoaderPanic`; loader errors are returned unchanged and never cached. Not a distributed lock.
 - Redis driver: GET, SET [PX], SET NX [PX], DEL, EXISTS, PEXPIRE, PTTL, INCRBY, PING; `MaxRetries: -1`; every operation under `timeouts.operation`; only pure reads are retried (`read_retries`, transport errors only); **mutations are never retried**. Errors map to `ErrNotFound`, `ErrUnavailable` (reasons `auth`, `server`, `pool_timeout`, `closed`, `connect`, `timeout`, `connection`), `ErrNotInteger`, `ErrCounterOverflow`, `ErrInvalidTTL`, or `ErrOutcomeUnknown` (mutation with unknown result; also matches `ErrUnavailable`). The same `*Cache` recovers when Redis returns. URL `redis://` / `rediss://` (no query options); TLS 1.2+ with verification, no skip option.
 - Memory driver: map + LRU + deadline heap under one mutex; `max_entries` and `max_bytes` (payload budget, not RSS); cleanup goroutine every `cleanup_interval`; data lost on restart.

@@ -50,7 +50,10 @@ type backend interface {
 	exists(ctx context.Context, key string) (bool, error)
 	expire(ctx context.Context, key string, ttl time.Duration) (bool, error)
 	ttl(ctx context.Context, key string) (Expiration, error)
-	incr(ctx context.Context, key string, delta int64) (int64, error)
+	// incr adds delta to a counter. A positive ttl is applied only when the
+	// call creates the key (atomically with the increment); zero leaves a
+	// new counter persistent. An existing TTL is always preserved.
+	incr(ctx context.Context, key string, delta int64, ttl time.Duration) (int64, error)
 	ping(ctx context.Context) error
 	// stop halts background work (memory cleanup) at the start of shutdown.
 	stop()
