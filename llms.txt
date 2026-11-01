@@ -390,7 +390,7 @@ type ListUsers struct {
 func (q *ListUsers) Validate() error { … } // 422 on failure
 ```
 
-Name from `query` tag, else `json`, else Go name; `"-"` skips; embedded structs flattened; `?name=` counts as absent; default wins over required; `codec.strict_unknown_fields: true` also rejects unknown parameters; errors reuse codec types with `Format: "query"` → 400.
+Name from `query` tag, else `json`, else Go name; `"-"` skips; embedded structs flattened; `?name=` counts as absent; a repeated scalar parameter is a 400 (slices take repetition); default wins over required; `codec.strict_unknown_fields: true` also rejects unknown parameters; errors reuse codec types with `Format: "query"` → 400.
 
 ### 6.5 Authentication, scopes, principal
 

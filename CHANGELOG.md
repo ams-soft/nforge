@@ -57,7 +57,8 @@ All notable changes to nForge are documented here. The format follows
   float parameters reject `NaN` and `Inf`; a transaction's rollback no longer
   uses the request context (a canceled request left it open); and
   `database.DB.Shutdown` honors its context instead of waiting forever for a
-  stuck connection.
+  stuck connection. A key source that is a FIFO is refused instead of blocking
+  startup.
 
 - **Secrets no longer leak when a whole `config.Config` is printed or
   logged.** `Config` (and `database.Config`) now redact the database

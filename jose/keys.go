@@ -105,6 +105,15 @@ func keyErr(kid, reason string) error {
 // readKeyFile opens the path (following symlinks, as projected secrets
 // use them), requires a regular file and bounds the read.
 func readKeyFile(path string, maxBytes int64) ([]byte, os.FileMode, error) {
+	// Check the type before opening: os.Open of a FIFO blocks until a writer
+	// appears, so the regular-file check on the open descriptor would never run.
+	pre, err := os.Stat(path)
+	if err != nil {
+		return nil, 0, errReason("cannot open key source")
+	}
+	if !pre.Mode().IsRegular() {
+		return nil, 0, errReason("key source must be a regular file")
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, 0, errReason("cannot open key source")
@@ -114,7 +123,8 @@ func readKeyFile(path string, maxBytes int64) ([]byte, os.FileMode, error) {
 	if err != nil {
 		return nil, 0, errReason("cannot stat key source")
 	}
-	if !info.Mode().IsRegular() {
+	// The path may have been swapped between the two checks.
+	if !info.Mode().IsRegular() || !os.SameFile(pre, info) {
 		return nil, 0, errReason("key source must be a regular file")
 	}
 	if info.Size() > maxBytes {

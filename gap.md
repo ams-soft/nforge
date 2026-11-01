@@ -542,7 +542,7 @@ AES), `jose/jwt.go` (claim validation), `jose/keys.go` (file loading),
 | `http/internal/query` | `strconv.ParseFloat` accepts `NaN` and `Inf`, so a float parameter could be non-finite. **Fixed**: refused as a type error (`TestFloatRejectsNonFinite`). |
 | `database/transaction.go` | The deferred rollback used the caller's context, so a canceled request made it fail and left the transaction open until the connection was discarded. **Fixed**: it uses `context.WithoutCancel` with a 5 s bound. |
 | `database/db.go` | `Shutdown` ignored its context: `pool.Close()` blocks until every connection is released, so one stuck connection hung `Deps.Shutdown`. **Fixed**: the close runs in a goroutine and the context bounds the wait. |
-| `codec/typeinfo.go`, `codec/presence.go`, `cache/memory.go`, `jose/keys.go` | No defect found. Observations kept as notes: a repeated scalar query parameter (`?page=1&page=2`) uses the first value (a proxy that reads the last one sees another request); a key source that is a FIFO blocks `os.Open` until a writer appears (trusted configuration path, startup only). |
+| `codec/typeinfo.go`, `codec/presence.go`, `cache/memory.go`, `jose/keys.go` | No defect found. Two observations were closed afterwards: a repeated scalar query parameter is now a 400 (`RepeatedError`), and `readKeyFile` runs `os.Stat` before `os.Open`, so a FIFO key source is refused instead of blocking startup (`TestKeySourceFIFOIsRefusedWithoutBlocking`). |
 
 ---
 
