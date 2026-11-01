@@ -38,3 +38,28 @@ func TestByteSizeYAML(t *testing.T) {
 		t.Fatalf("yaml number: %d %v", c.MaxPayloadBytes, err)
 	}
 }
+
+// Out-of-range sizes used to convert a float64 to int64 and silently become
+// math.MinInt64 (G-36); whole numbers lost bytes above 2^53.
+func TestParseByteSizeOverflowAndPrecision(t *testing.T) {
+	for _, in := range []string{
+		"9999999999gb", "8589934592gb", "9223372036854775808", "9223372036854775807kb",
+		"18446744073709551616", "99999999999999999999b", "9e18gb", "1e3mb",
+	} {
+		if got, err := ParseByteSize(in); err == nil {
+			t.Errorf("ParseByteSize(%q) = %d, want an error", in, got)
+		}
+	}
+	exact := map[string]ByteSize{
+		"9007199254740993":    9007199254740993, // 2^53+1: a float64 would round it
+		"9223372036854775807": 1<<63 - 1,
+		"8191gb":              8191 * GB,
+		"0":                   0,
+		" 5 mb ":              5 * MB,
+	}
+	for in, want := range exact {
+		if got, err := ParseByteSize(in); err != nil || got != want {
+			t.Errorf("ParseByteSize(%q) = %d, %v; want %d", in, got, err, want)
+		}
+	}
+}

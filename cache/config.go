@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"math/bits"
 	"net"
 	"net/url"
 	"strconv"
@@ -499,6 +500,19 @@ func ParseByteSize(s string) (ByteSize, error) {
 	mult, ok := byteUnits[unit]
 	if num == "" || !ok {
 		return 0, fmt.Errorf("invalid size %q (use e.g. 1mb, 512kb, 1048576)", s)
+	}
+	if !strings.Contains(num, ".") {
+		// Whole numbers stay exact (a float64 loses the last bytes above 2^53)
+		// and overflow is an error.
+		n, err := strconv.ParseUint(num, 10, 63)
+		if err != nil {
+			return 0, fmt.Errorf("invalid size %q: too large", s)
+		}
+		hi, lo := bits.Mul64(n, uint64(mult))
+		if hi != 0 || lo > math.MaxInt64 {
+			return 0, fmt.Errorf("invalid size %q: too large", s)
+		}
+		return ByteSize(lo), nil
 	}
 	n, err := strconv.ParseFloat(num, 64)
 	if err != nil {

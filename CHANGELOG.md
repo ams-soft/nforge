@@ -98,6 +98,11 @@ All notable changes to nForge are documented here. The format follows
   the exit-on-error wrapper). A tracing setup failure is an error instead of a
   panic.
 
+- **Sizes that overflow are an error.** `config.ByteSize` turned values such
+  as `9999999999gb` or `9223372036854775807` into a negative number (a
+  `float64` to `int64` conversion) without any error. It now shares the
+  parser of `cache.ByteSize`: whole numbers are exact and overflow is rejected.
+
 ### Notes
 
 - **Upgrading:** configs and env files with keys that match no field now

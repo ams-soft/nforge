@@ -1,10 +1,7 @@
 package config
 
 import (
-	"fmt"
-	"strconv"
-	"strings"
-
+	"github.com/ams-soft/nforge/cache"
 	"gopkg.in/yaml.v3"
 )
 
@@ -20,29 +17,15 @@ const (
 	GB          = 1024 * MB
 )
 
-var byteUnits = map[string]ByteSize{
-	"": B, "b": B,
-	"k": KB, "kb": KB, "kib": KB,
-	"m": MB, "mb": MB, "mib": MB,
-	"g": GB, "gb": GB, "gib": GB,
-}
-
+// ParseByteSize parses a size with the syntax of cache.ParseByteSize (the one
+// implementation of it, so the two packages cannot drift apart): a number with
+// an optional unit, exact for whole numbers, an error on overflow.
 func ParseByteSize(s string) (ByteSize, error) {
-	str := strings.ToLower(strings.TrimSpace(s))
-	i := strings.IndexFunc(str, func(r rune) bool { return (r < '0' || r > '9') && r != '.' })
-	if i < 0 {
-		i = len(str)
-	}
-	num, unit := str[:i], strings.TrimSpace(str[i:])
-	mult, ok := byteUnits[unit]
-	if num == "" || !ok {
-		return 0, fmt.Errorf("invalid size %q (use e.g. 5mb, 512kb, 1048576)", s)
-	}
-	n, err := strconv.ParseFloat(num, 64)
+	v, err := cache.ParseByteSize(s)
 	if err != nil {
-		return 0, fmt.Errorf("invalid size %q: %w", s, err)
+		return 0, err
 	}
-	return ByteSize(n * float64(mult)), nil
+	return ByteSize(v), nil
 }
 
 func (b *ByteSize) UnmarshalText(text []byte) error {

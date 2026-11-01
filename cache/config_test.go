@@ -316,3 +316,17 @@ func TestOptionsValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestParseByteSizeIsExactAndRejectsOverflow(t *testing.T) {
+	for _, in := range []string{"9999999999gb", "9223372036854775808", "8589934592gb", "18446744073709551616", "99999999999999999999"} {
+		if got, err := ParseByteSize(in); err == nil {
+			t.Errorf("ParseByteSize(%q) = %d, want an error", in, got)
+		}
+	}
+	if got, err := ParseByteSize("9007199254740993"); err != nil || got != 9007199254740993 {
+		t.Errorf("a whole number above 2^53 must stay exact: %d, %v", got, err)
+	}
+	if got, err := ParseByteSize("1.5gb"); err != nil || got != 3<<29 {
+		t.Errorf("fractional sizes still work: %d, %v", got, err)
+	}
+}

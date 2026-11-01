@@ -54,7 +54,7 @@ PoC files were temporary and are deleted; each item says how to reproduce.
 | G-33 | Low | CODE | `cache` | No atomic increment-with-TTL: counters can live forever |
 | G-34 | Low-Med | PoC | `database/config.go` | **RESOLVED** `redactDSN` leaves `?password=` and `?sslpassword=` visible |
 | G-35 | Low-Med | CODE | `http/server.go`, `database` | No handler timeout and no `statement_timeout` by default |
-| G-36 | Medium | PoC | `config/bytesize.go` | `ByteSize` overflows to `MinInt64` with no error (cache copy is correct) |
+| G-36 | Medium | PoC | `config/bytesize.go` | **RESOLVED** `ByteSize` overflows to `MinInt64` with no error (cache copy is correct) |
 | G-37 | Low | CODE | `cache`, `codec` | `cache.max_value_bytes` can exceed `codec.max_payload_bytes`: stored but unreadable |
 | G-38 | Low | PoC | `helper/safecalc` | `Round` returns NaN/Inf for finite input; fixed two decimals |
 | G-39 | Low | CODE | `config/security.go` | Security headers and cache control off by default |
@@ -987,7 +987,7 @@ pass `r.Context()` to queries.
 
 ---
 
-### G-36 — `config.ByteSize` overflows to a negative number with no error (Medium, PoC)
+### G-36 — `config.ByteSize` overflows to a negative number with no error (Medium, PoC) [RESOLVED]
 
 **Where.** `config/bytesize.go` `ParseByteSize`:
 `ByteSize(n * float64(mult))` after `strconv.ParseFloat`, with no range check.
@@ -1019,6 +1019,9 @@ does not re-validate would silently get a negative limit, which most
 overflow checks; use `ParseFloat` only for fractional input and reject results
 outside `[0, MaxInt64]`. Better: make `config.ByteSize` an alias of (or share
 code with) `cache.ByteSize`, since `config` is allowed to import `cache`.
+
+
+> **Resolved** in `fix(config): reject byte sizes that overflow`. config.ParseByteSize delegates to cache.ParseByteSize, which is exact for whole numbers and errors on overflow. Tests: TestParseByteSizeOverflowAndPrecision (config) and TestParseByteSizeIsExactAndRejectsOverflow (cache).
 
 ---
 

@@ -489,7 +489,10 @@ Helpers:
 
 `config.ByteSize` (int64) parses `"5mb"`, `"512kb"`, `"1.5gb"`, `"100b"`,
 `"1048576"`, `"5 MiB"`; base 1024, case-insensitive. Implements
-`UnmarshalText` and `UnmarshalYAML`. Constants `B, KB, MB, GB`.
+`UnmarshalText` and `UnmarshalYAML`. Constants `B, KB, MB, GB`. The parser is
+`cache.ParseByteSize` (the only implementation; `config` imports `cache`):
+whole numbers are exact (no float64 rounding above 2^53) and a value over
+`math.MaxInt64` is an error, never a negative number.
 
 ### 4.4 Adding a config field — checklist
 
