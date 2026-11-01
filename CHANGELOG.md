@@ -90,6 +90,14 @@ All notable changes to nForge are documented here. The format follows
   references are reported in `Config.Warnings` and logged at startup.
   Top-level `x-*` keys are ignored, for application data.
 
+- **A fatal startup error is no longer silent.** With logging disabled (the
+  default) `deps.NewDeps` used to exit with status 1 and print nothing, and
+  with OTel logging it exited before the batch was flushed. The reason is now
+  always written to stderr, the modules already started are shut down first,
+  and `deps.NewDepsE` returns the error for embedding and tests (`NewDeps` is
+  the exit-on-error wrapper). A tracing setup failure is an error instead of a
+  panic.
+
 ### Notes
 
 - **Upgrading:** configs and env files with keys that match no field now

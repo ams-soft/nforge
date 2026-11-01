@@ -189,21 +189,21 @@ if err := server.Start(); err != nil {    // 6. blocks until SIGINT/SIGTERM
    `logs.Setup` builds the logger and registers its shutdown; then, if
    `cfg.IsTracingEnabled()`, `telemetry.SetupTracing` registers the global
    TracerProvider and its shutdown. Otherwise a **no-op logger**
-   (`slog.DiscardHandler`). Logger failure → `os.Exit(1)`; tracing failure →
-   `panic`.
+   (`slog.DiscardHandler`). Logger or tracing failure → startup error
+   (see below).
 2. **Banner**: if `http.server.header: true`, logs
    `***** AMS SOFT nForge v<ver>: <APP> v<appver> *****`.
 3. **Codec** (`setupCodec`): builds a `codec.Registry` from `cfg.Codec` and
    installs it as the process default with `codec.SetDefault` (the HTTP
-   helpers always use `codec.Default()`). Failure → `os.Exit(1)`.
+   helpers always use `codec.Default()`). Failure → startup error.
 4. **Database** (`setupDatabase`): only if `database.enabled: true`. Opens the
-   pool with a 15 s startup timeout and a ping; failure → `os.Exit(1)` (the app
+   pool with a 15 s startup timeout and a ping; failure → startup error (the app
    never starts without its database). With `database.tenancy.enabled` the
    startup also runs `CheckTenancy` (§9.1), whose failure is fatal too.
    Registers `db.Shutdown`.
 5. **JOSE** (`setupJOSE`): only if `jose.enabled: true`. `jose.New` with a
    15 s startup timeout reads and validates every key source; failure →
-   `[Fatal ERROR] unable to setup jose` + `os.Exit(1)` (the error is already
+   `unable to setup jose` startup error (the error is already
    sanitized: no key paths or material). Logs `[JOSEModule] JOSE setup
    completed` with `Config.LogValue` (counts and profile names only).
    Registers `service.Shutdown`.
@@ -212,7 +212,7 @@ if err := server.Start(); err != nil {    // 6. blocks until SIGINT/SIGTERM
    `WithNamespace(cfg.Env, cfg.App.Name)`, `WithLogger(&d.Logger)` and, when
    `database.tenancy.enabled`, `WithTenantResolver` bound to
    `database.TenantFromContext` (§11.4). The startup ping must pass (Redis
-   down → `[Fatal ERROR] unable to setup cache` + `os.Exit(1)`; `Open` has
+   down → `unable to setup cache` startup error; `Open` has
    already released its resources). Logs `[CacheModule] Cache setup
    completed` with `cache.Config.LogValue`. Registers `Cache.Shutdown`.
 
@@ -1843,8 +1843,10 @@ algorithm/kid/typ, boundaries), not only round trips.
   package prefix for library errors (`codec: …`, `database: …`, `nhttp: …`).
 - Programmer errors detected at startup/registration **panic** with a clear
   message (`nhttp: GET /x: …`); runtime/request errors are returned.
-- Startup failures of required modules are fatal (`os.Exit(1)` after logging
-  `[Fatal ERROR] …`).
+- Startup failures of required modules are fatal: `deps.NewDepsE` returns the
+  error (after logging `[Fatal ERROR] …` and shutting down what had started,
+  so OTel batches are flushed) and `deps.NewDeps` prints it to **stderr**,
+  whatever the logging configuration, and exits with status 1.
 - Keep the hot path allocation-conscious; cache reflection per type with
   `sync.Map`.
 - Inside `nhttp`, import `net/http` as `stdhttp`; the router as `router`.

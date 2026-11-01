@@ -21,7 +21,7 @@ PoC files were temporary and are deleted; each item says how to reproduce.
 |---|---|---|---|---|
 | G-01 | High | PoC | `codec/xml.go` | **RESOLVED** XML decode memory is quadratic in nesting depth: 683 KB -> 10 GB |
 | G-02 | Med-High | PoC | `config/config.go` | **RESOLVED** Unknown YAML keys ignored outside `jose`; a typo in `cors.origins` means "any origin" |
-| G-03 | Medium | PoC | `deps/deps.go` | Fatal startup errors are silent with default logging; no flush with OTel |
+| G-03 | Medium | PoC | `deps/deps.go` | **RESOLVED** Fatal startup errors are silent with default logging; no flush with OTel |
 | G-04 | Medium | CODE | `http/internal/openapi` | Docs page loads Swagger UI from a floating CDN version, no SRI, host-wide CSP allowlist |
 | G-05 | Medium | PoC | `codec/presence*.go` | **RESOLVED** JSON tree fallback is quadratic: 131 KB -> 337 MB |
 | G-06 | Low | PoC | `codec/json.go` | Decode errors leak Go package-qualified type names to clients |
@@ -175,7 +175,7 @@ carry extra keys. Add tests for a typo in each security-relevant section.
 
 ---
 
-### G-03 — Fatal startup errors disappear (Medium, PoC)
+### G-03 — Fatal startup errors disappear (Medium, PoC) [RESOLVED]
 
 **Where.** `deps/deps.go`: `os.Exit(1)` at lines 114, 146, 165, 185, 216
 (logger, codec, database, jose, cache). Tracing failure at line 122 is a
@@ -214,6 +214,9 @@ subprocess).
 **Fix direction.** At minimum write the fatal error to `os.Stderr` (always) and
 run the registered shutdown functions before exiting. Better: add
 `NewDepsE(cfg) (*Deps, error)` and keep `NewDeps` as the exit-on-error wrapper.
+
+
+> **Resolved** in `fix(deps): report fatal startup errors and add NewDepsE`. NewDepsE returns the error after logging it and shutting down earlier modules; NewDeps prints it to stderr and exits 1; a tracing failure is an error, not a panic. Tests: deps/startup_test.go (including a subprocess test of the stderr output).
 
 ---
 

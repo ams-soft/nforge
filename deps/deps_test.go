@@ -59,7 +59,9 @@ func TestCheckJOSEDisabled(t *testing.T) {
 
 func TestSetupJOSEDisabledLeavesNil(t *testing.T) {
 	d := Deps{Context: context.Background(), Aux: &Aux{}}
-	d.setupJOSE(config.Config{})
+	if err := d.setupJOSE(config.Config{}); err != nil {
+		t.Fatal(err)
+	}
 	if d.JOSE != nil || len(d.Aux.ShutdownFuncs) != 0 {
 		t.Fatal("disabled jose must not create a service or a shutdown func")
 	}
@@ -80,7 +82,9 @@ func TestSetupJOSEEnabledRegistersShutdown(t *testing.T) {
 		Profiles: []jose.ProfileConfig{{Name: "msg", Kind: jose.KindJWS, Typ: "msg+jws", SigningAlgorithm: jose.EdDSA, SigningKey: "k"}},
 	}
 	d := Deps{Context: context.Background(), Logger: *slog.New(slog.DiscardHandler), Aux: &Aux{}}
-	d.setupJOSE(cfg)
+	if err := d.setupJOSE(cfg); err != nil {
+		t.Fatal(err)
+	}
 	if d.JOSE == nil || len(d.Aux.ShutdownFuncs) != 1 {
 		t.Fatal("enabled jose must create the service and register its shutdown")
 	}
@@ -104,7 +108,9 @@ func TestPingCacheDisabled(t *testing.T) {
 
 func TestSetupCacheDisabledLeavesNil(t *testing.T) {
 	d := Deps{Context: context.Background(), Aux: &Aux{}}
-	d.setupCache(config.Config{})
+	if err := d.setupCache(config.Config{}); err != nil {
+		t.Fatal(err)
+	}
 	if d.Cache != nil || len(d.Aux.ShutdownFuncs) != 0 {
 		t.Fatal("disabled cache must not create a cache or a shutdown func")
 	}
@@ -117,8 +123,12 @@ func newCacheDeps(t *testing.T, tenancy bool) Deps {
 	cfg.Cache = cache.Config{Enabled: true, Driver: cache.DriverMemory}
 	cfg.Database.Tenancy.Enabled = tenancy
 	d := Deps{Context: context.Background(), Logger: *slog.New(slog.DiscardHandler), Aux: &Aux{}}
-	d.setupCodec(cfg)
-	d.setupCache(cfg)
+	if err := d.setupCodec(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.setupCache(cfg); err != nil {
+		t.Fatal(err)
+	}
 	if d.Cache == nil || len(d.Aux.ShutdownFuncs) != 1 {
 		t.Fatal("enabled cache must be created with its shutdown registered")
 	}
