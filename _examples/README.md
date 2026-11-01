@@ -5,7 +5,7 @@ the framework. Start with `basic`, then pick the module you need.
 
 | Example | Shows | Needs |
 |---|---|---|
-| [`basic`](basic) | config, logging, JSON/XML/CBOR from one struct, plain and typed routes, typed query strings, OpenAPI docs, health/readiness, a global middleware, plus a minimal JWT login, memory cache, PostgreSQL notes, an `ncrypto` demo and a `safecalc` test | PostgreSQL (or `standalone.env`: nothing) |
+| [`basic`](basic) | opt-in HTTPS + HTTP/3 with a 308 redirect (`config.https-http3.yaml`, local-only certificate), config, logging, JSON/XML/CBOR from one struct, plain and typed routes, typed query strings, OpenAPI docs, health/readiness, a global middleware, plus a minimal JWT login, memory cache, PostgreSQL notes, an `ncrypto` demo and a `safecalc` test | PostgreSQL (or `standalone.env`: nothing) |
 | [`jose`](jose) | JWT login, bearer authentication, scopes, `Principal`, nested (signed + encrypted) tokens, generic JWS/JWE, JWKS and key files | two secrets in the environment |
 | [`cache`](cache) | `deps.Cache` on Redis or memory: objects, TTL, NX, counters, raw bytes, `GetOrLoad`, CBOR, outages | Redis (or `standalone.env`) |
 | [`database`](database) | `deps.DB`: Squirrel + pgx repositories, transactions, error mapping, multi-tenancy in column or Row-Level Security mode | PostgreSQL |

@@ -4,6 +4,47 @@ All notable changes to nForge are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **HTTPS and HTTP/3 transports**, opt-in through `http.server.tls` and
+  `http.server.http3`. HTTPS serves over TCP with TLS 1.3 as the minimum
+  (`min_version: "1.2"` is the only alternative); HTTP/3 serves over
+  QUIC/UDP (`github.com/quic-go/quic-go` v0.64.1). Plain HTTP, HTTPS and
+  HTTP/3 share one router and middleware chain. `tls.disable_insecure_http`
+  closes the plain listener; `tls.redirect_http` turns it into a
+  redirect-only 308 listener to a configured host (`tls.redirect_host`, or a
+  loopback `http.server.host`; the request `Host` is never used).
+  HTTP/3 reuses the TLS certificate (`same_keycert_tls`, default) or its own
+  pair, and works without HTTPS. HTTPS responses advertise `Alt-Svc` while
+  QUIC is bound (`http3.advertise`). `http3.max_idle_timeout` and
+  `http3.max_stream_timeout` are enforced; `allow_0rtt: true` is rejected.
+- `ServerHttp.StartContext(ctx)`, the context-driven form of `Start`.
+- `config.ValidateServer`, `ServerConfig.RedirectAuthority` and the
+  `DefaultHTTPPort`/`DefaultTLSPort`/`DefaultHTTP3Port` constants.
+- `_examples/basic/config.https-http3.yaml`, a committed **local-development
+  only** certificate (`_examples/basic/certs/`, its key is public on purpose),
+  and a live test that talks real HTTPS, HTTP/3 and the redirect.
+
+### Changed
+
+- **`http.server.port` is no longer required**: omitted or `0` means `8080`
+  (`tls.port` and `http3.port` default to `8443`, independently). A config
+  without an `http.server` section now loads.
+- `Start` now also runs `Deps.Shutdown` when startup fails (a bad certificate
+  or an occupied port), so dependencies are never left open; startup binds
+  every listener before serving and is all-or-nothing.
+- The default `http.docs.hosts` uses `https://…:{tls.port}` when HTTPS is on
+  and plain HTTP only redirects or is closed.
+
+### Notes
+
+- Nothing changes for existing apps: with no `tls`/`http3` section the server
+  is the same plain HTTP server, and `ServerHttp.Srv` is still that
+  `*http.Server`.
+- Open UDP/8443 in firewalls and load balancers for HTTP/3.
+
 ## [v0.1.2] - 2026-10-18
 
 ### Changed

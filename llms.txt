@@ -11,7 +11,7 @@ Important notes for code generation:
 - Register every route and middleware **before** the server serves its first request; go-ams-router panics afterwards.
 - Programmer errors detected at startup or route registration panic; request-time errors are returned. Startup failures of enabled modules are fatal (`os.Exit(1)`).
 - Everything in the codebase (comments, logs, errors, API texts, tests) is English.
-- Build with Go 1.27.2+ (the repository pins `toolchain go1.27.2`); lint with golangci-lint v2.15.0+ (older releases cannot read go1.27.2 export data) and the repo's `.golangci.yml`.
+- Build with Go 1.27.2+ (the repository pins `toolchain go1.27.3`); lint with golangci-lint v2.15.0+ (older releases cannot read go1.27.2 export data) and the repo's `.golangci.yml`.
 
 ## Docs
 
@@ -37,7 +37,7 @@ Important notes for code generation:
 
 ## Examples
 
-- [_examples/basic](_examples/basic): bootstrap, plain and typed routes in three formats, typed query strings, docs, health/readiness, a global middleware, a minimal JWT login, memory cache, PostgreSQL notes, an `ncrypto` demo and a `safecalc` test.
+- [_examples/basic](_examples/basic): opt-in HTTPS + HTTP/3 + 308 redirect (`config.https-http3.yaml`, local-only certificate), bootstrap, plain and typed routes in three formats, typed query strings, docs, health/readiness, a global middleware, a minimal JWT login, memory cache, PostgreSQL notes, an `ncrypto` demo and a `safecalc` test.
 - [_examples/jose](_examples/jose): JWT login, bearer authentication, scopes, `Principal`, nested tokens, JWS/JWE, JWKS, key files (`cmd/keygen`).
 - [_examples/cache](_examples/cache): `deps.Cache` on Redis or memory: objects, TTL, NX, counters, raw bytes, `GetOrLoad`, CBOR, outages.
 - [_examples/database](_examples/database): Squirrel + pgx repositories, transactions, error mapping, tenancy in column or RLS mode.
@@ -102,8 +102,7 @@ Minimal `config.yaml`:
 ```yaml
 app: { name: my-api, version: 1.0.0 }
 http:
-  server: { port: 8080 }
-  docs: { enabled: true }
+  docs: { enabled: true }   # http.server.port is optional: omitted = 8080
   routes: { health: { enabled: true }, readiness: { enabled: true } }
 logging: { output: { terminal: { enabled: true } } }
 ```
@@ -122,7 +121,7 @@ Run `go run . -config config.yaml` and open `http://localhost:8080/docs`.
    6. Cache (`cache.enabled`): `cache.Open` with a 15 s timeout, the app codec registry, namespace `(env, app.name)`, the logger and, when `database.tenancy.enabled`, a tenant resolver bound to `database.TenantFromContext`. Ping failure → exit.
 3. `nhttp.NewHTTPServer(dps)` creates the router, mounts the standard middleware chain and registers docs, JWKS and health/readiness routes when enabled.
 4. The app adds global middlewares (`AddGlobalMiddleware` + `LoadGlobalMiddleware`) and routes (`Typed()` or `Router()`).
-5. `server.Start()` runs `ListenAndServe` in a goroutine and waits for SIGINT/SIGTERM or a listen error. On a signal: `Srv.Shutdown` (10 s), then `Deps.Shutdown`, which runs registered shutdown functions LIFO: cache → JOSE → database → tracing → logs. All run even if one fails; errors are joined.
+5. `server.Start()` (= `StartContext` canceled by SIGINT/SIGTERM) loads the certificates, binds every enabled listener (plain HTTP :8080/tcp, HTTPS :8443/tcp, HTTP/3 :8443/udp; all-or-nothing) and serves them with the one shared router. On a signal or a listener error: all transports shut down (10 s, then forced), then `Deps.Shutdown` exactly once (also after a failed startup), which runs registered shutdown functions LIFO: cache → JOSE → database → tracing → logs. All run even if one fails; errors are joined.
 6. `ServerHttp.AddShutdownFunc` / `Shutdown()` are a separate app-level list the application calls itself; `Start` does not call them.
 
 Middleware chain (fixed order): `Tracing()` (only with tracing) → `Logger` (only with logging) → `middleware.Recoverer` → `middleware.Security` (`http.security.enabled`) → `middleware.CORS` (`http.cors.enabled`) → app global middlewares. go-ams-router builds the chain lazily on the first request, so `Use` is valid until then, even after routes. For inline routers (`With`/`Group`) add middlewares before routes.
@@ -151,8 +150,27 @@ app:
 http:
   server:
     host: ""                  # "" = all interfaces
-    port: 8080                # REQUIRED, 1..65535
+    port: 8080                # OPTIONAL, default 8080 (plain HTTP, tcp); explicit range 1..65535
     header: true              # print the nForge banner (zero value: false)
+    tls:                      # HTTPS over tcp; off by default (no silent protocol upgrade)
+      enabled: false
+      port: 8443              # OPTIONAL, default 8443 (tcp)
+      cert_file: ""           # PEM chain; cert_file + key_file required when enabled (also by http3 reuse)
+      key_file: ""
+      min_version: "1.3"      # "1.3" (default) | "1.2"; never 1.0/1.1. Applies to tcp only: QUIC is always TLS 1.3
+      disable_insecure_http: false   # close the plain HTTP listener (port above)
+      redirect_http: false    # plain HTTP serves only 308 → https; needs tls.enabled; excludes disable_insecure_http
+      redirect_host: ""       # public host for the Location; required unless http.server.host is loopback; never from the request
+    http3:                    # HTTP/3 over QUIC (udp); off by default; works without tls.enabled
+      enabled: false
+      port: 8443              # OPTIONAL, default 8443 (udp); defaulted independently of tls.port
+      same_keycert_tls: <true> # *bool; true reuses tls.cert_file/key_file (even with tls.enabled: false); false needs the two below
+      cert_file: ""           # only with same_keycert_tls: false (set with true → error)
+      key_file: ""
+      advertise: <true>       # *bool; Alt-Svc on HTTPS responses (effective only with tls.enabled and a bound QUIC listener)
+      max_idle_timeout: 30s   # QUIC connection idle timeout
+      max_stream_timeout: 30s # one HTTP/3 request: context deadline + stream read/write deadlines
+      allow_0rtt: false       # reserved: true is rejected at load (0-RTT requests are replayable)
     read_header_timeout: 10s  # http.Server timeouts: 0 = default, never "none" (Slowloris);
     read_timeout: 30s         #   negative → error; read_header_timeout <= read_timeout
     write_timeout: 30s
@@ -163,7 +181,7 @@ http:
     title: <app.name>
     version: <app.version>
     auth: bearer              # bearer | none (validated) — documented scheme; none + private typed routes panics
-    hosts: ["http://{host|localhost}:{port}"]   # 0.0.0.0 / :: / "" → localhost
+    hosts: ["http://{host|localhost}:{port}"]   # 0.0.0.0 / :: / "" → localhost; "https://…:{tls.port}" when http only redirects/is closed
     accent: "#007d9cbf"       # validated hex: #RGB, #RGBA, #RRGGBB, #RRGGBBAA
   routes:
     health:    { enabled: false, path: /health }   # path defaults only when enabled
@@ -302,7 +320,11 @@ func (u *User) Validate() error { … } // codec.Validator: runs after decode �
 
 ### 6.1 Server
 
-`type ServerHttp struct { Deps deps.Deps; Srv *http.Server; ShutdownFunc []func(); TypedRoutes []TypedRoute }`. Methods: `NewHTTPServer(deps)`, `Router() router.Router`, `Typed() *TypedRouter`, `AddGlobalMiddleware(mw)`, `LoadGlobalMiddleware()`, `AddDocRoute(TypedRoute)`, `TenantMiddleware(opts...)`, `AddShutdownFunc(fn)`, `Shutdown()`, `Start() error`. `NewHTTPServer` sets the `Srv` read-header/read/write/idle timeouts from `http.server` (defaults 10s/30s/30s/120s; `config.ApplyServerDefaults` also fills them for a `Config` built by hand). Streaming or long handlers extend their own deadline with `http.NewResponseController(w).SetWriteDeadline`.
+`type ServerHttp struct { Deps deps.Deps; Srv *http.Server; ShutdownFunc []func(); TypedRoutes []TypedRoute }`. Methods: `NewHTTPServer(deps)`, `Router() router.Router`, `Typed() *TypedRouter`, `AddGlobalMiddleware(mw)`, `LoadGlobalMiddleware()`, `AddDocRoute(TypedRoute)`, `TenantMiddleware(opts...)`, `AddShutdownFunc(fn)`, `Shutdown()`, `Start() error`, `StartContext(ctx) error`. `NewHTTPServer` sets the `Srv` read-header/read/write/idle timeouts from `http.server` (defaults 10s/30s/30s/120s; `config.ApplyServerDefaults` also fills them for a `Config` built by hand). Streaming or long handlers extend their own deadline with `http.NewResponseController(w).SetWriteDeadline`.
+
+### 6.1.1 Transports (HTTP, HTTPS, HTTP/3)
+
+Ports are optional and independent: `http.server.port` 8080 (tcp), `tls.port` 8443 (tcp), `http3.port` 8443 (udp); omitted or 0 takes the default, negative or > 65535 is an error. HTTPS (`tls.enabled`) and HTTP/3 (`http3.enabled`) are off by default; `tls.min_version` is `"1.3"` (default) or `"1.2"` (tcp only; QUIC is always TLS 1.3); `allow_0rtt: true` is rejected (replayable). `tls.disable_insecure_http` closes the plain listener; `tls.redirect_http` makes it a redirect-only 308 listener with no routes or middleware, to `https://<tls.redirect_host or loopback http.server.host>:<tls.port>`; the `Host` header is never used; both true is an error, and so is redirect without TLS or non-loopback host without `redirect_host`. HTTP/3 reuses `tls.cert_file/key_file` (`same_keycert_tls: true`, default; required even if `tls.enabled: false`) or its own pair (`same_keycert_tls: false`). HTTPS responses carry `Alt-Svc: h3=":<udp port>"` while QUIC is bound (`http3.advertise`, default true). `max_idle_timeout` (QUIC idle, 30s) and `max_stream_timeout` (per HTTP/3 request deadline, 30s) are enforced. UDP/8443 must be open in firewalls. Demo: `_examples/basic/config.https-http3.yaml` (local-only public certificate in `_examples/basic/certs/`).
 
 ### 6.2 Response envelope and plain handlers
 
@@ -547,6 +569,7 @@ All commands from the repository root; every example listens on `127.0.0.1:8080`
 ```bash
 docker compose -f _examples/docker-compose.yml up -d     # PostgreSQL 18 (app/app/app :5432), Redis 8 (:6379), OTel Collector (:4317/:4318), Tempo, Loki, Grafana (:3000)
 go run ./_examples/basic -config _examples/basic/config.yaml [-envfile _examples/basic/standalone.env]   # standalone.env: no database
+go run ./_examples/basic -config _examples/basic/config.https-http3.yaml -envfile _examples/basic/standalone.env   # from the repo root: HTTPS + HTTP/3 + redirect
 export JWT_SECRET=$(openssl rand -hex 32) JWT_ENCRYPTION_SECRET=$(openssl rand -hex 16)
 go run ./_examples/jose -config _examples/jose/config.yaml
 go run ./_examples/cache -config _examples/cache/config.yaml [-envfile _examples/cache/standalone.env]   # standalone.env: memory driver

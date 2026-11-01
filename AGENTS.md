@@ -48,6 +48,10 @@ application gets, from one `config.yaml`:
   config or `Deps` wiring: AEAD encryption (XChaCha20-Poly1305, AES-256-GCM),
   HMAC-SHA256, password hashing (bcrypt, Argon2id), data hashing (BLAKE3,
   SHA-256) and secure random values (bytes, keys, ranges, strings, ULIDs).
+- **Transports** (`http.server.tls`, `http.server.http3`): plain HTTP by default
+  (`:8080`), opt-in HTTPS over TCP (`:8443`, TLS 1.3 minimum) and HTTP/3 over
+  QUIC/UDP (`:8443`), one shared router, an optional redirect-only HTTP
+  listener (§7.12).
 - **Helpers** (`helper/`): small standalone utilities; today `safecalc`,
   monetary amounts in integer cents with exact display formatting.
 
@@ -60,7 +64,7 @@ proxy); bump this `version` in the commit that gets tagged, so
 Never move or recreate a published tag: the module proxy keeps the first
 content it saw for a version forever; fix forward with a new patch release.
 
-Toolchain: **Go 1.27**, pinned to `toolchain go1.27.2` in `go.mod` (stdlib
+Toolchain: **Go 1.27**, pinned to `toolchain go1.27.3` in `go.mod` (stdlib
 security fixes; `GOTOOLCHAIN=auto` downloads it; go-ams-router v1.1.0 itself
 needs 1.24+). The code uses
 modern Go freely: `range` over ints, `strings.SplitSeq`, `reflect.TypeFor`,
@@ -90,7 +94,8 @@ generics, `errors.Join`, `math/rand/v2`, `maps`/`slices` iterators.
 ├── helper/
 │   └── safecalc/       # money in integer cents: New, NewFromFloat (half-even), Format, BRL
 ├── http/               # package nhttp: only the public surface at the root
-│   ├── server.go       # ServerHttp, NewHTTPServer, middleware loading, Start/Shutdown
+│   ├── server.go       # ServerHttp, NewHTTPServer, middleware loading, Start
+│   ├── transport.go    # StartContext: HTTP/HTTPS/HTTP3 listeners, redirect-only handler, Alt-Svc, shutdown
 │   ├── routes.go       # built-in routes: health/readiness, docs + OpenAPI spec, JWKS (collision check)
 │   ├── response.go     # Send*/Parse*/ParseStatus, Envelope, ErrorTitle, SuccessResponse/ErrorResponse (aliases)
 │   ├── middleware.go   # Tracing, Logger (thin wrappers)
@@ -149,7 +154,7 @@ config ──► database, jose, cache (their Config types are embedded in confi
 telemetry ──► config
 logs ──► config, telemetry, go-ams-router/middleware (GetRequestID)
 deps ──► nforge, config, codec, database, jose, cache, logs, telemetry
-nhttp ──► config, database, deps, codec, jose, cache (tests), telemetry, go-ams-router
+nhttp ──► config, database, deps, codec, jose, cache (tests), telemetry, go-ams-router, quic-go (http3)
 ```
 
 Keep it acyclic. `database`, `codec`, `jose`, `ncrypto` and `helper/*` must stay free of internal
@@ -223,9 +228,14 @@ closes nothing); it exists for tests that tear modules down themselves.
 
 ### 3.2 Shutdown
 
-- `ServerHttp.Start()` runs `ListenAndServe` in a goroutine and waits for
-  SIGINT/SIGTERM or a listen error. On signal: `Srv.Shutdown` with a 10 s
-  timeout, then `Deps.Shutdown(ctx)`.
+- `ServerHttp.Start()` is `StartContext` with a context canceled by
+  SIGINT/SIGTERM (`signal.NotifyContext`, so the subscription is released).
+  Startup is transactional (§7.12): certificates are loaded and **every**
+  TCP/UDP listener is bound before the first request; any failure closes
+  what was bound and returns the error. On a signal or a runtime listener
+  error every transport is shut down in parallel with a 10 s timeout (then
+  forcibly closed), and `Deps.Shutdown` runs exactly once — also when
+  startup failed, and always after the listeners are released.
 - `Deps.Shutdown` runs registered functions **LIFO** (like `defer`): the
   cache closes first, then JOSE, then the database, then tracing, then logs
   (so they can still log). All run even
@@ -310,8 +320,27 @@ app:
 http:
   server:
     host: ""                  # "" = all interfaces
-    port: 8080                # REQUIRED, 1..65535
+    port: 8080                # OPTIONAL, default 8080 (plain HTTP, tcp); explicit range 1..65535
     header: true              # print the nForge banner (zero value: false)
+    tls:                      # HTTPS over tcp; off by default (no silent protocol upgrade)
+      enabled: false
+      port: 8443              # OPTIONAL, default 8443 (tcp)
+      cert_file: ""           # PEM chain; cert_file + key_file required when enabled (also by http3 reuse)
+      key_file: ""
+      min_version: "1.3"      # "1.3" (default) | "1.2"; never 1.0/1.1. Applies to tcp only: QUIC is always TLS 1.3
+      disable_insecure_http: false   # close the plain HTTP listener (port above)
+      redirect_http: false    # plain HTTP serves only 308 → https; needs tls.enabled; excludes disable_insecure_http
+      redirect_host: ""       # public host for the Location; required unless http.server.host is loopback; never from the request
+    http3:                    # HTTP/3 over QUIC (udp); off by default; works without tls.enabled
+      enabled: false
+      port: 8443              # OPTIONAL, default 8443 (udp); defaulted independently of tls.port
+      same_keycert_tls: <true> # *bool; true reuses tls.cert_file/key_file (even with tls.enabled: false); false needs the two below
+      cert_file: ""           # only with same_keycert_tls: false (set with true → error)
+      key_file: ""
+      advertise: <true>       # *bool; Alt-Svc on HTTPS responses (effective only with tls.enabled and a bound QUIC listener)
+      max_idle_timeout: 30s   # QUIC connection idle timeout
+      max_stream_timeout: 30s # one HTTP/3 request: context deadline + stream read/write deadlines
+      allow_0rtt: false       # reserved: true is rejected at load (0-RTT requests are replayable)
     read_header_timeout: 10s  # http.Server timeouts: 0 = default, never "none"
     read_timeout: 30s         #   (Slowloris); negative → error;
     write_timeout: 30s        #   read_header_timeout <= read_timeout
@@ -322,7 +351,7 @@ http:
     title: <app.name>
     version: <app.version>
     auth: bearer              # bearer | none (validated) — documented scheme; none + private typed routes panics
-    hosts: ["http://{host|localhost}:{port}"]   # 0.0.0.0 / :: / "" → localhost
+    hosts: ["http://{host|localhost}:{port}"]   # 0.0.0.0 / :: / "" → localhost; "https://…:{tls.port}" when http only redirects/is closed
     accent: "#007d9cbf"       # validated hex: #RGB, #RGBA, #RRGGBB, #RRGGBBAA
   routes:
     health:    { enabled: false, path: /health }   # path defaults only when enabled
@@ -557,7 +586,11 @@ type ServerHttp struct {
 ```
 Methods: `NewHTTPServer(deps)`, `Router()`, `Typed()`,
 `AddGlobalMiddleware`, `LoadGlobalMiddleware`, `AddDocRoute`,
-`TenantMiddleware(opts...)` (§7.10), `AddShutdownFunc`, `Shutdown`, `Start`.
+`TenantMiddleware(opts...)` (§7.10), `AddShutdownFunc`, `Shutdown`, `Start`,
+`StartContext(ctx)` (what `Start` calls; tests and embedders cancel the ctx).
+`Srv` stays the application's plain HTTP `*http.Server` (never started when
+`disable_insecure_http` or `redirect_http` replaces it; its `Handler` is the
+one router shared by every transport, so `Router()`/`Typed()` keep working).
 
 `NewHTTPServer` sets `Srv.ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout`
 and `IdleTimeout` from `http.server` (defaults 10s/30s/30s/120s). It applies
@@ -886,6 +919,82 @@ add the router middleware with `AddGlobalMiddleware`.
   requests get `Access-Control-Allow-Origin` (or none for a disallowed
   origin: the browser blocks the read, the server still ran the request)
   and `Vary: Origin`. Expose `X-Request-Id` if browser clients need it.
+
+### 7.12 Transports: HTTP, HTTPS and HTTP/3 (`transport.go`, `config/server.go`)
+
+Ports are independent and **optional**: `port` 8080 (tcp), `tls.port` 8443
+(tcp), `http3.port` 8443 (udp). Omitted or `0` takes the default (an explicit
+`0` is never an ephemeral bind); negative or > 65535 fails. Changing
+`tls.port` does not move `http3.port`. TCP and UDP 8443 do not collide.
+`config.ApplyServerDefaults` fills them on a copy in `config.Load`, in
+`NewHTTPServer` and in `Start`, so a `Config` built by hand behaves the same.
+
+| tls | http3 | disable_insecure_http | redirect_http | Result |
+|---|---|---|---|---|
+| off | off | false | false | HTTP :8080 (legacy default) |
+| on | off | false | false | HTTP :8080 + HTTPS :8443, same handler |
+| on | off | false | true | :8080 redirects (308); HTTPS serves |
+| on | on | false | false | HTTP + HTTPS + QUIC, same handler |
+| on | on | false | true | :8080 redirects; HTTPS and QUIC serve |
+| on | on/off | true | false | no HTTP listener |
+| off | on | true | false | QUIC only (own or `tls.*` cert files) |
+| off | on | false | false | HTTP :8080 + QUIC |
+
+Rejected at load (`config.ValidateServer`, also run by `Start`):
+`disable_insecure_http` with `redirect_http`; `redirect_http` without
+`tls.enabled`; `disable_insecure_http` with neither tls nor http3;
+`min_version` other than `"1.3"`/`"1.2"`; `allow_0rtt: true`; negative
+`http3` timeouts; HTTP and HTTPS on the same tcp port; missing, partial,
+unreadable or mismatched cert/key pairs (errors name the section, never key
+material); `same_keycert_tls: true` with `http3.cert_file/key_file` set;
+`same_keycert_tls: false` without its own pair. HTTP/3 with
+`same_keycert_tls: true` needs `tls.cert_file/key_file` **even when
+`tls.enabled: false`** (they are then credentials only; no TCP/TLS listener).
+`min_version` is a string (`"1.3"`): the YAML decoder also accepts the
+unquoted `1.3`, but `1.30` or `1.1` fail.
+
+- **One handler.** HTTP (normal mode), HTTPS and QUIC serve `Srv.Handler`; the
+  chain (§3.3) and routes exist once. HTTPS uses `ServeTLS` with only
+  `Certificates`/`MinVersion` set, so `net/http` negotiates `h2` itself.
+  HTTP/3 uses `quic-go/http3` (v0.64.1) with TLS 1.3 and ALPN `h3` forced,
+  `quic.Config{MaxIdleTimeout, Allow0RTT: false}` and `IdleTimeout` from
+  `http.server.idle_timeout`.
+- **Redirect-only listener.** Its own tiny handler (not the router: no docs,
+  health, JWKS, auth, tenant, app middleware): `308` to
+  `https://<authority><path>?<query>`. The authority is **configuration**:
+  `tls.redirect_host`, or `http.server.host` if loopback; a wildcard bind
+  address or an unset host is an error, `:443` is omitted, IPv6 is
+  bracketed. `Host` and `X-Forwarded-*` are never read. `MaxHeaderBytes`
+  16 KiB. If HTTPS cannot start, nothing starts.
+- **Alt-Svc.** Only HTTPS (tcp) responses get `Alt-Svc: h3=":<udp port>"` from
+  `http3.Server.SetQUICHeaders` (`ma=2592000`), set before the handler (the
+  app may override), and only while the QUIC listener is registered. Not sent
+  on HTTP/3 responses, redirect responses or without `tls.enabled` (QUIC-only
+  servers are not discoverable by browsers: clients must know the endpoint).
+  UDP 8443 must be open in firewalls and load balancers.
+- **`max_stream_timeout`** wraps the HTTP/3 handler: the request context gets
+  the deadline and the stream's read/write deadlines are set to it (the
+  counterpart of `read_timeout`/`write_timeout`, which only bind tcp). A
+  handler that waits past it can no longer write, so the client sees a reset
+  stream; a long handler extends it with `http.NewResponseController`.
+- **0-RTT** is reserved: early data is replayable and nForge has no replay
+  policy, so `true` fails validation.
+- **Startup/shutdown.** `prepare` loads certificates, then binds UDP, HTTPS,
+  HTTP in that order, closing everything on any error. `StartContext` serves
+  each in a goroutine; the first non-closed error or ctx cancel stops all
+  transports (parallel `Shutdown`, 10 s, then `Close`), waits for the serve
+  goroutines, then runs `Deps.Shutdown` once. net/http can leave a just-
+  accepted HTTP/2 connection undrained: the result is the drain deadline
+  (`context.DeadlineExceeded` in the joined error) followed by a forced close,
+  never a leak.
+- **Docs URL.** Default `http.docs.hosts` is `https://…:{tls.port}` when tls
+  is on and the plain listener redirects or is closed (or `https://…:{http3.port}`
+  for QUIC-only), else `http://…:{port}`; explicit `hosts` win. HTTP/3 is
+  still an `https://` URL.
+- **Env file keys:** `HTTP_SERVER_TLS_ENABLED`, `HTTP_SERVER_TLS_PORT`,
+  `HTTP_SERVER_HTTP3_ENABLED`, `HTTP_SERVER_HTTP3_PORT`,
+  `HTTP_SERVER_HTTP3_ADVERTISE=false`, … (`*bool` keeps an explicit false).
+- Runnable demo: `_examples/basic/config.https-http3.yaml` (§14).
 
 ---
 
@@ -1582,7 +1691,7 @@ names are `<name>-example`.
 
 | Example | Modules | Files | Tests |
 |---|---|---|---|
-| `basic` | jose (one HS256 `access` profile, demo secret inline in its config.yaml), cache (memory driver), database (PostgreSQL on; `standalone.env` turns it off, no Docker); `http.security` + `http.cors` on | `main.go` (bootstrap, `clacksOverhead` global middleware), `auth.go` (demo login `admin@admin.com`/`admin123` → `IssueJWT`, private typed `/auth/me`), `cache.go` (`/cache/{key}` Set/Get/Delete), `config.yaml` has OTel preconfigured for the local collector but off, `database.go` (`/db/notes` CRUD on table `basic_notes`, not registered when `deps.DB` is nil), `plain.go` (`ParseJSON/XML/CBOR` + `Send*` echo routes, `AddDocRoute`), `users.go` (typed CRUD over an in-memory store, `ListQuery` typed query with default/required/`Validate`, an XML-codec route), `crypto.go` (`runCrypto` ncrypto demo: XChaCha20, HMAC, bcrypt/Argon2id, BLAKE3, random; disabled in `main.go`), `safecalc_test.go` (cents arithmetic + `Format`, `ExampleMoney_Format`) | formats, status mapping 400/415/422, typed CRUD + paging, docs/health/ready, security headers + docs CSP + CORS preflight, login 400/401 + `/auth/me` 401/200, cache hit/miss/delete, the crypto demo, safecalc; `/db/notes` CRUD + 404 (integration) |
+| `basic` | HTTPS + HTTP/3 opt-in (`config.https-http3.yaml`, `certs/`), jose (one HS256 `access` profile, demo secret inline in its config.yaml), cache (memory driver), database (PostgreSQL on; `standalone.env` turns it off, no Docker); `http.security` + `http.cors` on | `main.go` (bootstrap, `clacksOverhead` global middleware), `auth.go` (demo login `admin@admin.com`/`admin123` → `IssueJWT`, private typed `/auth/me`), `cache.go` (`/cache/{key}` Set/Get/Delete), `config.yaml` has OTel preconfigured for the local collector but off, `database.go` (`/db/notes` CRUD on table `basic_notes`, not registered when `deps.DB` is nil), `https_http3_test.go` (starts the example on free ports with the committed certificate and talks real HTTPS, HTTP/3 and the 308), `certs/` (**local-development-only, intentionally public** ECDSA pair, SAN localhost/127.0.0.1/::1; never reused by anything else, regenerate with `certs/generate.sh`), `plain.go` (`ParseJSON/XML/CBOR` + `Send*` echo routes, `AddDocRoute`), `users.go` (typed CRUD over an in-memory store, `ListQuery` typed query with default/required/`Validate`, an XML-codec route), `crypto.go` (`runCrypto` ncrypto demo: XChaCha20, HMAC, bcrypt/Argon2id, BLAKE3, random; disabled in `main.go`), `safecalc_test.go` (cents arithmetic + `Format`, `ExampleMoney_Format`) | formats, status mapping 400/415/422, typed CRUD + paging, docs/health/ready, security headers + docs CSP + CORS preflight, login 400/401 + `/auth/me` 401/200, cache hit/miss/delete, the crypto demo, safecalc; `/db/notes` CRUD + 404 (integration) |
 | `jose` | jose | `auth.go` (demo login `admin`/`admin` with `profile` + `scope`, `/public`, typed `/me`, raw `/raw/wallets` + `/raw/wallets-slice` with variadic/slice `WithScopes`, typed `/api/v1/wallets`, nested-only `/api/v1/confidential`, `/api/v1/jose/demo` JWS/JWE round trip; `protectedCalls` counter), `cmd/keygen` (key files for the commented asymmetric setup; 0700/0600, `-force`) | 200/401/403 matrix, handlers not invoked on failure, nested vs access, missing secret fails at load |
 | `cache` | cache (redis; `standalone.env` → memory) | `routes.go` (`/api/v1/items/{key}` Set/Get/claim=SetIfAbsent/ttl/expire/Delete, `/api/v1/counters/{key}`, raw `/raw/{key}` bytes, `/api/v1/products/{id}` `GetOrLoad` over a slow `catalog`; `sendCacheError`) | shared scenarios run on memory (`main_test.go`) and on Redis (`redis_integration_test.go`, unique prefix, deletes its keys); CBOR; readiness |
 | `database` | database (+ tenancy column, `http.tenant.source: header`) | `users.go` (Squirrel/pgx CRUD, filters, batch in `Transaction`, `sendDBError`), `notes.go` (typed `Opts{Tenant}` routes and raw `server.TenantMiddleware()`, `ForContext`/`TenantEq`/tenant `Transaction`; `ensureNotesSchema` builds RLS when `mode: rls`), `rls.env` + `rls-setup.sql` (role `app_tenant`) | config + rls overlay load (unit); CRUD and tenant isolation 403/400/404 (integration) |
@@ -1598,6 +1707,8 @@ Commands (repository root):
 ```bash
 docker compose -f _examples/docker-compose.yml up -d     # or: make container-up
 go run ./_examples/basic -config _examples/basic/config.yaml [-envfile _examples/basic/standalone.env]
+# HTTPS :8443/tcp + HTTP/3 :8443/udp + 308 redirect from :8080 (run from the repo root: cert paths are relative to the CWD)
+go run ./_examples/basic -config _examples/basic/config.https-http3.yaml -envfile _examples/basic/standalone.env
 export JWT_SECRET=$(openssl rand -hex 32) JWT_ENCRYPTION_SECRET=$(openssl rand -hex 16)
 go run ./_examples/jose -config _examples/jose/config.yaml
 go run ./_examples/cache -config _examples/cache/config.yaml [-envfile _examples/cache/standalone.env]
@@ -1816,3 +1927,15 @@ algorithm/kid/typ, boundaries), not only round trips.
     (default 30s) bounds every response. Raise it in the config, or extend the
     deadline per request with `http.NewResponseController(w).SetWriteDeadline`.
     A timeout cannot be disabled (0 means the default).
+27. **`http.server.port` is optional** (default 8080), like `tls.port` and
+    `http3.port` (8443). A config with no `http.server` section loads.
+28. **Redirect needs a trusted host**: `tls.redirect_http: true` with a
+    non-loopback `http.server.host` fails unless `tls.redirect_host` is set;
+    the redirect never uses the request's `Host`.
+29. **QUIC is UDP**: opening only TCP/8443 in a firewall leaves HTTP/3 dead
+    (clients fall back to HTTPS through `Alt-Svc`). An HTTP/3-only server is
+    not discoverable by browsers. `curl --http3-only` needs a curl build with
+    HTTP/3; `-k` is for the demo certificate only.
+30. **The example certificate is public**: `_examples/basic/certs/localhost.key`
+    is committed on purpose. Never deploy or trust it; the framework has no
+    default certificate.

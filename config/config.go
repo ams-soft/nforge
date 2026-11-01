@@ -6,11 +6,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -141,7 +139,7 @@ func feedDocsDefaults(cfg *Config) {
 		if host == "" || host == "0.0.0.0" || host == "::" {
 			host = "localhost"
 		}
-		docs.Hosts = []string{"http://" + net.JoinHostPort(host, strconv.Itoa(cfg.HTTP.Server.Port))}
+		docs.Hosts = []string{defaultDocsHost(cfg.HTTP.Server, host)}
 	}
 }
 
@@ -152,10 +150,7 @@ func validateRequiredConfig(cfg *Config) (bool, error) {
 	if cfg.App.Version == "" {
 		return false, fmt.Errorf("app.version must not be empty")
 	}
-	if cfg.HTTP.Server.Port <= 0 || cfg.HTTP.Server.Port > 65535 {
-		return false, fmt.Errorf("http.server.port must be between 1 and 65535")
-	}
-	if err := validateServer(cfg.HTTP.Server); err != nil {
+	if err := ValidateServer(cfg.HTTP.Server); err != nil {
 		return false, err
 	}
 	if auth := cfg.HTTP.Docs.Auth; auth != "bearer" && auth != "none" {

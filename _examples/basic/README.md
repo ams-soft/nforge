@@ -66,6 +66,42 @@ Every response uses the standard envelope:
 {"success":false,"status":422,"error":{"title":"422 ERROR UNPROCESSABLE ENTITY","detail":"…","instance":"/api/v1/users"}}
 ```
 
+## HTTPS + HTTP/3
+
+`config.https-http3.yaml` is the same app with HTTPS, HTTP/3 and a redirect
+turned on. Run it from the **repository root** (the certificate paths in the
+YAML are relative to the working directory):
+
+```bash
+go run ./_examples/basic -config _examples/basic/config.https-http3.yaml -envfile _examples/basic/standalone.env
+```
+
+| Port | Protocol | What it serves |
+|---|---|---|
+| 8080/tcp | HTTP | only `308` redirects to `https://127.0.0.1:8443` (no routes, no middleware) |
+| 8443/tcp | HTTPS (TLS 1.3, HTTP/1.1 + h2) | the application, with `Alt-Svc: h3=":8443"` |
+| 8443/udp | HTTP/3 (QUIC) | the same application |
+
+```bash
+curl -sI http://localhost:8080/health                                 # 308, Location: https://127.0.0.1:8443/health
+CA=_examples/basic/certs/localhost.crt                                # trust exactly the demo certificate
+curl --cacert $CA --http1.1 https://localhost:8443/health
+curl --cacert $CA --http2   https://localhost:8443/health -D - | grep -i alt-svc
+curl --cacert $CA --http3-only https://localhost:8443/health          # needs a curl built with HTTP/3 (curl -V shows HTTP3)
+```
+
+`curl -k` skips certificate verification: acceptable for this demo only, never
+in production. Without an HTTP/3-capable curl, `TestHTTPSHTTP3Live`
+(`go test ./_examples/basic -run HTTPSHTTP3 -v`) exercises HTTPS, HTTP/3 and
+the redirect with Go's QUIC client. HTTP/3 uses UDP, so UDP/8443 must be
+reachable; clients only switch to it after seeing `Alt-Svc` (browsers decide
+for themselves), it is not automatic for every client.
+
+**The certificate in [`certs/`](certs) is for local demonstration only.** Its
+private key is committed and public on purpose: never deploy it, trust it
+system-wide or reuse it. The framework has no default certificate; real ones
+are your secrets.
+
 Docs: <http://localhost:8080/docs> (also `/docs/swagger.json` and `/docs/swagger.yaml`).
 
 ```bash

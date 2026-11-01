@@ -31,7 +31,7 @@ _ = server.Start()                 // graceful shutdown on SIGINT/SIGTERM
 | Logging | `logs` | `log/slog` to the terminal (tint) and/or OpenTelemetry (OTLP), `request_id` on every record |
 | Tracing | `telemetry` | OpenTelemetry spans per request, with `request_id == trace_id` |
 | Codec | `codec` | JSON, CBOR and XML from **one struct**: required fields, strict mode, payload limits, XXE protection, `Validate()` |
-| HTTP | `http` (`nhttp`) | A standard response envelope, **typed routes** validated before and after the handler, typed query strings, **OpenAPI 3.1** docs, health/readiness |
+| HTTP | `http` (`nhttp`) | Plain HTTP, opt-in **HTTPS** (TLS 1.3) and **HTTP/3**, a standard response envelope, **typed routes** validated before and after the handler, typed query strings, **OpenAPI 3.1** docs, health/readiness |
 | Database | `database` | PostgreSQL with pgx + Squirrel, transactions, **multi-tenancy** by tenant column or Row-Level Security |
 | JOSE | `jose` | JWT, JWS and JWE through explicit profiles, bearer authentication with scopes, JWKS, key rotation |
 | Cache | `cache` | Redis or a bounded in-process LRU behind one API: objects, bytes, counters, TTLs, NX, cache-aside `GetOrLoad`, tenant namespaces |
@@ -54,7 +54,7 @@ go get github.com/ams-soft/nforge
 
 nForge needs **Go 1.27** or newer; build with **1.27.2+**, which fixes
 `net/http`, `crypto/tls` and `html/template` vulnerabilities (this repository
-pins it with `toolchain go1.27.2`). Import the HTTP package as
+pins it with `toolchain go1.27.3`). Import the HTTP package as
 `nhttp "github.com/ams-soft/nforge/http"` and the crypto package as
 `ncrypto "github.com/ams-soft/nforge/crypto"`.
 
@@ -65,7 +65,7 @@ README:
 
 | Example | Shows |
 |---|---|
-| [`basic`](_examples/basic) | config, codec, plain and typed routes, docs, health, minimal JWT login, memory cache, PostgreSQL (`standalone.env`: no Docker), an `ncrypto` demo and a `safecalc` test |
+| [`basic`](_examples/basic) | opt-in HTTPS + HTTP/3 (`config.https-http3.yaml`), config, codec, plain and typed routes, docs, health, minimal JWT login, memory cache, PostgreSQL (`standalone.env`: no Docker), an `ncrypto` demo and a `safecalc` test |
 | [`jose`](_examples/jose) | JWT login, bearer authentication, scopes, nested tokens, JWS/JWE, JWKS |
 | [`cache`](_examples/cache) | `deps.Cache` on Redis or memory, `GetOrLoad`, outages |
 | [`database`](_examples/database) | repositories, transactions, multi-tenancy (column and RLS) |
@@ -86,8 +86,6 @@ app:
   name: my-api
   version: 1.0.0
 http:
-  server:
-    port: 8080
   docs:
     enabled: true
   routes:
@@ -99,10 +97,43 @@ logging:
       enabled: true
 ```
 
-Modules such as `database`, `jose` and `cache` are off until enabled. The full
+`http.server.port` is optional: omitted, the server listens on plain HTTP
+`:8080`. Modules such as `database`, `jose` and `cache` are off until enabled. The full
 schema, with every default and validation rule, is in
 [AGENTS.md §4.2](AGENTS.md#42-full-schema-defaults-and-validation); the
 examples' `config.yaml` files are commented.
+
+## HTTP, HTTPS and HTTP/3
+
+Plain HTTP is the default. HTTPS (TCP) and HTTP/3 (QUIC, UDP) are opt-in and
+share one router and middleware chain. Default ports: HTTP **8080**/tcp, HTTPS
+**8443**/tcp, HTTP/3 **8443**/udp, each optional and independent.
+
+```yaml
+http:
+  server:
+    host: 0.0.0.0
+    tls:
+      enabled: true
+      cert_file: ${TLS_CERT_FILE}
+      key_file: ${TLS_KEY_FILE}
+      # min_version: "1.3"       # default; "1.2" is the only other value
+      redirect_http: true        # :8080 only answers 308 → https
+      redirect_host: api.example.com   # trusted public host for the redirect
+    http3:
+      enabled: true              # reuses the tls certificate; Alt-Svc is advertised
+```
+
+- `disable_insecure_http: true` closes the plain HTTP port; it excludes
+  `redirect_http`. The redirect never trusts the request's `Host`.
+- QUIC runs over **UDP**: open UDP/8443 as well as TCP/8443. Clients discover
+  HTTP/3 through the `Alt-Svc` header on HTTPS responses; an HTTP/3-only server
+  needs clients that know its address.
+- 0-RTT is not supported (`allow_0rtt: true` is rejected).
+
+A runnable demo with a local-only certificate is
+[`_examples/basic/config.https-http3.yaml`](_examples/basic/README.md#https--http3).
+Full reference: [AGENTS.md §7.12](AGENTS.md#712-transports-http-https-and-http3-transportgo-configservergo).
 
 ## Documentation
 

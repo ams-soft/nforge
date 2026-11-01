@@ -2,13 +2,10 @@ package nhttp
 
 import (
 	"context"
-	"errors"
 	stdhttp "net/http"
-	"os"
 	"os/signal"
 	"strconv"
 	"syscall"
-	"time"
 
 	router "github.com/ams-soft/go-ams-router"
 	"github.com/ams-soft/go-ams-router/middleware"
@@ -111,36 +108,10 @@ func (s *ServerHttp) Shutdown() {
 	}
 }
 
+// Start serves every enabled transport (plain HTTP, HTTPS, HTTP/3) and blocks
+// until SIGINT/SIGTERM or a listener fails; see StartContext.
 func (s *ServerHttp) Start() error {
-	errCh := make(chan error, 1)
-	go func() {
-		s.Deps.Logger.Info("[HTTPModule] Server running", "addr", s.Srv.Addr)
-		if err := s.Srv.ListenAndServe(); err != nil && !errors.Is(err, stdhttp.ErrServerClosed) {
-			errCh <- err
-		}
-	}()
-
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	select {
-	case err := <-errCh:
-		s.Deps.Logger.Error("[HTTPModule] Failed to start server", "err", err)
-		return err
-	case <-quit:
-	}
-
-	s.Deps.Logger.Info("[HTTPModule] Shutting down server...")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	srvErr := s.Srv.Shutdown(ctx)
-	if srvErr != nil {
-		s.Deps.Logger.Error("[HTTPModule] Forced shutdown", "err", srvErr)
-	} else {
-		s.Deps.Logger.Info("[HTTPModule] Server stopped successfully")
-	}
-
-	// Only after we stop accepting requests: close database, tracing and logs
-	// (in that order, LIFO). Logs from here on may be lost.
-	return errors.Join(srvErr, s.Deps.Shutdown(ctx))
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	return s.StartContext(ctx)
 }
