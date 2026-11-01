@@ -158,24 +158,24 @@ func TestExplicitConfigMustExist(t *testing.T) {
 	}
 }
 
-func TestUnsetEnvVariablesAreReported(t *testing.T) {
+// An unset ${VAR} is an error naming every missing variable, unless it carries
+// a default (G-13).
+func TestUnsetEnvVariablesAreAnError(t *testing.T) {
 	t.Setenv("NF_TEST_SET", "x")
+	t.Setenv("NF_TEST_EMPTY", "")
 	text := baseYAML + "http: {docs: {title: '${NF_TEST_SET}-${NF_TEST_UNSET_A}', version: '${NF_TEST_UNSET_B}${NF_TEST_UNSET_A}'}}\n"
+	_, err := LoadFlags(writeConfig(t, text), "")
+	if err == nil || !strings.Contains(err.Error(), "NF_TEST_UNSET_A, NF_TEST_UNSET_B") || strings.Contains(err.Error(), "NF_TEST_SET") {
+		t.Fatalf("err = %v", err)
+	}
+
+	text = baseYAML + "http: {docs: {title: '${NF_TEST_SET:-d}-${NF_TEST_UNSET_A:-fallback}-${NF_TEST_UNSET_B:-}', version: '${NF_TEST_EMPTY}${NF_TEST_EMPTY:-v}'}}\n"
 	cfg, err := LoadFlags(writeConfig(t, text), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.HTTP.Docs.Title != "x-" {
-		t.Errorf("title = %q", cfg.HTTP.Docs.Title)
-	}
-	if len(cfg.Warnings) != 2 ||
-		!strings.Contains(cfg.Warnings[0], "NF_TEST_UNSET_A") || !strings.Contains(cfg.Warnings[1], "NF_TEST_UNSET_B") {
-		t.Fatalf("warnings = %q", cfg.Warnings)
-	}
-	for _, w := range cfg.Warnings {
-		if strings.Contains(w, "NF_TEST_SET ") {
-			t.Errorf("a set variable must not be reported: %q", w)
-		}
+	if cfg.HTTP.Docs.Title != "x-fallback-" || cfg.HTTP.Docs.Version != "v" {
+		t.Errorf("title = %q, version = %q", cfg.HTTP.Docs.Title, cfg.HTTP.Docs.Version)
 	}
 }
 
