@@ -246,3 +246,28 @@ func TestIntegrationShutdown(t *testing.T) {
 		t.Fatalf("second shutdown: %v", err)
 	}
 }
+
+// The server cancels a runaway statement at statement_timeout, so it cannot
+// hold a pooled connection forever (G-35). Proven against a real server.
+func TestIntegrationStatementTimeoutCancelsRunawayStatements(t *testing.T) {
+	url := os.Getenv("NFORGE_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("NFORGE_TEST_DATABASE_URL is not set")
+	}
+	db, err := Open(context.Background(), Config{Enabled: true, DSN: url,
+		Connection: ConnectionConfig{StatementTimeout: 700 * time.Millisecond}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Shutdown(context.Background()) }()
+
+	var shown string
+	if err := db.Executor.QueryRow(context.Background(), "SHOW statement_timeout").Scan(&shown); err != nil || shown != "700ms" {
+		t.Fatalf("statement_timeout = %q (%v), want 700ms", shown, err)
+	}
+	start := time.Now()
+	_, err = db.Executor.Exec(context.Background(), "SELECT pg_sleep(5)")
+	if err == nil || !strings.Contains(err.Error(), "statement timeout") || time.Since(start) > 3*time.Second {
+		t.Fatalf("pg_sleep(5) must be canceled by the server within the timeout: %v after %v", err, time.Since(start))
+	}
+}
