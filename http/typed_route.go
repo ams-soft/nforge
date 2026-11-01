@@ -286,6 +286,9 @@ func (tr *TypedRouter) wrap(format string, reqType, resType reflect.Type, isQuer
 	strict := tr.srv.Deps.Config.Codec.StrictUnknownFields
 	return func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		if auth != nil {
+			// A private response (or its 401/403) is specific to the caller:
+			// keep it out of shared caches. The handler may still override it.
+			w.Header().Set("Cache-Control", "no-store")
 			// authentication runs before decoding: unauthenticated clients
 			// learn nothing about the request schema
 			var ok bool

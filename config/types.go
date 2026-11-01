@@ -154,6 +154,13 @@ type ServerConfig struct {
 	ReadTimeout       time.Duration `yaml:"read_timeout"`        // time to read the whole request, body included; default: 30s
 	WriteTimeout      time.Duration `yaml:"write_timeout"`       // from the end of the request headers to the end of the response; default: 30s
 	IdleTimeout       time.Duration `yaml:"idle_timeout"`        // keep-alive wait for the next request; default: 120s
+	// HandlerTimeout is the deadline of every request context, so handlers,
+	// queries and loaders that honor ctx stop when it passes (the write
+	// timeout alone closes the connection but leaves the handler running).
+	HandlerTimeout time.Duration `yaml:"handler_timeout"` // default: 30s
+	// MaxBodyBytes bounds every request body, including the routes that read
+	// r.Body themselves; typed routes are also bound by codec.max_payload_bytes.
+	MaxBodyBytes ByteSize `yaml:"max_body_bytes"` // default: codec.max_payload_bytes; at most 1gb
 }
 
 // ServerTLSConfig configures HTTPS over TCP (http.server.tls). The certificate

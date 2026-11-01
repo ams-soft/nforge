@@ -15,6 +15,10 @@ const (
 	defaultReadTimeout       = 30 * time.Second
 	defaultWriteTimeout      = 30 * time.Second
 	defaultIdleTimeout       = 120 * time.Second
+	defaultHandlerTimeout    = 30 * time.Second
+
+	// maxBodyCeiling is the largest accepted http.server.max_body_bytes.
+	maxBodyCeiling = 1 * GB
 
 	// DefaultHTTPPort is the plain HTTP (TCP) port; DefaultTLSPort the HTTPS
 	// (TCP) port and DefaultHTTP3Port the HTTP/3 (UDP) port. The last two
@@ -57,6 +61,7 @@ func ApplyServerDefaults(s *ServerConfig) {
 	setDuration(&s.ReadTimeout, defaultReadTimeout)
 	setDuration(&s.WriteTimeout, defaultWriteTimeout)
 	setDuration(&s.IdleTimeout, defaultIdleTimeout)
+	setDuration(&s.HandlerTimeout, defaultHandlerTimeout)
 }
 
 func setDuration(d *time.Duration, def time.Duration) {
@@ -257,11 +262,15 @@ func validateTimeouts(s ServerConfig) error {
 		{"read_timeout", s.ReadTimeout},
 		{"write_timeout", s.WriteTimeout},
 		{"idle_timeout", s.IdleTimeout},
+		{"handler_timeout", s.HandlerTimeout},
 	}
 	for _, t := range timeouts {
 		if t.value < 0 {
 			return fmt.Errorf("http.server.%s must be positive, got %s", t.field, t.value)
 		}
+	}
+	if s.MaxBodyBytes < 0 || s.MaxBodyBytes > maxBodyCeiling {
+		return fmt.Errorf("http.server.max_body_bytes must be between 0 and 1gb, got %d", int64(s.MaxBodyBytes))
 	}
 	if s.ReadHeaderTimeout > s.ReadTimeout {
 		return fmt.Errorf("http.server.read_header_timeout (%s) must not exceed http.server.read_timeout (%s)", s.ReadHeaderTimeout, s.ReadTimeout)

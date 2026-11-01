@@ -84,3 +84,31 @@ func TestNewPoolConfigErrorsDoNotLeakSecrets(t *testing.T) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
+
+// A statement that runs forever keeps its pooled connection after the client
+// is gone; the server must cancel it (G-35).
+func TestNewPoolConfigSetsStatementTimeout(t *testing.T) {
+	timeout := func(cfg Config) string {
+		t.Helper()
+		got, err := NewPoolConfig(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got.ConnConfig.RuntimeParams["statement_timeout"]
+	}
+	if got := timeout(Config{DSN: testDSN}); got != "30000" {
+		t.Errorf("default statement_timeout = %q ms, want 30000", got)
+	}
+	if got := timeout(Config{DSN: testDSN, Connection: ConnectionConfig{StatementTimeout: 90 * time.Second}}); got != "90000" {
+		t.Errorf("configured statement_timeout = %q", got)
+	}
+	if got := timeout(Config{DSN: testDSN + "?statement_timeout=5000"}); got != "5000" {
+		t.Errorf("a statement_timeout in the DSN must win, got %q", got)
+	}
+	if got := timeout(Config{Host: "h", Port: 5432, Name: "d", User: "u"}); got != "30000" {
+		t.Errorf("the field-based config gets the default too: %q", got)
+	}
+	if _, err := NewPoolConfig(Config{DSN: testDSN, Connection: ConnectionConfig{StatementTimeout: -time.Second}}); err == nil {
+		t.Error("a negative statement_timeout must be refused")
+	}
+}

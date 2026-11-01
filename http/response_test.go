@@ -136,14 +136,19 @@ func TestParseContentType(t *testing.T) {
 	}
 	for format, cts := range accepted {
 		for _, ct := range cts {
-			if err := checkContentType(ct, format); err != nil {
-				t.Errorf("%s should accept %q: %v", format, ct, err)
+			if err := checkContentType(ct, format, false); err != nil {
+				t.Errorf("%s should accept %q without a body: %v", format, ct, err)
+			}
+			if ct != "" {
+				if err := checkContentType(ct, format, true); err != nil {
+					t.Errorf("%s should accept %q with a body: %v", format, ct, err)
+				}
 			}
 		}
 	}
 	for format, cts := range rejected {
 		for _, ct := range cts {
-			err := checkContentType(ct, format)
+			err := checkContentType(ct, format, true)
 			var me *UnsupportedMediaTypeError
 			if !errors.As(err, &me) || me.Got != ct || ParseStatus(err) != stdhttp.StatusUnsupportedMediaType {
 				t.Errorf("%s should reject %q with 415, got %v", format, ct, err)
@@ -205,5 +210,29 @@ func TestParseStatus(t *testing.T) {
 	defer codec.SetDefault(prev)
 	if got := ParseStatus(ParseXML(newRequest("application/xml", `<user/>`), &user{})); got != 415 {
 		t.Errorf("xml disabled: status %d, expected 415", got)
+	}
+}
+
+// A body without a Content-Type is refused: a cross-site page can send one
+// without a CORS preflight (fetch with an untyped Blob), so accepting it would
+// let any website make this API act on attacker-chosen JSON (G-23).
+func TestBodyWithoutContentTypeIsRefused(t *testing.T) {
+	for _, format := range []string{codec.JSON, codec.XML, codec.CBOR} {
+		err := checkContentType("", format, true)
+		var me *UnsupportedMediaTypeError
+		if !errors.As(err, &me) || ParseStatus(err) != stdhttp.StatusUnsupportedMediaType || !strings.Contains(err.Error(), "missing content-type") {
+			t.Errorf("%s: a typeless body must be a 415 naming the missing header: %v", format, err)
+		}
+	}
+
+	untyped := httptest.NewRequest(stdhttp.MethodPost, "/", strings.NewReader(`{"id":1}`))
+	var u user
+	if err := ParseJSON(untyped, &u); ParseStatus(err) != stdhttp.StatusUnsupportedMediaType {
+		t.Fatalf("an untyped body must be refused before it is decoded: %v", err)
+	}
+	// no body, no header: nothing to say (the decoder reports the empty payload)
+	empty := httptest.NewRequest(stdhttp.MethodPost, "/", nil)
+	if err := ParseJSON(empty, &u); ParseStatus(err) == stdhttp.StatusUnsupportedMediaType {
+		t.Fatalf("a request without a body needs no content type: %v", err)
 	}
 }

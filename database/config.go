@@ -41,7 +41,16 @@ type SSLConfig struct {
 
 type ConnectionConfig struct {
 	ConnectTimeout time.Duration `yaml:"connect_timeout"`
+	// StatementTimeout is PostgreSQL's statement_timeout for every connection:
+	// a statement running longer is canceled by the server. Without it a slow
+	// query keeps its pooled connection after the client has gone, and a few
+	// of them exhaust a small pool. Default: 30s. A statement_timeout already
+	// in the DSN wins; use a large value for a job that needs longer.
+	StatementTimeout time.Duration `yaml:"statement_timeout"`
 }
+
+// DefaultStatementTimeout is used when connection.statement_timeout is unset.
+const DefaultStatementTimeout = 30 * time.Second
 
 // PoolConfig overrides pgxpool settings; zero values keep pgx defaults (or
 // the values embedded in the DSN).

@@ -250,9 +250,16 @@ closes nothing); it exists for tests that tear modules down themselves.
 1. `Tracing()` — only if `IsTracingEnabled()`. Must be first.
 2. `Logger(&deps.Logger)` — only if any logging output is enabled.
 3. `middleware.Recoverer` (from go-ams-router) — always.
-4. `middleware.Security` (go-ams-router) — only if `http.security.enabled` (§7.11).
-5. `middleware.CORS` (go-ams-router) — only if `http.cors.enabled` (§7.11).
-6. App global middlewares — whatever `LoadGlobalMiddleware` adds.
+4. Body limit — always: `http.MaxBytesReader` at `http.server.max_body_bytes`
+   (default: `codec.max_payload_bytes`) + 1 byte, so raw routes that read
+   `r.Body` are bounded and typed routes still get their 413 from the codec
+   first (`ParseStatus` also maps `*http.MaxBytesError` to 413).
+5. Handler timeout — always: the request context gets a deadline of
+   `http.server.handler_timeout` (default 30s), so handlers, queries and
+   loaders that honor `ctx` stop (the write timeout only closes the connection).
+6. `middleware.Security` (go-ams-router) — only if `http.security.enabled` (§7.11).
+7. `middleware.CORS` (go-ams-router) — only if `http.cors.enabled` (§7.11).
+8. App global middlewares — whatever `LoadGlobalMiddleware` adds.
 
 go-ams-router builds its middleware chain lazily on the first request, so
 `Use` (and `LoadGlobalMiddleware`) is valid any time **before the server
@@ -361,6 +368,8 @@ http:
     read_timeout: 30s         #   (Slowloris); negative → error;
     write_timeout: 30s        #   read_header_timeout <= read_timeout
     idle_timeout: 120s        #   (config/server.go, also applied by NewHTTPServer)
+    handler_timeout: 30s      # deadline of every request context (handlers, queries, loaders)
+    max_body_bytes: <codec.max_payload_bytes>   # bounds every request body, raw routes too; at most 1gb
   docs:
     enabled: false
     path: /docs               # normalized to "/x" (leading slash, no trailing)
@@ -405,7 +414,7 @@ database:                     # database.Config — see §9
   dsn: ""                     # wins over the individual fields
   host/port/name/user/password: ...
   ssl: { mode: "" }           # libpq sslmode; "" = pgx default (prefer)
-  connection: { connect_timeout: 5s }
+  connection: { connect_timeout: 5s, statement_timeout: 30s }   # PostgreSQL statement_timeout of every connection; a value in the DSN wins
   pool: { min_conns, max_conns, max_conn_lifetime, max_conn_idle_time, health_check_period }
   tenancy:                    # database.TenancyConfig — see §9.1; validated at load only when database.enabled
     enabled: false
@@ -648,8 +657,10 @@ is `<response>`, CBOR uses the same keys):
 
 `ParseJSON / ParseXML / ParseCBOR(r, &v)` decode the body through
 `codec.Default()` (payload limit, strict mode, required fields, DTD block,
-validation). Content-Type rules: empty is accepted; otherwise must be the
-format's type, a structured suffix (`application/vnd.x+json`, RFC 6839), or
+validation). Content-Type rules: a request **with a body** and no
+Content-Type is refused (415 `missing content-type`; a cross-site page can send
+an untyped body without a CORS preflight); a request without a body needs none;
+otherwise it must be the format's type, a structured suffix (`application/vnd.x+json`, RFC 6839), or
 `text/xml` for XML; parameters ignored. Map errors with `ParseStatus(err)`:
 
 | Error | Status |

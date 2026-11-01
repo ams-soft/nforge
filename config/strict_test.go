@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const baseYAML = "app: {name: a, version: '1'}\n"
@@ -217,5 +218,29 @@ func TestEnvFileValuesAreLiteral(t *testing.T) {
 	}
 	if _, err := LoadFlags("", writeEnv(t, "APP_NAME=a\x00b\n")); err == nil {
 		t.Error("a NUL byte must be rejected")
+	}
+}
+
+func TestHandlerTimeoutAndBodyLimitSettings(t *testing.T) {
+	cfg, err := LoadFlags(writeConfig(t, baseYAML), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HTTP.Server.HandlerTimeout != 30*time.Second || cfg.HTTP.Server.MaxBodyBytes != 0 {
+		t.Fatalf("defaults: %+v", cfg.HTTP.Server)
+	}
+	cfg, err = LoadFlags(writeConfig(t, baseYAML+"http: {server: {handler_timeout: 5s, max_body_bytes: 2mb}}\n"), "")
+	if err != nil || cfg.HTTP.Server.HandlerTimeout != 5*time.Second || cfg.HTTP.Server.MaxBodyBytes != 2*MB {
+		t.Fatalf("configured: %v %+v", err, cfg.HTTP.Server)
+	}
+	for _, bad := range []string{"handler_timeout: -1s", "max_body_bytes: 2gb"} {
+		if _, err := LoadFlags(writeConfig(t, baseYAML+"http: {server: {"+bad+"}}\n"), ""); err == nil {
+			t.Errorf("%s must be refused", bad)
+		}
+	}
+	// reachable from the env file like every other field
+	cfg, err = LoadFlags(writeConfig(t, baseYAML), writeEnv(t, "HTTP_SERVER_HANDLER_TIMEOUT=7s\nDATABASE_CONNECTION_STATEMENT_TIMEOUT=45s\n"))
+	if err != nil || cfg.HTTP.Server.HandlerTimeout != 7*time.Second || cfg.Database.Connection.StatementTimeout != 45*time.Second {
+		t.Fatalf("env file: %v %+v", err, cfg.HTTP.Server)
 	}
 }

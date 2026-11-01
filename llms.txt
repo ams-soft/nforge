@@ -124,7 +124,7 @@ Run `go run . -config config.yaml` and open `http://localhost:8080/docs`.
 5. `server.Start()` (= `StartContext` canceled by SIGINT/SIGTERM) loads the certificates, binds every enabled listener (plain HTTP :8080/tcp, HTTPS :8443/tcp, HTTP/3 :8443/udp; all-or-nothing) and serves them with the one shared router. On a signal or a listener error: all transports shut down (10 s, then forced), then `Deps.Shutdown` exactly once (also after a failed startup), which runs registered shutdown functions LIFO: cache → JOSE → database → tracing → logs. All run even if one fails; errors are joined.
 6. `ServerHttp.AddShutdownFunc` / `Shutdown()` are a separate app-level list the application calls itself; `Start` does not call them.
 
-Middleware chain (fixed order): `Tracing()` (only with tracing) → `Logger` (only with logging) → `middleware.Recoverer` → `middleware.Security` (`http.security.enabled`) → `middleware.CORS` (`http.cors.enabled`) → app global middlewares. go-ams-router builds the chain lazily on the first request, so `Use` is valid until then, even after routes. For inline routers (`With`/`Group`) add middlewares before routes.
+Middleware chain (fixed order): `Tracing()` (only with tracing) → `Logger` (only with logging) → `middleware.Recoverer` → body limit (`http.server.max_body_bytes`) → handler timeout (`http.server.handler_timeout`) → `middleware.Security` (`http.security.enabled`) → `middleware.CORS` (`http.cors.enabled`) → app global middlewares. go-ams-router builds the chain lazily on the first request, so `Use` is valid until then, even after routes. For inline routers (`With`/`Group`) add middlewares before routes.
 
 ## 3. Configuration (`config`)
 
@@ -175,6 +175,8 @@ http:
     read_timeout: 30s         #   negative → error; read_header_timeout <= read_timeout
     write_timeout: 30s
     idle_timeout: 120s
+    handler_timeout: 30s      # deadline of every request context
+    max_body_bytes: <codec.max_payload_bytes>   # every request body, raw routes too; at most 1gb
   docs:
     enabled: false
     path: /docs               # normalized to "/x" (leading slash, no trailing)
@@ -219,7 +221,7 @@ database:                     # database.Config — see §9
   dsn: ""                     # wins over the individual fields
   host/port/name/user/password: ...
   ssl: { mode: "" }           # libpq sslmode; "" = pgx default (prefer)
-  connection: { connect_timeout: 5s }
+  connection: { connect_timeout: 5s, statement_timeout: 30s }   # server-side statement_timeout; a DSN value wins
   pool: { min_conns, max_conns, max_conn_lifetime, max_conn_idle_time, health_check_period }
   tenancy:                    # database.TenancyConfig — see §9.1; validated at load only when database.enabled
     enabled: false
@@ -337,7 +339,7 @@ Ports are optional and independent: `http.server.port` 8080 (tcp), `tls.port` 84
 
 - `SendJSON / SendXML / SendCBOR(w, r, status, message) error`: `status < 400` → `data`; `>= 400` → `error.detail` (any value), `title = ErrorTitle(status)`, `instance = r.URL.Path`. Encoding happens before writing, so on error nothing was sent. 1xx/204/304 send headers only. JSON and XML add `; charset=utf-8`. XML root is `<response>`.
 - `Envelope(r, status, msg) SuccessResponse`; aliases `SuccessResponse`, `ErrorResponse`.
-- `ParseJSON / ParseXML / ParseCBOR(r, &v) error` decode through `codec.Default()`. Content-Type: empty accepted; otherwise the format's type, a structured suffix (`application/vnd.x+json`) or `text/xml` for XML; parameters ignored.
+- `ParseJSON / ParseXML / ParseCBOR(r, &v) error` decode through `codec.Default()`. Content-Type: a body without one is refused (415), no body needs none; otherwise the format's type, a structured suffix (`application/vnd.x+json`) or `text/xml` for XML; parameters ignored.
 - `ParseStatus(err)`: `ErrUnsupportedMediaType` / `codec.ErrUnsupportedFormat` → 415; `codec.ErrPayloadTooLarge` → 413; `codec.ErrValidation` → 422; anything else → 400.
 
 ```go

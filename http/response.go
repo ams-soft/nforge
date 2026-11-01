@@ -58,6 +58,9 @@ type UnsupportedMediaTypeError struct {
 }
 
 func (e *UnsupportedMediaTypeError) Error() string {
+	if e.Got == "" {
+		return fmt.Sprintf("nhttp: missing content-type, expected %s", e.Expected)
+	}
 	return fmt.Sprintf("nhttp: unsupported content-type %q, expected %s", e.Got, e.Expected)
 }
 
@@ -66,7 +69,8 @@ func (e *UnsupportedMediaTypeError) Is(target error) bool { return target == Err
 // ParseJSON decodes the request's JSON body into v (a pointer), honoring the
 // payload limit and the strict mode of the configured codec. A Content-Type
 // other than application/json (or */*+json) is rejected with
-// ErrUnsupportedMediaType; a request without Content-Type is accepted.
+// ErrUnsupportedMediaType, and so is a body sent without any Content-Type; a
+// request without a body needs none.
 func ParseJSON(r *stdhttp.Request, v any) error {
 	return parse(r, codec.JSON, v)
 }
@@ -89,7 +93,8 @@ func ParseCBOR(r *stdhttp.Request, v any) error {
 // response status:
 //
 //   - 415: wrong Content-Type or format not enabled in the codec;
-//   - 413: payload larger than codec.max_payload_bytes;
+//   - 413: payload larger than codec.max_payload_bytes or than
+//     http.server.max_body_bytes;
 //   - 422: well-formed payload that failed validation (Validator);
 //   - 400: any other error (syntax, unknown/missing field, type...).
 func ParseStatus(err error) int {
@@ -100,6 +105,8 @@ func ParseStatus(err error) int {
 		return stdhttp.StatusUnsupportedMediaType
 	case errors.Is(err, codec.ErrPayloadTooLarge):
 		return stdhttp.StatusRequestEntityTooLarge
+	case isMaxBytes(err):
+		return stdhttp.StatusRequestEntityTooLarge
 	case errors.Is(err, codec.ErrValidation):
 		return stdhttp.StatusUnprocessableEntity
 	}
@@ -107,7 +114,12 @@ func ParseStatus(err error) int {
 }
 
 func parse(r *stdhttp.Request, format string, v any) error {
-	if err := checkContentType(r.Header.Get("Content-Type"), format); err != nil {
+	// A body must say what it is. A cross-site page can send a request whose
+	// body has no Content-Type without a CORS preflight (fetch with an untyped
+	// Blob), so accepting one would let any website make this API decode and
+	// act on attacker-chosen JSON.
+	hasBody := r.ContentLength != 0 && r.Body != nil && r.Body != stdhttp.NoBody
+	if err := checkContentType(r.Header.Get("Content-Type"), format, hasBody); err != nil {
 		return err
 	}
 	return codec.Default().DecodeFrom(format, r.Body, v)
@@ -116,8 +128,11 @@ func parse(r *stdhttp.Request, format string, v any) error {
 // checkContentType accepts the format's content type, the structured suffix
 // (+json, +xml, +cbor, RFC 6839) and text/xml for XML. Parameters such as
 // charset are ignored.
-func checkContentType(contentType, format string) error {
+func checkContentType(contentType, format string, hasBody bool) error {
 	if contentType == "" {
+		if hasBody {
+			return &UnsupportedMediaTypeError{Expected: format}
+		}
 		return nil
 	}
 	mediaType, _, err := mime.ParseMediaType(contentType)
@@ -177,7 +192,16 @@ func write(w stdhttp.ResponseWriter, r *stdhttp.Request, status int, format stri
 		return err
 	}
 	w.Header().Set("Content-Type", responseContentType(c.ContentType()))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
 	_, err = w.Write(data) //nolint:gosec // G705: encoded envelope with an explicit non-HTML Content-Type
 	return err
+}
+
+// isMaxBytes reports whether err comes from the request body limit
+// (http.server.max_body_bytes), which a typed route sees when that limit is
+// below the codec's.
+func isMaxBytes(err error) bool {
+	var tooBig *stdhttp.MaxBytesError
+	return errors.As(err, &tooBig)
 }

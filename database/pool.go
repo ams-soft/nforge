@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -46,6 +47,16 @@ func NewPoolConfig(cfg Config) (*pgxpool.Config, error) {
 	if cfg.Connection.ConnectTimeout > 0 {
 		poolConfig.ConnConfig.ConnectTimeout = cfg.Connection.ConnectTimeout
 	}
+	if _, inDSN := poolConfig.ConnConfig.RuntimeParams["statement_timeout"]; !inDSN {
+		timeout := cfg.Connection.StatementTimeout
+		if timeout == 0 {
+			timeout = DefaultStatementTimeout
+		}
+		if poolConfig.ConnConfig.RuntimeParams == nil {
+			poolConfig.ConnConfig.RuntimeParams = map[string]string{}
+		}
+		poolConfig.ConnConfig.RuntimeParams["statement_timeout"] = strconv.FormatInt(timeout.Milliseconds(), 10)
+	}
 
 	if poolConfig.MinConns > poolConfig.MaxConns {
 		return nil, fmt.Errorf(
@@ -68,6 +79,7 @@ func validateNonNegative(cfg Config) error {
 		{"database.pool.max_conn_idle_time", cfg.Pool.MaxConnIdleTime < 0},
 		{"database.pool.health_check_period", cfg.Pool.HealthCheckPeriod < 0},
 		{"database.connection.connect_timeout", cfg.Connection.ConnectTimeout < 0},
+		{"database.connection.statement_timeout", cfg.Connection.StatementTimeout < 0},
 	}
 	for _, c := range checks {
 		if c.negative {

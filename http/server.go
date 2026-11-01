@@ -9,6 +9,7 @@ import (
 
 	router "github.com/ams-soft/go-ams-router"
 	"github.com/ams-soft/go-ams-router/middleware"
+	"github.com/ams-soft/nforge/codec"
 	"github.com/ams-soft/nforge/config"
 	"github.com/ams-soft/nforge/deps"
 )
@@ -66,6 +67,10 @@ func (s *ServerHttp) setStandardHandler() {
 		handler.Use(Logger(&s.Deps.Logger))
 	}
 	handler.Use(middleware.Recoverer)
+	limits := s.Deps.Config.HTTP.Server
+	config.ApplyServerDefaults(&limits)
+	handler.Use(bodyLimit(s.maxBodyBytes(limits)))
+	handler.Use(handlerTimeout(limits.HandlerTimeout))
 	if s.Deps.Config.HTTP.Security.Enabled {
 		handler.Use(middleware.Security(securityOptions(s.Deps.Config.HTTP.Security)))
 	}
@@ -114,4 +119,16 @@ func (s *ServerHttp) Start() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	return s.StartContext(ctx)
+}
+
+// maxBodyBytes is http.server.max_body_bytes, or the codec payload limit when
+// it is unset.
+func (s *ServerHttp) maxBodyBytes(cfg config.ServerConfig) int64 {
+	if cfg.MaxBodyBytes > 0 {
+		return int64(cfg.MaxBodyBytes)
+	}
+	if limit := int64(s.Deps.Config.Codec.MaxPayloadBytes); limit > 0 {
+		return limit
+	}
+	return codec.DefaultMaxPayloadBytes
 }

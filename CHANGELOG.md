@@ -158,8 +158,29 @@ All notable changes to nForge are documented here. The format follows
 - `Deps.Shutdown` and `ClearAux` are safe to call concurrently: a closer never
   runs twice when an application also shuts down on its own signal.
 
+- **Request limits.** Every request context now has a deadline,
+  `http.server.handler_timeout` (default 30s), so handlers, queries and loaders
+  that honor `ctx` stop instead of outliving the connection; every request
+  body is bounded by `http.server.max_body_bytes` (default
+  `codec.max_payload_bytes`), which covers raw routes that read `r.Body`
+  directly (a typed route over a smaller limit answers 413); and PostgreSQL
+  connections get `statement_timeout` (`database.connection.statement_timeout`,
+  default 30s, a value in the DSN wins) so a runaway statement cannot hold a
+  pooled connection forever.
+- **A request body without a `Content-Type` is refused** (415 `missing
+  content-type`). A cross-site page can send an untyped body without a CORS
+  preflight, which let any website make the API decode and act on
+  attacker-chosen JSON. Requests without a body are unaffected.
+- Envelope responses carry `X-Content-Type-Options: nosniff`, and responses of
+  private (`IsPrivate`) typed routes, 401/403 included, carry
+  `Cache-Control: no-store` unless the handler sets its own.
+
 ### Notes
 
+- **Upgrading:** clients that send a body with no `Content-Type` header now
+  get 415; long-running statements and handlers over 30s need
+  `database.connection.statement_timeout` / `http.server.handler_timeout`
+  raised.
 - **Upgrading:** requests that decode into types with a nested `Validate()`
   are now validated by it, so some payloads that were accepted may start to
   answer 422.

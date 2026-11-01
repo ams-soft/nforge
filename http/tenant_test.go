@@ -179,6 +179,7 @@ func TestTypedTenantRoutes(t *testing.T) {
 
 	ok := issue(t, "access", "", claimsFields{TenantID: tenantOne})
 	req := httptest.NewRequest("POST", "/claim", strings.NewReader(`{"id":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+ok)
 	rec := httptest.NewRecorder()
 	s.Srv.Handler.ServeHTTP(rec, req)

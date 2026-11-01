@@ -30,7 +30,7 @@ PoC files were temporary and are deleted; each item says how to reproduce.
 | G-09 | Low | CODE | `config/server.go` | **RESOLVED** TLS private key file permissions are never checked |
 | G-10 | Low | CODE | `http/transport.go` | HTTPS and HTTP/3 servers ignore customisations of `ServerHttp.Srv` |
 | G-11 | Low | CODE | `http/routes.go` | Docs, spec and readiness endpoints are public; spec rebuilt per request |
-| G-12 | Low | CODE | `http/` | Raw (untyped) routes have no request-body limit |
+| G-12 | Low | CODE | `http/` | **RESOLVED** Raw (untyped) routes have no request-body limit |
 | G-13 | Low | CODE | `config/config.go` | **RESOLVED** `${VAR}` that is unset silently becomes `""`; a missing `-config` file is silently ignored |
 | G-14 | Info | CODE | `http/internal/authn` | **RESOLVED** `Bearerx token` answers 400 instead of 401 |
 | G-15 | Medium | PoC | `cache/load.go` | **RESOLVED** `GetOrLoad` hard-fails on an undecodable entry and never calls the loader until the TTL ends |
@@ -41,7 +41,7 @@ PoC files were temporary and are deleted; each item says how to reproduce.
 | G-20 | Info | CODE | `cache/load.go` | A shared load runs with the first caller's context values and hands its error to every waiter |
 | G-21 | Medium | PoC | `config/env.go` | **RESOLVED** Env-file values undergo `$VAR` expansion from the process env; passwords with `$NAME` are corrupted |
 | G-22 | Medium | PoC | `config/env.go` | **RESOLVED** Env-file keys that match no field are ignored (`HTTP_CORS_ORIGNS`) |
-| G-23 | Low-Med | CODE | `http/response.go` | Missing `Content-Type` is accepted: cross-site JSON POSTs without preflight |
+| G-23 | Low-Med | CODE | `http/response.go` | **RESOLVED** Missing `Content-Type` is accepted: cross-site JSON POSTs without preflight |
 | G-24 | Low | CODE | `config/security.go` | **RESOLVED** HSTS `includeSubDomains` on by default |
 | G-25 | Low | CODE | `config/config.go` | **RESOLVED** Unreadable overlay file is skipped silently |
 | G-26 | Low | CODE | `config/config.go` | **RESOLVED** `codec.max_payload_bytes` has no upper bound |
@@ -53,11 +53,11 @@ PoC files were temporary and are deleted; each item says how to reproduce.
 | G-32 | Low | CODE | `cache`, `database` | **RESOLVED** Credentials allowed over plain TCP to remote hosts, no warning |
 | G-33 | Low | CODE | `cache` | No atomic increment-with-TTL: counters can live forever |
 | G-34 | Low-Med | PoC | `database/config.go` | **RESOLVED** `redactDSN` leaves `?password=` and `?sslpassword=` visible |
-| G-35 | Low-Med | CODE | `http/server.go`, `database` | No handler timeout and no `statement_timeout` by default |
+| G-35 | Low-Med | CODE | `http/server.go`, `database` | **RESOLVED** No handler timeout and no `statement_timeout` by default |
 | G-36 | Medium | PoC | `config/bytesize.go` | **RESOLVED** `ByteSize` overflows to `MinInt64` with no error (cache copy is correct) |
 | G-37 | Low | CODE | `cache`, `codec` | **RESOLVED** `cache.max_value_bytes` can exceed `codec.max_payload_bytes`: stored but unreadable |
 | G-38 | Low | PoC | `helper/safecalc` | **RESOLVED** `Round` returns NaN/Inf for finite input; fixed two decimals |
-| G-39 | Low | CODE | `config/security.go` | Security headers and cache control off by default |
+| G-39 | Low | CODE | `config/security.go` | **RESOLVED** Security headers and cache control off by default |
 | G-40 | Info | CODE | `deps/deps.go` | **RESOLVED** `Shutdown` not safe for concurrent calls |
 
 Non-findings (checked and fine) are listed in section 3.
@@ -394,7 +394,7 @@ shared secret; cache the rendered spec until a route is added.
 
 ---
 
-### G-12 — Raw routes have no body limit (Low, CODE)
+### G-12 — Raw routes have no body limit (Low, CODE) [RESOLVED]
 
 Typed routes are bounded by the codec's `max_payload_bytes`. A handler
 registered with `server.Router().Post(...)` that reads `r.Body` directly is
@@ -404,6 +404,9 @@ steer people to `ParseJSON`, which is bounded, but nothing enforces it.
 
 **Fix direction.** Ship a `MaxBody(limit)` middleware and apply it by default
 at `codec.max_payload_bytes` (opt out per route).
+
+
+> **Resolved** in `fix(http): bound request context, body and statement time`. http.server.max_body_bytes (default codec.max_payload_bytes) wraps every request body; ParseStatus maps *http.MaxBytesError to 413. Tests: TestRawRouteBodyIsBounded, TestTypedRouteAnswers413AtEitherLimit.
 
 ---
 
@@ -739,7 +742,7 @@ collect the file's keys, subtract the consumed ones and fail on leftovers
 
 ---
 
-### G-23 — JSON requests without `Content-Type` are accepted: CSRF-style cross-site POSTs (Low-Med, CODE)
+### G-23 — JSON requests without `Content-Type` are accepted: CSRF-style cross-site POSTs (Low-Med, CODE) [RESOLVED]
 
 **Where.** `http/response.go:130` `checkContentType`: an empty `Content-Type`
 returns `nil` (accepted) for every typed body route and for
@@ -764,6 +767,9 @@ this is not exploitable (the browser does not add it), but it is for:
 body (`r.ContentLength != 0`); keep accepting a missing header for GET/no-body.
 This is a behaviour change, so make it a `codec`/`http` setting if existing
 clients rely on it.
+
+
+> **Resolved** in `fix(http): bound request context, body and statement time`. A body without Content-Type is refused with 415 (TestBodyWithoutContentTypeIsRefused).
 
 ---
 
@@ -1006,7 +1012,7 @@ logged. Parse the query, mask `password`, `sslpassword` (and `passfile`,
 
 ---
 
-### G-35 — No handler/request timeout and no statement timeout by default (Low-Med, CODE)
+### G-35 — No handler/request timeout and no statement timeout by default (Low-Med, CODE) [RESOLVED]
 
 `http/server.go` mounts Tracing, Logger, Recoverer, Security, CORS; no
 `middleware.Timeout`. `http.server.write_timeout` closes the connection after
@@ -1023,6 +1029,9 @@ turns into a full outage, including `/ready` (which then correctly reports
 context deadline (and a `statement_timeout` / `lock_timeout` setting under
 `database.connection`), both with finite defaults; document that handlers must
 pass `r.Context()` to queries.
+
+
+> **Resolved** in `fix(http): bound request context, body and statement time`. http.server.handler_timeout (default 30s) sets the request context deadline; database.connection.statement_timeout (default 30s) sets PostgreSQL statement_timeout. Tests: TestRequestContextHasADeadline, TestRequestContextIsCanceledAtTheDeadline, TestNewPoolConfigSetsStatementTimeout.
 
 ---
 
@@ -1126,7 +1135,7 @@ represented correctly; the `MoneyOpt` has no `Decimals` field.
 
 ---
 
-### G-39 — Defaults leave security headers and cache control off (Low, CODE)
+### G-39 — Defaults leave security headers and cache control off (Low, CODE) [RESOLVED]
 
 `http.security.enabled` and `http.cors.enabled` default to false
 (`config/security.go`), so a fresh app sends no `X-Content-Type-Options`, no
@@ -1137,6 +1146,9 @@ opt-in. A conservative default for typed routes (`Cache-Control: no-store` on
 `IsPrivate` routes, `nosniff` everywhere) costs nothing and removes a class of
 shared-cache and MIME-sniffing surprises. Related: `stdhttp.Error` responses
 from docs/JWKS are `text/plain` and rely on Go's own `nosniff`.
+
+
+> **Resolved** in `fix(http): bound request context, body and statement time`. Envelope responses carry nosniff and private typed routes (401/403 included) carry Cache-Control: no-store (TestPrivateResponsesAreNoStoreAndNosniff). Security headers/CORS stay opt-in; the defaults now cover the two that cost nothing.
 
 ---
 
