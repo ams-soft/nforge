@@ -1250,7 +1250,9 @@ ones) found nothing.
 - Some items are mitigations rather than eliminations, and say so in their
   note: G-11 (the docs and `/ready` stay public; they are cached and a
   production warning is logged), G-09 and G-32 (warnings, not errors, because
-  orchestrators mount keys 0644 and private networks carry plain traffic),
+  orchestrators mount keys 0644 and private networks carry plain traffic;
+  later made load errors in `env: prd` with explicit `prd_exceptions` keys,
+  and `/ready` still needs the gateway),
   (G-39 and G-13 were later closed: `http.security` is on by default and an
   unset `${VAR}` is a load error with `${VAR:-default}` as the opt-out; a
   warning now covers HTTPS/HTTP3 in front of plaintext Redis or PostgreSQL.)

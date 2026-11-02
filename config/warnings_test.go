@@ -83,8 +83,8 @@ func TestPlaintextCredentialWarnings(t *testing.T) {
 	}
 }
 
-// A TLS private key that others can read is reported, not refused: many
-// orchestrators mount secrets 0644 (G-09).
+// Outside prd, a TLS private key that others can read is reported, not
+// refused: many orchestrators mount secrets 0644 (G-09).
 func TestTLSKeyPermissionWarning(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX permission bits")
@@ -106,7 +106,7 @@ func TestTLSKeyPermissionWarning(t *testing.T) {
 func TestDocsInProductionWarning(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir) // no overlay file: only the base config
-	cfg, err := LoadFlags(writeConfig(t, "env: prd\n"+baseYAML+"http: {docs: {enabled: true}}\n"), "")
+	cfg, err := LoadFlags(writeConfig(t, "env: prd\n"+baseYAML+"prd_exceptions: {docs: true}\nhttp: {docs: {enabled: true}}\n"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,5 +160,51 @@ func TestEdgeTLSWithPlaintextBackendsWarning(t *testing.T) {
 				t.Errorf("database warning = %v, want %v: %q", got, c.db, w)
 			}
 		})
+	}
+}
+
+// In prd an insecure setting is a load error unless its prd_exceptions key is
+// set; elsewhere it stays a warning.
+func TestProductionRefusesInsecureSettings(t *testing.T) {
+	t.Chdir(t.TempDir())
+	const redis = "cache: {enabled: true, driver: redis, redis: {host: cache.internal, password: secret}}\n"
+	const db = "database: {enabled: true, host: db.internal, port: 5432, name: app, user: app, password: secret}\n"
+	cases := []struct {
+		name, yaml, exception string
+	}{
+		{"docs", "http: {docs: {enabled: true}}\n", "docs"},
+		{"redis", redis, "redis_plaintext"},
+		{"database", db, "database_plaintext"},
+	}
+	for _, c := range cases {
+		_, err := LoadFlags(writeConfig(t, "env: prd\n"+baseYAML+c.yaml), "")
+		if err == nil || !strings.Contains(err.Error(), "prd_exceptions."+c.exception) {
+			t.Errorf("%s: err = %v, want a refusal naming prd_exceptions.%s", c.name, err, c.exception)
+		}
+		cfg, err := LoadFlags(writeConfig(t, "env: prd\n"+baseYAML+"prd_exceptions: {"+c.exception+": true}\n"+c.yaml), "")
+		if err != nil || len(cfg.Warnings) == 0 {
+			t.Errorf("%s with the exception: err = %v, warnings = %q", c.name, err, cfg.Warnings)
+		}
+		if cfg, err := LoadFlags(writeConfig(t, "env: dev\n"+baseYAML+c.yaml), ""); err != nil || (c.name != "docs" && len(cfg.Warnings) == 0) {
+			t.Errorf("%s in dev: err = %v, want a warning only", c.name, err)
+		}
+	}
+}
+
+func TestProductionRefusesLooseTLSKey(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits")
+	}
+	t.Chdir(t.TempDir())
+	cert, key := testPair(t)
+	if err := os.Chmod(key, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	yaml := "http: {server: {tls: {enabled: true, cert_file: " + cert + ", key_file: " + key + "}}}\n"
+	if _, err := LoadFlags(writeConfig(t, "env: prd\n"+baseYAML+yaml), ""); err == nil || !strings.Contains(err.Error(), "prd_exceptions.tls_key_permissions") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := LoadFlags(writeConfig(t, "env: prd\n"+baseYAML+"prd_exceptions: {tls_key_permissions: true}\n"+yaml), ""); err != nil {
+		t.Fatal(err)
 	}
 }

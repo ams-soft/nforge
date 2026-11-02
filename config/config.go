@@ -88,7 +88,11 @@ func LoadFlags(configPath, envFilePath string) (*Config, error) {
 	if valid, err := validateRequiredConfig(cfg); !valid {
 		return nil, fmt.Errorf("validate config: %w", err)
 	}
-	cfg.Warnings = append(cfg.Warnings, transportWarnings(cfg)...)
+	warnings, err := transportWarnings(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("validate config: %w", err)
+	}
+	cfg.Warnings = append(cfg.Warnings, warnings...)
 
 	return cfg, nil
 }

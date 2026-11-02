@@ -325,11 +325,15 @@ Built-in routes registered by `NewHTTPServer`:
    the env file too.
 5. **Defaults** (`feedDefaults`).
 6. **Validation** (`validateRequiredConfig`), then `transportWarnings`
-   (`config/warnings.go`) appends to `Config.Warnings`, never an error: a TLS
-   private key readable by group or others, Redis credentials without TLS to a
-   non-local host, a PostgreSQL password with `sslmode` disable/allow/prefer
-   (the pgx default) to a non-local host, and HTTPS or HTTP/3 served while
-   `cache.redis` or the database does not use TLS (a Unix socket is exempt).
+   (`config/warnings.go`) checks: a TLS private key readable by group or
+   others, Redis credentials without TLS to a non-local host, a PostgreSQL
+   password with `sslmode` disable/allow/prefer (the pgx default) to a
+   non-local host, HTTPS or HTTP/3 served while `cache.redis` or the database
+   does not use TLS (a Unix socket is exempt), and `http.docs.enabled` in prd.
+   Outside `prd` they are `Config.Warnings`; with `env: prd` each one is a
+   **load error** unless its `prd_exceptions` key is true (`docs`,
+   `tls_key_permissions`, `redis_plaintext`, `database_plaintext`), in which
+   case it stays a warning.
    `codec.max_payload_bytes` must be at
    most 256 MiB.
 
@@ -461,6 +465,12 @@ jose:                         # jose.Config — see §10 (unknown keys inside jo
   profiles: [ { name, kind, typ, signing_*, verification_*, encryption_*, decryption_*,
                 content_encryption: A256GCM, jwt: { issuer, audiences, ttl: 15m, max_ttl: 15m, clock_skew: 30s } } ]
   jwks: { enabled: false, path: /.well-known/jwks.json, cache_max_age: 60s }
+
+prd_exceptions:               # insecure settings env prd accepts on purpose (default false: load error); see §4.1
+  docs: false                 # http.docs.enabled in prd
+  tls_key_permissions: false  # TLS key readable by group or others
+  redis_plaintext: false      # Redis without TLS (credentials, or behind HTTPS/HTTP/3)
+  database_plaintext: false   # PostgreSQL sslmode that can fall back to clear text
 
 cache:                        # cache.Config — see §11; validated only when enabled, and only the selected driver
   enabled: false              # false: nothing is opened, deps.Cache is nil
@@ -842,7 +852,7 @@ func (q *ListUsers) Validate() error { ... }         // → 422 on failure
   spec and `/ready` are **public** (a browser cannot send a bearer token on a
   navigation) and list every route, auth profile and scope: keep
   `http.docs.enabled` off in production or restrict the path at the gateway
-  (startup warns when `env: prd` has docs enabled).
+  (`env: prd` with docs enabled fails to load unless `prd_exceptions.docs: true`).
 - OpenAPI **3.1.0**. Schemas use JSON names; where XML differs (name,
   attribute, root `XMLName`) an `xml` object is added. Named structs go to
   `components.schemas` (unique names, recursion-safe); success responses get

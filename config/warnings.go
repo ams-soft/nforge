@@ -11,32 +11,49 @@ import (
 	"github.com/ams-soft/nforge/cache"
 )
 
-// transportWarnings reports settings that are valid but weaken the deployment
-// and that a hard error would break in legitimate setups (a key mounted 0644
-// by an orchestrator, a database reached through a trusted private network).
-// deps.NewDeps logs them at startup.
-func transportWarnings(cfg *Config) []string {
-	var w []string
-	w = append(w, keyFileWarnings(cfg)...)
-	w = append(w, redisWarnings(cfg)...)
-	w = append(w, databaseWarnings(cfg)...)
-	w = append(w, docsWarnings(cfg)...)
-	w = append(w, edgeTLSWarnings(cfg)...)
-	return w
+// finding is one weakening setting. exception names the prd_exceptions key
+// that accepts it in production.
+type finding struct{ exception, msg string }
+
+// transportWarnings reports settings that are valid but weaken the deployment.
+// Outside prd they are warnings (a key mounted 0644 by an orchestrator, a
+// database reached through a trusted private network are legitimate there);
+// deps.NewDeps logs them at startup. In prd each one is a load error unless
+// its prd_exceptions key is set, in which case it stays a warning.
+func transportWarnings(cfg *Config) (warnings []string, err error) {
+	var all []finding
+	all = append(all, keyFileWarnings(cfg)...)
+	all = append(all, redisWarnings(cfg)...)
+	all = append(all, databaseWarnings(cfg)...)
+	all = append(all, docsWarnings(cfg)...)
+	all = append(all, edgeTLSWarnings(cfg)...)
+
+	var refused []string
+	for _, f := range all {
+		if cfg.Env == "prd" && !cfg.PrdExceptions.allows(f.exception) {
+			refused = append(refused, fmt.Sprintf("%s (accept it with prd_exceptions.%s: true)", f.msg, f.exception))
+			continue
+		}
+		warnings = append(warnings, f.msg)
+	}
+	if len(refused) > 0 {
+		return nil, fmt.Errorf("env prd refuses insecure settings:\n  - %s", strings.Join(refused, "\n  - "))
+	}
+	return warnings, nil
 }
 
 // edgeTLSWarnings flags a server that terminates TLS (HTTPS or HTTP/3) while
 // its backends are reached without it: the operator cared about the edge but
 // the data and credentials behind it travel in clear text. A Unix socket is
 // exempt (TLS does not apply to it).
-func edgeTLSWarnings(cfg *Config) []string {
+func edgeTLSWarnings(cfg *Config) []finding {
 	s := cfg.HTTP.Server
 	if !s.TLS.Enabled && !s.HTTP3.Enabled {
 		return nil
 	}
-	var w []string
+	var w []finding
 	if c := cfg.Cache; c.Enabled && c.Driver == "redis" && !redisUsesTLS(c) {
-		w = append(w, "the server uses HTTPS or HTTP/3 but cache.redis is reached without TLS; use rediss:// or cache.redis.tls.enabled")
+		w = append(w, finding{"redis_plaintext", "the server uses HTTPS or HTTP/3 but cache.redis is reached without TLS; use rediss:// or cache.redis.tls.enabled"})
 	}
 	if d := cfg.Database; d.Enabled {
 		host, mode := d.Host, d.SSL.Mode
@@ -44,7 +61,7 @@ func edgeTLSWarnings(cfg *Config) []string {
 			host, mode, _ = dsnParts(dsn)
 		}
 		if !strings.HasPrefix(host, "/") && !slices.Contains([]string{"require", "verify-ca", "verify-full"}, mode) {
-			w = append(w, "the server uses HTTPS or HTTP/3 but the database connection does not require TLS (database.ssl.mode must be require, verify-ca or verify-full)")
+			w = append(w, finding{"database_plaintext", "the server uses HTTPS or HTTP/3 but the database connection does not require TLS (database.ssl.mode must be require, verify-ca or verify-full)"})
 		}
 	}
 	return w
@@ -63,16 +80,16 @@ func redisUsesTLS(c cache.Config) bool {
 // public by design (a browser cannot send a bearer token on navigation), and
 // they list every route with its auth profile and scopes and the names of the
 // Go packages the schemas come from.
-func docsWarnings(cfg *Config) []string {
+func docsWarnings(cfg *Config) []finding {
 	if cfg.Env == "prd" && cfg.HTTP.Docs.Enabled {
-		return []string{"http.docs is enabled in prd: the page and the OpenAPI spec are public and list every route, auth profile and scope; disable them or restrict the path at the gateway"}
+		return []finding{{"docs", "http.docs is enabled in prd: the page and the OpenAPI spec are public and list every route, auth profile and scope; disable them or restrict the path at the gateway"}}
 	}
 	return nil
 }
 
 // keyFileWarnings flags TLS private keys that group or others can read, the
 // check jose applies to its own key files (and enforces).
-func keyFileWarnings(cfg *Config) []string {
+func keyFileWarnings(cfg *Config) []finding {
 	if runtime.GOOS == "windows" {
 		return nil // POSIX permission bits are not meaningful there
 	}
@@ -84,14 +101,14 @@ func keyFileWarnings(cfg *Config) []string {
 	if s.HTTP3.Enabled && !s.HTTP3.SameKeyCert() {
 		files = append(files, struct{ field, path string }{"http.server.http3.key_file", s.HTTP3.KeyFile})
 	}
-	var w []string
+	var w []finding
 	for _, f := range files {
 		info, err := os.Stat(f.path)
 		if err != nil || info.IsDir() {
 			continue // ValidateServer already reported unreadable pairs
 		}
 		if perm := info.Mode().Perm(); perm&0o077 != 0 {
-			w = append(w, fmt.Sprintf("%s is readable by group or others (mode %04o); restrict the private key to its owner (chmod 600)", f.field, perm))
+			w = append(w, finding{"tls_key_permissions", fmt.Sprintf("%s is readable by group or others (mode %04o); restrict the private key to its owner (chmod 600)", f.field, perm)})
 		}
 	}
 	return w
@@ -99,7 +116,7 @@ func keyFileWarnings(cfg *Config) []string {
 
 // redisWarnings flags Redis credentials that would travel in clear text to a
 // host that is not this machine.
-func redisWarnings(cfg *Config) []string {
+func redisWarnings(cfg *Config) []finding {
 	c := cfg.Cache
 	if !c.Enabled || c.Driver != "redis" {
 		return nil
@@ -115,7 +132,7 @@ func redisWarnings(cfg *Config) []string {
 		hasCreds = u.User != nil && (u.User.Username() != "" || hasPassword)
 	}
 	if hasCreds && !tls && !isLocalHost(host) {
-		return []string{"cache.redis sends its credentials without TLS to a host that is not local; use rediss:// or cache.redis.tls.enabled"}
+		return []finding{{"redis_plaintext", "cache.redis sends its credentials without TLS to a host that is not local; use rediss:// or cache.redis.tls.enabled"}}
 	}
 	return nil
 }
@@ -125,7 +142,7 @@ var insecureSSLModes = []string{"", "disable", "allow", "prefer"}
 
 // databaseWarnings flags a PostgreSQL connection to a non-local host whose
 // sslmode can fall back to clear text (the pgx default, "prefer", does).
-func databaseWarnings(cfg *Config) []string {
+func databaseWarnings(cfg *Config) []finding {
 	d := cfg.Database
 	if !d.Enabled {
 		return nil
@@ -143,7 +160,7 @@ func databaseWarnings(cfg *Config) []string {
 			if shown == "" {
 				shown = "unset (prefer)"
 			}
-			return []string{fmt.Sprintf("database.ssl.mode is %s for a non-local host: the password may be sent unencrypted; use verify-full", shown)}
+			return []finding{{"database_plaintext", fmt.Sprintf("database.ssl.mode is %s for a non-local host: the password may be sent unencrypted; use verify-full", shown)}}
 		}
 	}
 	return nil

@@ -19,6 +19,10 @@ type Config struct {
 	JOSE     jose.Config     `yaml:"jose"`  // JWS/JWE/JWT; disabled by default (deps.JOSE is nil)
 	Cache    cache.Config    `yaml:"cache"` // Redis or memory cache; disabled by default (deps.Cache is nil)
 
+	// PrdExceptions accepts, one by one, the insecure settings that env prd
+	// otherwise refuses to load (they are only warnings in other environments).
+	PrdExceptions PrdExceptionsConfig `yaml:"prd_exceptions"`
+
 	// Warnings are problems the loader accepted (an unset ${VAR} that expanded
 	// to an empty string, ...). deps.NewDeps logs them once the logger exists.
 	Warnings []string `yaml:"-"`
@@ -271,4 +275,29 @@ type CodecFormats struct {
 
 type CodecXMLConfig struct {
 	DisallowDTD *bool `yaml:"disallow_dtd"` // default: true
+}
+
+// PrdExceptionsConfig lists the insecure settings an operator accepts in
+// production on purpose. Every flag defaults to false: with env prd the
+// matching setting is then a load error instead of a startup warning.
+type PrdExceptionsConfig struct {
+	Docs              bool `yaml:"docs"`                // http.docs.enabled (public page and spec)
+	TLSKeyPermissions bool `yaml:"tls_key_permissions"` // TLS private key readable by group or others
+	RedisPlaintext    bool `yaml:"redis_plaintext"`     // Redis without TLS (credentials, or behind HTTPS/HTTP/3)
+	DatabasePlaintext bool `yaml:"database_plaintext"`  // PostgreSQL sslmode that can fall back to clear text
+}
+
+// allows reports whether the named exception is set.
+func (e PrdExceptionsConfig) allows(name string) bool {
+	switch name {
+	case "docs":
+		return e.Docs
+	case "tls_key_permissions":
+		return e.TLSKeyPermissions
+	case "redis_plaintext":
+		return e.RedisPlaintext
+	case "database_plaintext":
+		return e.DatabasePlaintext
+	}
+	return false
 }
