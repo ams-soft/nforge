@@ -124,15 +124,24 @@ func TestMayCycle(t *testing.T) {
 }
 
 // With no required field and no interface there is nothing to check (G-28):
-// the 1 MB response must not be walked.
+// a large response must not be walked.
 func TestCheckRequiredSkipsTypesWithoutRequiredFields(t *testing.T) {
-	d := fitDoc(1_000_000)
+	type line struct {
+		SKU string `json:"sku"`
+		Qty int    `json:"qty"`
+	}
+	type doc struct {
+		Lines []line `json:"lines"`
+	}
+	d := doc{Lines: make([]line, 50_000)}
 	if n := testing.AllocsPerRun(5, func() { _ = CheckRequired(&d) }); n > 0 {
 		t.Errorf("CheckRequired on an untagged response allocated %v times, want 0", n)
 	}
 	// a tagged twin is still checked
-	req := benchDocReq{Orders: []benchOrderReq{{ID: 1, Customer: "x", Lines: nil}}}
-	if err := CheckRequired(&req); err == nil {
+	type tagged struct {
+		Customer *string `json:"customer" codec:"required"`
+	}
+	if err := CheckRequired(&tagged{}); err == nil {
 		t.Error("a missing required field must still be reported")
 	}
 }
