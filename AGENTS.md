@@ -329,11 +329,14 @@ Built-in routes registered by `NewHTTPServer`:
    others, Redis credentials without TLS to a non-local host, a PostgreSQL
    password with `sslmode` disable/allow/prefer (the pgx default) to a
    non-local host, HTTPS or HTTP/3 served while `cache.redis` or the database
-   does not use TLS (a Unix socket is exempt), and `http.docs.enabled` in prd.
-   Outside `prd` they are `Config.Warnings`; with `env: prd` each one is a
-   **load error** unless its `prd_exceptions` key is true (`docs`,
-   `tls_key_permissions`, `redis_plaintext`, `database_plaintext`), in which
-   case it stays a warning.
+   does not use TLS (a Unix socket is exempt). Outside `prd` they are
+   `Config.Warnings`; with `env: prd` each one is a **load error** unless its
+   `prd_exceptions` key is true (`tls_key_permissions`, `redis_plaintext`,
+   `database_plaintext`), in which case it stays a warning. In `prd`,
+   `http.docs`, `http.routes.health` or `http.routes.readiness` enabled is
+   only a warning (unauthenticated endpoints), silenced by
+   `app.internal_use: true`. `deps` logs config warnings at ERROR level in
+   `prd`, because that environment filters the log below ERROR.
    `codec.max_payload_bytes` must be at
    most 256 MiB.
 
@@ -345,6 +348,7 @@ env: local                    # local (default) | dev | stg | prd — drives log
 app:
   name: my-app                # REQUIRED
   version: 1.0.0              # REQUIRED
+  internal_use: false         # true = not reachable from the internet; silences the prd warning about docs/health/readiness
   # OnlineSince is set at load time (RFC 3339), not configurable
 
 http:
@@ -467,7 +471,6 @@ jose:                         # jose.Config — see §10 (unknown keys inside jo
   jwks: { enabled: false, path: /.well-known/jwks.json, cache_max_age: 60s }
 
 prd_exceptions:               # insecure settings env prd accepts on purpose (default false: load error); see §4.1
-  docs: false                 # http.docs.enabled in prd
   tls_key_permissions: false  # TLS key readable by group or others
   redis_plaintext: false      # Redis without TLS (credentials, or behind HTTPS/HTTP/3)
   database_plaintext: false   # PostgreSQL sslmode that can fall back to clear text
@@ -852,7 +855,7 @@ func (q *ListUsers) Validate() error { ... }         // → 422 on failure
   spec and `/ready` are **public** (a browser cannot send a bearer token on a
   navigation) and list every route, auth profile and scope: keep
   `http.docs.enabled` off in production or restrict the path at the gateway
-  (`env: prd` with docs enabled fails to load unless `prd_exceptions.docs: true`).
+  (`env: prd` with docs, health or readiness enabled warns unless `app.internal_use: true`).
 - OpenAPI **3.1.0**. Schemas use JSON names; where XML differs (name,
   attribute, root `XMLName`) an `xml` object is added. Named structs go to
   `components.schemas` (unique names, recursion-safe); success responses get

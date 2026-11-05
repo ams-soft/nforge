@@ -12,7 +12,7 @@ import (
 )
 
 // finding is one weakening setting. exception names the prd_exceptions key
-// that accepts it in production.
+// that accepts it in production; empty means it is only ever a warning.
 type finding struct{ exception, msg string }
 
 // transportWarnings reports settings that are valid but weaken the deployment.
@@ -30,7 +30,7 @@ func transportWarnings(cfg *Config) (warnings []string, err error) {
 
 	var refused []string
 	for _, f := range all {
-		if cfg.Env == "prd" && !cfg.PrdExceptions.allows(f.exception) {
+		if f.exception != "" && cfg.Env == "prd" && !cfg.PrdExceptions.allows(f.exception) {
 			refused = append(refused, fmt.Sprintf("%s (accept it with prd_exceptions.%s: true)", f.msg, f.exception))
 			continue
 		}
@@ -76,15 +76,30 @@ func redisUsesTLS(c cache.Config) bool {
 	return c.Redis.TLS.Enabled
 }
 
-// docsWarnings flags the documentation endpoints in production. They are
-// public by design (a browser cannot send a bearer token on navigation), and
-// they list every route with its auth profile and scopes and the names of the
-// Go packages the schemas come from.
+// docsWarnings flags the docs, health and readiness endpoints in production.
+// They are unauthenticated by design (a browser cannot send a bearer token on
+// navigation, and probes carry none): the docs page and the spec list every
+// route, auth profile and scope, and readiness reports the state of the
+// database, cache and JOSE. It stays a warning, because many deployments keep
+// them behind a gateway or on a private network; app.internal_use silences it.
 func docsWarnings(cfg *Config) []finding {
-	if cfg.Env == "prd" && cfg.HTTP.Docs.Enabled {
-		return []finding{{"docs", "http.docs is enabled in prd: the page and the OpenAPI spec are public and list every route, auth profile and scope; disable them or restrict the path at the gateway"}}
+	if cfg.Env != "prd" || cfg.App.InternalUse {
+		return nil
 	}
-	return nil
+	var on []string
+	if cfg.HTTP.Docs.Enabled {
+		on = append(on, "http.docs")
+	}
+	if cfg.HTTP.Routes.Health.Enabled {
+		on = append(on, "http.routes.health")
+	}
+	if cfg.HTTP.Routes.Readiness.Enabled {
+		on = append(on, "http.routes.readiness")
+	}
+	if len(on) == 0 {
+		return nil
+	}
+	return []finding{{"", strings.Join(on, ", ") + " enabled in prd: these endpoints are unauthenticated (docs and the spec list every route, auth profile and scope; readiness reports the state of the dependencies); restrict them at the gateway, or set app.internal_use: true if the service is not reachable from the internet"}}
 }
 
 // keyFileWarnings flags TLS private keys that group or others can read, the

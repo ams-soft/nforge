@@ -228,10 +228,14 @@ All notable changes to nForge are documented here. The format follows
 - **Upgrading:** with `env: prd`, a TLS private key readable by group or
   others, Redis credentials or HTTPS/HTTP/3 in front of Redis without TLS, a
   PostgreSQL `sslmode` that can fall back to clear text (non-local host) and
-  `http.docs.enabled` are now load errors instead of warnings. Fix the setting
-  or accept it explicitly with `prd_exceptions.tls_key_permissions`,
-  `redis_plaintext`, `database_plaintext` or `docs` set to `true` (it then stays
-  a warning). Other environments are unchanged.
+  are now load errors instead of warnings. Fix the setting or accept it
+  explicitly with `prd_exceptions.tls_key_permissions`, `redis_plaintext` or
+  `database_plaintext` set to `true` (it then stays a warning). Other
+  environments are unchanged.
+- In `env: prd`, `http.docs`, `http.routes.health` and `http.routes.readiness`
+  enabled log one warning (they are unauthenticated); `app.internal_use: true`
+  declares the service is not internet-facing and silences it. Config warnings
+  are logged at ERROR level in `prd` so the log filter does not hide them.
 - **Upgrading:** an unset `${VAR}` in a config file is now a load error
   (it used to expand to an empty string with a warning). Use
   `${VAR:-default}`, or `${VAR:-}` for an optional variable.

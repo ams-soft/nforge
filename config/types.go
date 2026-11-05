@@ -32,6 +32,10 @@ type AppConfig struct {
 	Name        string `yaml:"name"`
 	Version     string `yaml:"version"`
 	OnlineSince string `yaml:"-"` // set at load time
+	// InternalUse declares that the service is not reachable from the internet
+	// (default false). It only silences the prd warning about the docs, health
+	// and readiness endpoints; every other check is unaffected.
+	InternalUse bool `yaml:"internal_use"`
 }
 
 type HealthConfig struct {
@@ -281,7 +285,6 @@ type CodecXMLConfig struct {
 // production on purpose. Every flag defaults to false: with env prd the
 // matching setting is then a load error instead of a startup warning.
 type PrdExceptionsConfig struct {
-	Docs              bool `yaml:"docs"`                // http.docs.enabled (public page and spec)
 	TLSKeyPermissions bool `yaml:"tls_key_permissions"` // TLS private key readable by group or others
 	RedisPlaintext    bool `yaml:"redis_plaintext"`     // Redis without TLS (credentials, or behind HTTPS/HTTP/3)
 	DatabasePlaintext bool `yaml:"database_plaintext"`  // PostgreSQL sslmode that can fall back to clear text
@@ -290,8 +293,6 @@ type PrdExceptionsConfig struct {
 // allows reports whether the named exception is set.
 func (e PrdExceptionsConfig) allows(name string) bool {
 	switch name {
-	case "docs":
-		return e.Docs
 	case "tls_key_permissions":
 		return e.TLSKeyPermissions
 	case "redis_plaintext":

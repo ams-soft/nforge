@@ -103,25 +103,26 @@ func TestTLSKeyPermissionWarning(t *testing.T) {
 	}
 }
 
-func TestDocsInProductionWarning(t *testing.T) {
-	dir := t.TempDir()
-	t.Chdir(dir) // no overlay file: only the base config
-	cfg, err := LoadFlags(writeConfig(t, "env: prd\n"+baseYAML+"prd_exceptions: {docs: true}\nhttp: {docs: {enabled: true}}\n"), "")
+func TestDocsHealthReadinessInProductionWarning(t *testing.T) {
+	t.Chdir(t.TempDir()) // no overlay file: only the base config
+	const on = "http: {docs: {enabled: true}, routes: {health: {enabled: true}, readiness: {enabled: true}}}\n"
+	cfg, err := LoadFlags(writeConfig(t, "env: prd\n"+baseYAML+on), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hasWarning(cfg.Warnings, "http.docs is enabled in prd") {
-		t.Fatalf("docs in prd must be reported: %q", cfg.Warnings)
+	if !hasWarning(cfg.Warnings, "http.docs, http.routes.health, http.routes.readiness enabled in prd") {
+		t.Fatalf("exposed endpoints in prd must be reported: %q", cfg.Warnings)
 	}
 	for name, yaml := range map[string]string{
-		"dev":           "env: dev\n" + baseYAML + "http: {docs: {enabled: true}}\n",
+		"dev":           "env: dev\n" + baseYAML + on,
 		"prd, disabled": "env: prd\n" + baseYAML,
+		"internal use":  "env: prd\napp: {name: a, version: '1', internal_use: true}\n" + on,
 	} {
 		cfg, err := LoadFlags(writeConfig(t, yaml), "")
 		if err != nil {
 			t.Fatal(name, err)
 		}
-		if hasWarning(cfg.Warnings, "http.docs is enabled") {
+		if hasWarning(cfg.Warnings, "enabled in prd") {
 			t.Errorf("%s: unexpected warning %q", name, cfg.Warnings)
 		}
 	}
@@ -172,7 +173,6 @@ func TestProductionRefusesInsecureSettings(t *testing.T) {
 	cases := []struct {
 		name, yaml, exception string
 	}{
-		{"docs", "http: {docs: {enabled: true}}\n", "docs"},
 		{"redis", redis, "redis_plaintext"},
 		{"database", db, "database_plaintext"},
 	}
@@ -185,7 +185,7 @@ func TestProductionRefusesInsecureSettings(t *testing.T) {
 		if err != nil || len(cfg.Warnings) == 0 {
 			t.Errorf("%s with the exception: err = %v, warnings = %q", c.name, err, cfg.Warnings)
 		}
-		if cfg, err := LoadFlags(writeConfig(t, "env: dev\n"+baseYAML+c.yaml), ""); err != nil || (c.name != "docs" && len(cfg.Warnings) == 0) {
+		if cfg, err := LoadFlags(writeConfig(t, "env: dev\n"+baseYAML+c.yaml), ""); err != nil || len(cfg.Warnings) == 0 {
 			t.Errorf("%s in dev: err = %v, want a warning only", c.name, err)
 		}
 	}

@@ -200,6 +200,20 @@ func TestConfigWarningsAreLogged(t *testing.T) {
 	}
 }
 
+// env prd filters the log below ERROR, so its config warnings are logged there.
+func TestConfigWarningsReachTheLogInProduction(t *testing.T) {
+	var buf bytes.Buffer
+	d := Deps{
+		Context: context.Background(),
+		Logger:  *slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})),
+		Config:  config.Config{Env: "prd", Warnings: []string{"http.docs enabled in prd"}},
+	}
+	d.logConfigWarnings()
+	if !strings.Contains(buf.String(), "http.docs enabled in prd") {
+		t.Fatalf("warning filtered out in prd: %q", buf.String())
+	}
+}
+
 func TestReloadJOSEDisabled(t *testing.T) {
 	var d Deps
 	if err := d.ReloadJOSE(context.Background()); !errors.Is(err, ErrJOSEDisabled) {

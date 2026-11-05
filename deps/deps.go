@@ -258,8 +258,14 @@ func tenantFromContext(ctx context.Context) (string, error) {
 // logConfigWarnings reports what the configuration loader accepted but the
 // operator should know about (an unset ${VAR} that expanded to nothing).
 func (d *Deps) logConfigWarnings() {
+	// env prd filters the log below ERROR, so a WARN would never reach the
+	// terminal; the operator must see these at least once.
+	level := slog.LevelWarn
+	if d.Config.Env == "prd" {
+		level = slog.LevelError
+	}
 	for _, w := range d.Config.Warnings {
-		d.Logger.WarnContext(d.Context, "[ConfigModule] "+w)
+		d.Logger.Log(d.Context, level, "[ConfigModule] "+w)
 	}
 }
 
