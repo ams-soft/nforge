@@ -56,7 +56,7 @@ application gets, from one `config.yaml`:
   monetary amounts in integer cents with exact display formatting.
 
 Framework version: `version` in the **module root** `config.yaml`
-(currently `0.2.0`), embedded at build time and exposed as `nforge.Version`
+(currently `0.3.0`), embedded at build time and exposed as `nforge.Version`
 (`version.go`). This file is *not* the application's config. Releases are
 git tags `vX.Y.Z` on `main` (published on pkg.go.dev through the Go module
 proxy); bump this `version` in the commit that gets tagged, so

@@ -6,12 +6,16 @@ All notable changes to nForge are documented here. The format follows
 
 ## [Unreleased]
 
+## [v0.3.0] - 2026-11-06
+
+This release contains breaking changes; read the **Upgrading** notes below.
+
 ### Added
 
 - Package `module`: a neutral core that resolves explicitly registered modules
   into a deterministic, acyclic plan before anything starts, and runs their
   lifecycle (rollback, reverse shutdown, status).
-- `deps.Bootstrap(ctx, cfg, extra...)`, exported capabilities (`deps.CapDatabase`,
+- `deps.Bootstrap(ctx, cfg, opts...)`, `deps.WithModules`, exported capabilities (`deps.CapDatabase`,
   `CapCache`, ...), `deps.Value`, `Deps.Graph` and `Deps.ModuleStatus`.
 - `http.routes.graph`, off by default and compiled only with `-tags nforge_graph`:
   an HTML page with the module graph in three tabs (Visual, Mermaid JS, JSON).
@@ -39,8 +43,6 @@ All notable changes to nForge are documented here. The format follows
 - `deps.NewDeps`, `NewDepsE` and `Bootstrap` return `*Deps`, and `NewHTTPServer` and
   `ServerHttp.Deps` take it. Replace `dps deps.Deps` with `dps *deps.Deps`.
 - `Deps.Logger` is a `*slog.Logger`: drop the `&` from `&dps.Logger`.
-- `deps.Bootstrap` takes options: `Bootstrap(ctx, cfg, mods...)` becomes
-  `Bootstrap(ctx, cfg, deps.WithModules(mods...))`.
 - `deps.CapTracing` publishes a `trace.TracerProvider`.
 - `deps.Aux` and `Deps.ClearAux` are gone. Register closers with `Deps.AddShutdown`.
 
@@ -422,6 +424,7 @@ tracing, the JSON/CBOR/XML codec, the HTTP server with typed routes and
 OpenAPI 3.1 docs, PostgreSQL with multi-tenancy, JOSE/JWT authentication,
 the Redis/memory cache, `ncrypto` and `safecalc`.
 
+[v0.3.0]: https://github.com/ams-soft/nforge/compare/v0.2.0...v0.3.0
 [v0.2.0]: https://github.com/ams-soft/nforge/compare/v0.1.2...v0.2.0
 [v0.1.2]: https://github.com/ams-soft/nforge/compare/v0.1.1...v0.1.2
 [v0.1.1]: https://github.com/ams-soft/nforge/compare/v0.1.0...v0.1.1
