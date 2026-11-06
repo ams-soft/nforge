@@ -14,7 +14,7 @@ func TestNewHTTPServerTimeouts(t *testing.T) {
 	var cfg config.Config
 	cfg.HTTP.Server.Port = 8080
 	cfg.HTTP.Server.WriteTimeout = 2 * time.Minute
-	s := NewHTTPServer(deps.Deps{Config: cfg, Logger: *slog.New(slog.DiscardHandler)})
+	s := NewHTTPServer(&deps.Deps{Config: cfg, Logger: slog.New(slog.DiscardHandler)})
 
 	if s.Srv.Addr != ":8080" {
 		t.Errorf("Addr = %q", s.Srv.Addr)

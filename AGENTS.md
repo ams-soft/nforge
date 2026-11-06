@@ -212,7 +212,8 @@ returns `module.Hooks{Ready, Shutdown}`. `NewDeps`/`NewDepsE` call
    `*module.InitError` joined with the rollback errors; `Bootstrap` returns the
    zero `Deps`. `Init` must release what it created before returning an error.
 4. `Bootstrap` copies the published values into the `Deps` fields and registers
-   the one closer `Runtime.Shutdown` in `Aux`.
+   the one closer `Runtime.Shutdown` with `Deps.AddShutdown`. An application adds
+   its own closers the same way: they run first, while the modules still work.
 
 Rules for descriptors: `Init` reads only what the module declared
 (`module.Require`/`module.Lookup`; anything else panics, so the graph stays true)
@@ -259,17 +260,17 @@ The sequence, one step per module (`logger`, `tracing`, `startup-report`,
    completed` with `cache.Config.LogValue`. The database is an optional
    dependency, which only orders the two: the cache closes first.
 
-`Deps` fields: `Context` (background), `Config` (value copy), `Logger`
-(`slog.Logger` **value**, take `&deps.Logger`), `Codec`, `DB` (**nil when the
+`NewDeps`, `NewDepsE` and `Bootstrap` return `*Deps`, nil on failure. It is shared
+by the server and the application and must not be copied. Fields: `Context`
+(background), `Config` (value copy), `Logger` (`*slog.Logger`, never nil from
+`Bootstrap`), `Codec`, `DB` (**nil when the
 database is disabled**), `JOSE` (**nil when jose is disabled**), `Cache`
-(**nil when the cache is disabled**), `Aux` (shutdown funcs).
+(**nil when the cache is disabled**).
 `Deps.Graph()` returns the resolved structure and `Deps.ModuleStatus(ctx)` probes
 the modules (`ok` false / nil for a `Deps` not built by `Bootstrap`).
 `Deps.CheckJOSE(ctx)` returns `deps.ErrJOSEDisabled` when nil, else
 `Service.Check` (no I/O, no crypto). `Deps.PingCache(ctx)` returns
-`deps.ErrCacheDisabled` when nil, else `Cache.Ping`. `Deps.ClearAux()`
-drops every registered shutdown function (a later `Deps.Shutdown` then
-closes nothing); it exists for tests that tear modules down themselves.
+`deps.ErrCacheDisabled` when nil, else `Cache.Ping`.
 
 ### 3.2 Shutdown
 
@@ -296,7 +297,7 @@ closes nothing); it exists for tests that tear modules down themselves.
 ### 3.3 Middleware chain (fixed order, set in `setStandardHandler`)
 
 1. `Tracing()` — only if `IsTracingEnabled()`. Must be first.
-2. `Logger(&deps.Logger)` — only if any logging output is enabled.
+2. `Logger(deps.Logger)` — only if any logging output is enabled.
 3. `middleware.Recoverer` (from go-ams-router) — always.
 4. Body limit — always: `http.MaxBytesReader` at `http.server.max_body_bytes`
    (default: `codec.max_payload_bytes`) + 1 byte, so raw routes that read
@@ -690,7 +691,7 @@ With tracing disabled there is no `request_id` in the context/logs and no
 
 ```go
 type ServerHttp struct {
-    Deps         deps.Deps
+    Deps         *deps.Deps
     Srv          *http.Server         // Srv.Handler is the go-ams-router Router
     ShutdownFunc []func()
     TypedRoutes  []TypedRoute         // source of the OpenAPI spec
@@ -2171,8 +2172,9 @@ algorithm/kid/typ, boundaries), not only round trips.
 9. **Middleware or routes after serving** panic in go-ams-router; register
    everything before `Start` (tests that need another route config need a
    new server).
-10. **`Deps.Logger` is a value**: pass `&deps.Logger`; don't copy `Deps`
-    expecting shared mutations to `Aux` beyond the pointer.
+10. **`Deps` is used through a pointer**: `go vet` rejects a copy (it holds a
+    mutex). A `Deps` built by hand has a nil `Logger` until `NewHTTPServer` gives it
+    a discarding one.
 11. **Codec default registry** before `NewDeps` is json+cbor+xml permissive;
     tests that rely on config-driven behavior must build their own Registry
     (and restore the default with `SetDefault` afterwards).

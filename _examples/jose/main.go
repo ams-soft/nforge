@@ -32,7 +32,7 @@ func main() {
 
 // newServer builds the server with every route; main_test.go drives it
 // without listening on a port.
-func newServer(dps deps.Deps) *nhttp.ServerHttp {
+func newServer(dps *deps.Deps) *nhttp.ServerHttp {
 	server := nhttp.NewHTTPServer(dps)
 	registerRoutes(server)
 	return server

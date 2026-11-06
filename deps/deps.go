@@ -17,25 +17,26 @@ import (
 	"github.com/ams-soft/nforge/module"
 )
 
-type Aux struct {
-	ShutdownFuncs []func(context.Context) error
-
-	mu sync.Mutex // guards ShutdownFuncs: Shutdown may be called from two places
-}
+// Deps holds what the modules built. Use it through a pointer: it is shared by
+// the server and the application and must not be copied.
 type Deps struct {
 	Context context.Context
 	Config  config.Config
-	Logger  slog.Logger
-	Codec   *codec.Registry
+	// Logger is never nil in a Deps built by Bootstrap: it discards everything
+	// when logging is off.
+	Logger *slog.Logger
+	Codec  *codec.Registry
 	// DB is nil when database.enabled is false.
 	DB *database.DB
 	// JOSE is nil when jose.enabled is false.
 	JOSE *jose.Service
 	// Cache is nil when cache.enabled is false.
 	Cache *cache.Cache
-	Aux   *Aux
 
 	runtime *module.Runtime // nil for a Deps not built by Bootstrap
+
+	mu      sync.Mutex // guards closers: Shutdown may be called from two places
+	closers []func(context.Context) error
 }
 
 // ErrDatabaseDisabled is returned by PingDatabase when the database was not
@@ -50,10 +51,13 @@ var ErrCacheDisabled = errors.New("deps: cache not enabled (cache.enabled: false
 
 const abortShutdownTimeout = 5 * time.Second
 
-func (d *Deps) addShutdownFunc(fn func(context.Context) error) {
-	d.Aux.mu.Lock()
-	defer d.Aux.mu.Unlock()
-	d.Aux.ShutdownFuncs = append(d.Aux.ShutdownFuncs, fn)
+// AddShutdown registers fn to run in Shutdown. Functions run last in, first out,
+// and every one registered after Bootstrap runs before the modules stop, so it
+// can still use them.
+func (d *Deps) AddShutdown(fn func(context.Context) error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.closers = append(d.closers, fn)
 }
 
 // Shutdown runs the registered shutdown functions in reverse order (LIFO,
@@ -63,15 +67,12 @@ func (d *Deps) addShutdownFunc(fn func(context.Context) error) {
 // start order: cache, JOSE, database, tracing, logs.
 // All of them run even if one fails; the errors are joined.
 func (d *Deps) Shutdown(ctx context.Context) error {
-	if d.Aux == nil {
-		return nil
-	}
 	// Take the functions out under the lock, so a second (concurrent or later)
 	// call finds nothing and no closer runs twice.
-	d.Aux.mu.Lock()
-	fns := d.Aux.ShutdownFuncs
-	d.Aux.ShutdownFuncs = nil
-	d.Aux.mu.Unlock()
+	d.mu.Lock()
+	fns := d.closers
+	d.closers = nil
+	d.mu.Unlock()
 
 	var errs []error
 	for i := len(fns) - 1; i >= 0; i-- {
@@ -118,20 +119,11 @@ func (d *Deps) PingCache(ctx context.Context) error {
 	return d.Cache.Ping(ctx)
 }
 
-func (d *Deps) ClearAux() {
-	if d.Aux == nil {
-		return
-	}
-	d.Aux.mu.Lock()
-	defer d.Aux.mu.Unlock()
-	d.Aux.ShutdownFuncs = nil
-}
-
 // NewDeps builds the dependencies of cfg and exits the process with status 1
 // when a required module cannot start (see NewDepsE). The reason is always
 // written to stderr, whatever the logging configuration, because with logging
 // disabled (the default) the logger discards everything.
-func NewDeps(cfg config.Config) Deps {
+func NewDeps(cfg config.Config) *Deps {
 	d, err := NewDepsE(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[Fatal ERROR] %v\n", err)
@@ -142,7 +134,7 @@ func NewDeps(cfg config.Config) Deps {
 
 // NewDepsE is NewDeps that returns the startup error instead of exiting, for
 // embedding and tests. See Bootstrap, which it calls with no extra modules.
-func NewDepsE(cfg config.Config) (Deps, error) {
+func NewDepsE(cfg config.Config) (*Deps, error) {
 	return Bootstrap(context.Background(), cfg)
 }
 
@@ -155,23 +147,17 @@ func NewDepsE(cfg config.Config) (Deps, error) {
 // opened and nothing enabled on the caller's behalf. A failure while starting
 // logs the error through the logger built so far, shuts down what had started
 // (so buffered logs and traces are flushed) and returns the error joined with
-// any shutdown error; the returned Deps is the zero value.
+// any shutdown error; the returned Deps is nil.
 //
 // Canceling ctx aborts a start in progress and has no effect after Bootstrap
 // returns; Deps.Shutdown is the way to stop.
-func Bootstrap(ctx context.Context, cfg config.Config, extra ...Module) (Deps, error) {
+func Bootstrap(ctx context.Context, cfg config.Config, extra ...Module) (*Deps, error) {
 	plan, err := module.Resolve(cfg, append(builtinModules(), extra...))
 	if err != nil {
-		return Deps{}, fmt.Errorf("unable to resolve modules: %w", err)
+		return nil, fmt.Errorf("unable to resolve modules: %w", err)
 	}
 
-	d := Deps{
-		Config:  cfg,
-		Context: context.WithoutCancel(ctx),
-		Aux: &Aux{
-			ShutdownFuncs: []func(context.Context) error{},
-		},
-	}
+	d := &Deps{Config: cfg, Context: context.WithoutCancel(ctx)}
 	// The modules outlive ctx: only Runtime.Shutdown ends them, not the caller.
 	startCtx, stopWatching := detachAfterStart(ctx)
 	defer stopWatching()
@@ -184,13 +170,12 @@ func Bootstrap(ctx context.Context, cfg config.Config, extra ...Module) (Deps, e
 		},
 	})
 	if err != nil {
-		return Deps{}, err
+		return nil, err
 	}
 
 	d.runtime = rt
-	d.addShutdownFunc(rt.Shutdown) // one closer: the runtime is the only sequencer
-	logger, _ := module.Value(rt, CapLogger)
-	d.Logger = *logger
+	d.AddShutdown(rt.Shutdown) // one closer: the runtime is the only sequencer
+	d.Logger, _ = module.Value(rt, CapLogger)
 	d.Codec, _ = module.Value(rt, CapCodec)
 	d.DB, _ = module.Value(rt, CapDatabase)
 	d.JOSE, _ = module.Value(rt, CapJOSE)

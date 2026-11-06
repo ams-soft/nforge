@@ -17,7 +17,7 @@ import (
 
 func newTypedServer() (*ServerHttp, *TypedRouter) {
 	s := &ServerHttp{
-		Deps: deps.Deps{Logger: *slog.New(slog.DiscardHandler), JOSE: sharedJOSE()},
+		Deps: &deps.Deps{Logger: slog.New(slog.DiscardHandler), JOSE: sharedJOSE()},
 		Srv:  &stdhttp.Server{Handler: router.NewRouter()},
 	}
 	s.Deps.Config.HTTP.Auth.DefaultProfile = "access"

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/url"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -112,5 +113,26 @@ func TestIntegrationFullStackLifecycle(t *testing.T) {
 	}
 	if err := d.PingCache(ctx); !errors.Is(err, cache.ErrClosed) {
 		t.Fatalf("cache after Shutdown: %v", err)
+	}
+}
+
+// The order with the real database and Redis, which the unit test cannot open.
+func TestIntegrationRealModulesOrder(t *testing.T) {
+	redisURL := os.Getenv("NFORGE_TEST_REDIS_URL")
+	if redisURL == "" {
+		t.Skip("NFORGE_TEST_REDIS_URL not set")
+	}
+	cfg := orderConfig()
+	cfg.Database.Enabled, cfg.Database.DSN = true, integrationDSN(t)
+	cfg.Cache = cache.Config{Enabled: true, Driver: cache.DriverRedis}
+	cfg.Cache.Redis.URL = redisURL
+	cache.ApplyDefaults(&cfg.Cache)
+
+	started, stopped := runOrder(t, cfg)
+	if want := []module.ID{"logger", "tracing", "startup-report", "codec", "database", "jose", "cache"}; !slices.Equal(started, want) {
+		t.Errorf("started = %v, want %v", started, want)
+	}
+	if want := []module.ID{"cache", "jose", "database", "tracing", "logger"}; !slices.Equal(stopped, want) {
+		t.Errorf("stopped = %v, want %v", stopped, want)
 	}
 }

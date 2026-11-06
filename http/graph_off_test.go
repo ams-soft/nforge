@@ -22,11 +22,11 @@ func TestGraphEnabledWithoutTheBuildTagPanics(t *testing.T) {
 	}()
 	var cfg config.Config
 	cfg.HTTP.Routes.Graph.Enabled = true
-	NewHTTPServer(deps.Deps{Config: cfg, Logger: *slog.New(slog.DiscardHandler)})
+	NewHTTPServer(&deps.Deps{Config: cfg, Logger: slog.New(slog.DiscardHandler)})
 }
 
 func TestGraphDisabledWithoutTheBuildTag(t *testing.T) {
-	s := NewHTTPServer(deps.Deps{Logger: *slog.New(slog.DiscardHandler)})
+	s := NewHTTPServer(&deps.Deps{Logger: slog.New(slog.DiscardHandler)})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(stdhttp.MethodGet, "/graph", nil) //nolint:noctx // no context matters here
 	s.Srv.Handler.ServeHTTP(rec, req)

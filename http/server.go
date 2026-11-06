@@ -2,6 +2,7 @@ package nhttp
 
 import (
 	"context"
+	"log/slog"
 	stdhttp "net/http"
 	"os/signal"
 	"strconv"
@@ -15,7 +16,7 @@ import (
 )
 
 type ServerHttp struct {
-	Deps              deps.Deps
+	Deps              *deps.Deps
 	Srv               *stdhttp.Server
 	globalMiddlewares []func(stdhttp.Handler) stdhttp.Handler
 	ShutdownFunc      []func()
@@ -27,8 +28,15 @@ type ServerHttp struct {
 	graph graphPage //nolint:unused // used by graph.go, which only the nforge_graph build compiles
 }
 
-func NewHTTPServer(deps deps.Deps) *ServerHttp {
-
+// NewHTTPServer builds the server on deps, which it keeps and shares with the
+// caller. A Deps built by hand without a Logger gets a discarding one.
+func NewHTTPServer(deps *deps.Deps) *ServerHttp {
+	if deps == nil {
+		panic("nhttp: NewHTTPServer: nil Deps")
+	}
+	if deps.Logger == nil {
+		deps.Logger = slog.New(slog.DiscardHandler)
+	}
 	deps.Logger.Info(" [HTTPModule] Starting HTTP server")
 
 	cfg := deps.Config.HTTP.Server
@@ -71,7 +79,7 @@ func (s *ServerHttp) setStandardHandler() {
 		handler.Use(Tracing(tracingOpts...))
 	}
 	if s.Deps.Config.Logging.Output.Otel.Enabled || s.Deps.Config.Logging.Output.Terminal.Enabled {
-		handler.Use(Logger(&s.Deps.Logger))
+		handler.Use(Logger(s.Deps.Logger))
 	}
 	handler.Use(middleware.Recoverer)
 	limits := s.Deps.Config.HTTP.Server
@@ -100,7 +108,7 @@ func (s *ServerHttp) setStandardHandler() {
 
 	if s.Deps.Config.HTTP.Routes.Health.Enabled || s.Deps.Config.HTTP.Routes.Readiness.Enabled {
 		s.Typed().Route("/", func(api *TypedRouter) {
-			setRoutes(api, &s.Deps)
+			setRoutes(api, s.Deps)
 		})
 	}
 

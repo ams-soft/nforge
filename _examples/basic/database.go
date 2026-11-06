@@ -38,7 +38,7 @@ func registerDatabaseRoutes(server *nhttp.ServerHttp) error {
 	if db == nil { // database.enabled: false
 		return nil
 	}
-	logger := &server.Deps.Logger
+	logger := server.Deps.Logger
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

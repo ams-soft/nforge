@@ -39,7 +39,7 @@ func main() {
 
 // newServer prepares the schema and registers the routes; the integration
 // tests drive it without listening on a port.
-func newServer(dps deps.Deps) (*nhttp.ServerHttp, error) {
+func newServer(dps *deps.Deps) (*nhttp.ServerHttp, error) {
 	// A real application runs migrations; the example creates its tables at
 	// startup only to be self-contained.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -52,7 +52,7 @@ func newServer(dps deps.Deps) (*nhttp.ServerHttp, error) {
 	}
 
 	server := nhttp.NewHTTPServer(dps)
-	logger := &server.Deps.Logger
+	logger := server.Deps.Logger
 	server.Typed().Route("/api/v1", func(api *nhttp.TypedRouter) {
 		registerUserRoutes(api, dps.DB, logger)
 		registerNoteRoutes(api, dps.DB, logger)

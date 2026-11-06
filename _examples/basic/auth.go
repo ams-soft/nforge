@@ -43,7 +43,7 @@ type MeResponse struct {
 // the jose example for scopes, nested tokens and raw Authenticate.
 func registerAuthRoutes(server *nhttp.ServerHttp) {
 	dps := server.Deps
-	logger := &server.Deps.Logger
+	logger := server.Deps.Logger
 	const profile = "access"
 
 	server.Typed().Route("/auth", func(auth *nhttp.TypedRouter) {
@@ -77,7 +77,7 @@ func registerAuthRoutes(server *nhttp.ServerHttp) {
 	})
 }
 
-func tokenTTL(dps deps.Deps, profile string) int64 {
+func tokenTTL(dps *deps.Deps, profile string) int64 {
 	for _, p := range dps.Config.JOSE.Profiles {
 		if p.Name == profile {
 			return int64(p.JWT.TTL / time.Second)

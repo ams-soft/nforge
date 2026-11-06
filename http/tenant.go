@@ -155,7 +155,7 @@ func (s *ServerHttp) tenantGuard() *tenantGuard {
 	if realm == "" {
 		realm = DefaultRealm
 	}
-	return &tenantGuard{resolve: resolve, realm: realm, logger: func() *slog.Logger { return &s.Deps.Logger }}
+	return &tenantGuard{resolve: resolve, realm: realm, logger: func() *slog.Logger { return s.Deps.Logger }}
 }
 
 func (g *tenantGuard) middleware() func(stdhttp.Handler) stdhttp.Handler {

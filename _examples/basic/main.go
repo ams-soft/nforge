@@ -42,10 +42,10 @@ func main() {
 
 // newServer builds the server with every route; main_test.go drives it
 // without listening on a port.
-func newServer(dps deps.Deps) (*nhttp.ServerHttp, error) {
+func newServer(dps *deps.Deps) (*nhttp.ServerHttp, error) {
 
 	// uncomment to see crypto test
-	//runCrypto(&dps.Logger)
+	//runCrypto(dps.Logger)
 
 	server := nhttp.NewHTTPServer(dps)
 
@@ -54,7 +54,7 @@ func newServer(dps deps.Deps) (*nhttp.ServerHttp, error) {
 	server.AddGlobalMiddleware(clacksOverhead)
 	server.LoadGlobalMiddleware()
 
-	registerPlainRoutes(server, &server.Deps.Logger)
+	registerPlainRoutes(server, server.Deps.Logger)
 	registerAuthRoutes(server)
 	registerCacheRoutes(server)
 	if err := registerDatabaseRoutes(server); err != nil {

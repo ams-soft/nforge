@@ -27,7 +27,7 @@ type PutCacheEntry struct {
 // counters, NX, TTL inspection, raw bytes, GetOrLoad and Redis.
 func registerCacheRoutes(server *nhttp.ServerHttp) {
 	c := server.Deps.Cache
-	logger := &server.Deps.Logger
+	logger := server.Deps.Logger
 	fail := func(w stdhttp.ResponseWriter, r *stdhttp.Request, err error) {
 		status, detail := stdhttp.StatusInternalServerError, "internal error"
 		switch {

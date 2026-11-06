@@ -107,7 +107,7 @@ func listWallets(w stdhttp.ResponseWriter, req *stdhttp.Request) {
 // optional JWS/JWE demo.
 func registerRoutes(server *nhttp.ServerHttp) {
 	dps := server.Deps
-	logger := &server.Deps.Logger
+	logger := server.Deps.Logger
 	r := server.Router()
 
 	// Public route: no authentication.
@@ -257,7 +257,7 @@ func joseRoundTrip(ctx context.Context, svc *jose.Service, msg []byte) (JOSEDemo
 }
 
 // tokenTTL reads the configured lifetime of a jwt profile, in seconds.
-func tokenTTL(dps deps.Deps, profile string) int64 {
+func tokenTTL(dps *deps.Deps, profile string) int64 {
 	for _, p := range dps.Config.JOSE.Profiles {
 		if p.Name == profile {
 			return int64(p.JWT.TTL / time.Second)

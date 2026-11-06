@@ -278,7 +278,7 @@ func TestGraphPanicsOnMisuse(t *testing.T) {
 		fn()
 	}
 	cfg := graphConfig()
-	mustPanic("no plan", "deps.NewDeps", func() { NewHTTPServer(deps.Deps{Config: cfg, Logger: *slog.New(slog.DiscardHandler)}) })
+	mustPanic("no plan", "deps.NewDeps", func() { NewHTTPServer(&deps.Deps{Config: cfg, Logger: slog.New(slog.DiscardHandler)}) })
 	cfg.HTTP.Routes.Health.Enabled, cfg.HTTP.Routes.Health.Path = true, "/graph"
 	keepDefaultCodec(t)
 	d, err := deps.NewDepsE(cfg)
