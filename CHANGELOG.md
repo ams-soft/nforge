@@ -6,6 +6,38 @@ All notable changes to nForge are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Package `module`: a neutral core that resolves explicitly registered modules
+  into a deterministic, acyclic plan before anything starts, and runs their
+  lifecycle (rollback, reverse shutdown, status).
+- `deps.Bootstrap(ctx, cfg, extra...)`, exported capabilities (`deps.CapDatabase`,
+  `CapCache`, ...), `deps.Value`, `Deps.Graph` and `Deps.ModuleStatus`.
+- `http.routes.graph`, off by default: an HTML page with the module graph in three
+  tabs (Visual, Mermaid JS, JSON). Mermaid is embedded, nothing loads from a CDN.
+  The page is **public** and exposes the topology: `env: prd` warns once per
+  bootstrap, and the warning is not access control. Restrict the path at the
+  gateway. See `AGENTS.md` §7.13.
+- `FuzzDecodeXML` and `FuzzDecodeCBOR`.
+
+### Changed
+
+- `deps` is now an orchestrator: logger, tracing, codec, database, JOSE and cache
+  are module descriptors. `NewDeps`, `NewDepsE`, the `Deps` fields, the start
+  sequence and the shutdown order are unchanged.
+- A `Config` built by hand with `http.auth.default_profile` and jose disabled now
+  fails at bootstrap instead of panicking when a private route is registered.
+  `config.Load` already refused it.
+- Every binary importing `nhttp` grows by about 2.2 MB (the Mermaid bundle), even
+  with the route disabled.
+
+### Fixed
+
+- A shutdown hook that hung until the deadline left every later hook with an
+  expired context, so OTel logs and traces, which close last, could not flush.
+  Those hooks now get 1 s of their own, so `Deps.Shutdown` can outlast its context
+  by 1 s per remaining hook.
+
 ## [v0.2.0] - 2026-11-05
 
 This release contains several breaking changes; read the **Upgrading** notes below.

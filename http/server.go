@@ -24,6 +24,7 @@ type ServerHttp struct {
 	TypedRoutes []TypedRoute
 
 	specs specCache
+	graph graphPage
 }
 
 func NewHTTPServer(deps deps.Deps) *ServerHttp {
@@ -91,6 +92,10 @@ func (s *ServerHttp) setStandardHandler() {
 	}
 	if s.Deps.JOSE != nil && s.Deps.Config.JOSE.JWKS.Enabled {
 		s.registerJWKS(handler)
+	}
+
+	if s.Deps.Config.HTTP.Routes.Graph.Enabled {
+		s.registerGraph(handler)
 	}
 
 	if s.Deps.Config.HTTP.Routes.Health.Enabled || s.Deps.Config.HTTP.Routes.Readiness.Enabled {

@@ -57,13 +57,25 @@ func TestCheckJOSEDisabled(t *testing.T) {
 	}
 }
 
-func TestSetupJOSEDisabledLeavesNil(t *testing.T) {
-	d := Deps{Context: context.Background(), Aux: &Aux{}}
-	if err := d.setupJOSE(config.Config{}); err != nil {
+func minimalConfig() config.Config {
+	var cfg config.Config
+	cfg.Env, cfg.App.Name, cfg.App.Version = "local", "my-app", "1"
+	cfg.Codec.Formats.Enabled = []string{"json"}
+	cfg.Codec.Default = "json"
+	return cfg
+}
+
+func TestDisabledModulesLeaveNilFields(t *testing.T) {
+	d, err := NewDepsE(minimalConfig())
+	if err != nil {
 		t.Fatal(err)
 	}
-	if d.JOSE != nil || len(d.Aux.ShutdownFuncs) != 0 {
-		t.Fatal("disabled jose must not create a service or a shutdown func")
+	t.Cleanup(func() { _ = d.Shutdown(context.Background()) })
+	if d.DB != nil || d.JOSE != nil || d.Cache != nil {
+		t.Fatalf("disabled modules must stay nil: %+v %+v %+v", d.DB, d.JOSE, d.Cache)
+	}
+	if d.Codec == nil {
+		t.Fatal("the codec is always on")
 	}
 }
 
@@ -74,19 +86,19 @@ func TestSetupJOSEEnabledRegistersShutdown(t *testing.T) {
 	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	var cfg config.Config
+	cfg := minimalConfig()
 	cfg.JOSE = jose.Config{
 		Enabled: true,
 		Keys: []jose.KeyConfig{{KID: "k", Algorithm: jose.EdDSA, Operations: []string{jose.OpSign, jose.OpVerify},
 			Source: jose.KeySourceConfig{Format: "pem", File: path}}},
 		Profiles: []jose.ProfileConfig{{Name: "msg", Kind: jose.KindJWS, Typ: "msg+jws", SigningAlgorithm: jose.EdDSA, SigningKey: "k"}},
 	}
-	d := Deps{Context: context.Background(), Logger: *slog.New(slog.DiscardHandler), Aux: &Aux{}}
-	if err := d.setupJOSE(cfg); err != nil {
+	d, err := NewDepsE(cfg)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if d.JOSE == nil || len(d.Aux.ShutdownFuncs) != 1 {
-		t.Fatal("enabled jose must create the service and register its shutdown")
+	if d.JOSE == nil {
+		t.Fatal("enabled jose must create the service")
 	}
 	if err := d.CheckJOSE(context.Background()); err != nil {
 		t.Fatal(err)
@@ -109,31 +121,18 @@ func TestPingCacheDisabled(t *testing.T) {
 	}
 }
 
-func TestSetupCacheDisabledLeavesNil(t *testing.T) {
-	d := Deps{Context: context.Background(), Aux: &Aux{}}
-	if err := d.setupCache(config.Config{}); err != nil {
-		t.Fatal(err)
-	}
-	if d.Cache != nil || len(d.Aux.ShutdownFuncs) != 0 {
-		t.Fatal("disabled cache must not create a cache or a shutdown func")
-	}
-}
-
 func newCacheDeps(t *testing.T, tenancy bool) Deps {
 	t.Helper()
-	var cfg config.Config
-	cfg.Env, cfg.App.Name = "local", "my-app"
+	cfg := minimalConfig()
 	cfg.Cache = cache.Config{Enabled: true, Driver: cache.DriverMemory}
+	cache.ApplyDefaults(&cfg.Cache)
 	cfg.Database.Tenancy.Enabled = tenancy
-	d := Deps{Context: context.Background(), Logger: *slog.New(slog.DiscardHandler), Aux: &Aux{}}
-	if err := d.setupCodec(cfg); err != nil {
+	d, err := NewDepsE(cfg)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := d.setupCache(cfg); err != nil {
-		t.Fatal(err)
-	}
-	if d.Cache == nil || len(d.Aux.ShutdownFuncs) != 1 {
-		t.Fatal("enabled cache must be created with its shutdown registered")
+	if d.Cache == nil {
+		t.Fatal("enabled cache must be created")
 	}
 	return d
 }
@@ -188,12 +187,8 @@ func TestErrorPrefix(t *testing.T) {
 
 func TestConfigWarningsAreLogged(t *testing.T) {
 	var buf bytes.Buffer
-	d := Deps{
-		Context: context.Background(),
-		Logger:  *slog.New(slog.NewTextHandler(&buf, nil)),
-		Config:  config.Config{Warnings: []string{"environment variable DB_PASSWORD is not set"}},
-	}
-	d.logConfigWarnings()
+	logConfigWarnings(context.Background(), slog.New(slog.NewTextHandler(&buf, nil)),
+		config.Config{Warnings: []string{"environment variable DB_PASSWORD is not set"}})
 	out := buf.String()
 	if !strings.Contains(out, "level=WARN") || !strings.Contains(out, "[ConfigModule]") || !strings.Contains(out, "DB_PASSWORD") {
 		t.Fatalf("warning not logged: %q", out)
@@ -203,12 +198,8 @@ func TestConfigWarningsAreLogged(t *testing.T) {
 // env prd filters the log below ERROR, so its config warnings are logged there.
 func TestConfigWarningsReachTheLogInProduction(t *testing.T) {
 	var buf bytes.Buffer
-	d := Deps{
-		Context: context.Background(),
-		Logger:  *slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})),
-		Config:  config.Config{Env: "prd", Warnings: []string{"http.docs enabled in prd"}},
-	}
-	d.logConfigWarnings()
+	logConfigWarnings(context.Background(), slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})),
+		config.Config{Env: "prd", Warnings: []string{"http.docs enabled in prd"}})
 	if !strings.Contains(buf.String(), "http.docs enabled in prd") {
 		t.Fatalf("warning filtered out in prd: %q", buf.String())
 	}

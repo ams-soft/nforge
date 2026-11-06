@@ -26,6 +26,7 @@ func transportWarnings(cfg *Config) (warnings []string, err error) {
 	all = append(all, redisWarnings(cfg)...)
 	all = append(all, databaseWarnings(cfg)...)
 	all = append(all, docsWarnings(cfg)...)
+	all = append(all, graphWarnings(cfg)...)
 	all = append(all, edgeTLSWarnings(cfg)...)
 
 	var refused []string
@@ -100,6 +101,16 @@ func docsWarnings(cfg *Config) []finding {
 		return nil
 	}
 	return []finding{{"", strings.Join(on, ", ") + " enabled in prd: these endpoints are unauthenticated (docs and the spec list every route, auth profile and scope; readiness reports the state of the dependencies); restrict them at the gateway, or set app.internal_use: true if the service is not reachable from the internet"}}
+}
+
+// graphWarnings flags the module graph page in prd. It never stops the startup,
+// and the warning is no access control: the page stays public until the gateway
+// or the network restricts it.
+func graphWarnings(cfg *Config) []finding {
+	if cfg.Env != "prd" || cfg.App.InternalUse || !cfg.HTTP.Routes.Graph.Enabled {
+		return nil
+	}
+	return []finding{{"", "http.routes.graph enabled in prd: this unauthenticated page exposes the module topology and its state; restrict it at the gateway or by network, or set app.internal_use: true if the service is not reachable from the internet"}}
 }
 
 // keyFileWarnings flags TLS private keys that group or others can read, the

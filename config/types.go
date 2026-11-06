@@ -46,9 +46,18 @@ type ReadinessConfig struct {
 	Enabled bool   `yaml:"enabled"`
 	Path    string `yaml:"path"`
 }
+
+// GraphConfig enables the module graph inspection page. It is unauthenticated
+// and shows the application's topology: restrict it at the gateway.
+type GraphConfig struct {
+	Enabled bool   `yaml:"enabled"` // default false: no route is registered
+	Path    string `yaml:"path"`    // default /graph when enabled; also serves {path}/mermaid.min.js
+}
+
 type RoutesConfig struct {
 	Health    HealthConfig    `yaml:"health"`
 	Readiness ReadinessConfig `yaml:"readiness"`
+	Graph     GraphConfig     `yaml:"graph"`
 }
 
 type HTTPConfig struct {

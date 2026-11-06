@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · module graph</title>
+<style>
+:root { color-scheme: light dark; --bg:#fff; --fg:#1c1f24; --muted:#5b6470; --line:#d9dde3; --panel:#f6f7f9; --accent:#007d9c; }
+@media (prefers-color-scheme: dark) { :root { --bg:#14171b; --fg:#e7e9ec; --muted:#9aa3ae; --line:#2c3138; --panel:#1b1f24; --accent:#4cc0dc; } }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, sans-serif; }
+main { max-width:1100px; margin:0 auto; padding:24px 16px; }
+h1 { font-size:20px; margin:0 0 4px; }
+p { margin:0 0 16px; color:var(--muted); }
+[role=tablist] { display:flex; gap:4px; border-bottom:1px solid var(--line); }
+[role=tab] { background:none; border:0; border-bottom:2px solid transparent; color:var(--muted); cursor:pointer; font:inherit; padding:8px 12px; }
+[role=tab][aria-selected=true] { border-color:var(--accent); color:var(--fg); }
+[role=tabpanel] { padding:16px 0; }
+[role=tabpanel][hidden] { display:none; }
+pre { background:var(--panel); border:1px solid var(--line); border-radius:6px; font:13px/1.45 ui-monospace, monospace; margin:0; max-height:70vh; overflow:auto; padding:12px; }
+.copy { background:var(--panel); border:1px solid var(--line); border-radius:6px; color:var(--fg); cursor:pointer; font:inherit; margin-bottom:8px; padding:4px 10px; }
+#diagram svg { display:block; height:auto; margin:0 auto; max-width:100%; }
+</style>
+</head>
+<body>
+<main>
+<h1>{{.Title}}</h1>
+<p>Modules resolved at bootstrap and their state. An arrow points at a dependency; a dotted arrow is optional.</p>
+<div role="tablist" aria-label="Graph views">
+<button role="tab" id="tab-visual" aria-controls="visual" aria-selected="true">Visual</button>
+<button role="tab" id="tab-mermaid" aria-controls="mermaid" aria-selected="false">Mermaid JS</button>
+<button role="tab" id="tab-json" aria-controls="json" aria-selected="false">JSON</button>
+</div>
+<section role="tabpanel" id="visual" aria-labelledby="tab-visual"><div id="diagram">Rendering…</div></section>
+<section role="tabpanel" id="mermaid" aria-labelledby="tab-mermaid" hidden>
+<button class="copy" data-copy="mermaid-source">Copy</button>
+<pre id="mermaid-source">{{.Mermaid}}</pre>
+</section>
+<section role="tabpanel" id="json" aria-labelledby="tab-json" hidden>
+<button class="copy" data-copy="json-source">Copy</button>
+<pre id="json-source">{{.JSON}}</pre>
+</section>
+</main>
+<script nonce="{{.Nonce}}" src="{{.AssetURL}}"></script>
+<script nonce="{{.Nonce}}">
+const tabs = [...document.querySelectorAll('[role=tab]')];
+for (const tab of tabs) {
+  tab.addEventListener('click', () => {
+    for (const other of tabs) {
+      const selected = other === tab;
+      other.setAttribute('aria-selected', String(selected));
+      document.getElementById(other.getAttribute('aria-controls')).hidden = !selected;
+    }
+  });
+}
+for (const button of document.querySelectorAll('[data-copy]')) {
+  button.addEventListener('click', async () => {
+    const text = document.getElementById(button.dataset.copy).textContent;
+    try {
+      await navigator.clipboard.writeText(text);
+      button.textContent = 'Copied';
+    } catch {
+      button.textContent = 'Copy failed: select the text';
+    }
+    setTimeout(() => { button.textContent = 'Copy'; }, 1500);
+  });
+}
+const diagram = document.getElementById('diagram');
+(async () => {
+  try {
+    const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+    mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: dark ? 'dark' : 'default' });
+    const source = document.getElementById('mermaid-source').textContent;
+    const { svg } = await mermaid.render('module-graph', source);
+    diagram.innerHTML = svg;
+  } catch {
+    diagram.textContent = 'The diagram could not be rendered; use the Mermaid JS or JSON tab.';
+  }
+})();
+</script>
+</body>
+</html>

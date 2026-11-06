@@ -6,18 +6,15 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/ams-soft/nforge"
 	"github.com/ams-soft/nforge/cache"
 	"github.com/ams-soft/nforge/codec"
 	"github.com/ams-soft/nforge/config"
 	"github.com/ams-soft/nforge/database"
 	"github.com/ams-soft/nforge/jose"
-	"github.com/ams-soft/nforge/logs"
-	"github.com/ams-soft/nforge/telemetry"
+	"github.com/ams-soft/nforge/module"
 )
 
 type Aux struct {
@@ -37,6 +34,8 @@ type Deps struct {
 	// Cache is nil when cache.enabled is false.
 	Cache *cache.Cache
 	Aux   *Aux
+
+	runtime *module.Runtime // nil for a Deps not built by Bootstrap
 }
 
 // ErrDatabaseDisabled is returned by PingDatabase when the database was not
@@ -49,12 +48,7 @@ var ErrJOSEDisabled = errors.New("deps: jose not enabled (jose.enabled: false)")
 // ErrCacheDisabled is returned by PingCache when cache.enabled is false.
 var ErrCacheDisabled = errors.New("deps: cache not enabled (cache.enabled: false)")
 
-const (
-	databaseStartupTimeout = 15 * time.Second
-	joseStartupTimeout     = 15 * time.Second
-	cacheStartupTimeout    = 15 * time.Second
-	abortShutdownTimeout   = 5 * time.Second
-)
+const abortShutdownTimeout = 5 * time.Second
 
 func (d *Deps) addShutdownFunc(fn func(context.Context) error) {
 	d.Aux.mu.Lock()
@@ -64,8 +58,9 @@ func (d *Deps) addShutdownFunc(fn func(context.Context) error) {
 
 // Shutdown runs the registered shutdown functions in reverse order (LIFO,
 // like defer): what was initialized last closes first. This way the database
-// closes before logging/tracing, which still log their own shutdown. The
-// resulting order is cache, JOSE, database, tracing, logs.
+// closes before logging/tracing, which still log their own shutdown. Bootstrap
+// registers one function, the module runtime, whose order is the reverse of the
+// start order: cache, JOSE, database, tracing, logs.
 // All of them run even if one fails; the errors are joined.
 func (d *Deps) Shutdown(ctx context.Context) error {
 	if d.Aux == nil {
@@ -131,143 +126,6 @@ func (d *Deps) ClearAux() {
 	defer d.Aux.mu.Unlock()
 	d.Aux.ShutdownFuncs = nil
 }
-func (d *Deps) setupLogger(ctx context.Context, config config.Config) error {
-	if !config.IsLoggingEnabled() {
-		d.Logger = *logs.NewNoop()
-		return nil
-	}
-	logger, shutdown, err := logs.Setup(ctx, config)
-	if err != nil {
-		d.Logger = *logs.NewNoop() // abort still logs; a zero slog.Logger would panic
-		return fmt.Errorf("unable to setup logger: %w", err)
-	}
-	d.addShutdownFunc(shutdown)
-
-	if config.IsTracingEnabled() {
-		shutdownTracing, err := telemetry.SetupTracing(ctx, config)
-		if err != nil {
-			d.Logger = *logger // so abort can still report the failure
-			return fmt.Errorf("unable to setup tracing: %w", err)
-		}
-		d.addShutdownFunc(shutdownTracing)
-	}
-
-	d.Logger = *logger
-	return nil
-}
-
-// setupCodec builds the Registry from the config and installs it as the
-// process default, which is the one used by the http helpers (SendJSON, ParseXML...).
-func (d *Deps) setupCodec(cfg config.Config) error {
-	registry, err := codec.New(codec.Config{
-		Formats:             cfg.Codec.Formats.Enabled,
-		Default:             cfg.Codec.Default,
-		StrictUnknownFields: cfg.Codec.StrictUnknownFields,
-		MaxPayloadBytes:     int64(cfg.Codec.MaxPayloadBytes),
-		AllowDTD:            cfg.Codec.XML.DisallowDTD != nil && !*cfg.Codec.XML.DisallowDTD,
-	})
-	if err != nil {
-		return fmt.Errorf("unable to setup codec: %w", err)
-	}
-	codec.SetDefault(registry)
-	d.Codec = registry
-	d.Logger.InfoContext(d.Context, "  [CodecModule] Codec setup completed")
-	return nil
-}
-
-// setupDatabase opens the pool (with a startup ping) when database.enabled is
-// true. A connection failure is fatal: the application does not start without the database.
-func (d *Deps) setupDatabase(cfg config.Config) error {
-	if !cfg.Database.Enabled {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(d.Context, databaseStartupTimeout)
-	defer cancel()
-
-	db, err := database.Open(ctx, cfg.Database)
-	if err != nil {
-		return fmt.Errorf("unable to setup database: %w", err)
-	}
-	d.DB = db
-	d.addShutdownFunc(db.Shutdown)
-	d.Logger.InfoContext(d.Context, "[DatabaseModule] Database setup completed")
-	return nil
-}
-
-// setupJOSE loads the JOSE keys when jose.enabled is true. A failure is
-// fatal: the application does not start with broken key material. The error
-// is already sanitized by the jose package (no paths or key bytes).
-func (d *Deps) setupJOSE(cfg config.Config) error {
-	if !cfg.JOSE.Enabled {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(d.Context, joseStartupTimeout)
-	defer cancel()
-
-	service, err := jose.New(ctx, cfg.JOSE)
-	if err != nil {
-		return fmt.Errorf("unable to setup jose: %w", err)
-	}
-	d.JOSE = service
-	d.addShutdownFunc(service.Shutdown)
-	d.Logger.InfoContext(d.Context, "[JOSEModule] JOSE setup completed", "jose", cfg.JOSE)
-	return nil
-}
-
-// setupCache opens the cache when cache.enabled is true, after the codec
-// (objects use d.Codec) and the database (so LIFO closes the cache first).
-// With database.tenancy.enabled the keys are isolated per tenant, read from
-// the same context value as the database (database.TenantFromContext, set
-// by the nhttp tenant middlewares). A startup failure (e.g. Redis down) is
-// fatal, like the database: Open has already released what it created.
-func (d *Deps) setupCache(cfg config.Config) error {
-	if !cfg.Cache.Enabled {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(d.Context, cacheStartupTimeout)
-	defer cancel()
-
-	opts := []cache.Option{
-		cache.WithCodecRegistry(d.Codec),
-		cache.WithNamespace(cfg.Env, cfg.App.Name),
-		cache.WithLogger(&d.Logger),
-	}
-	if cfg.Database.Tenancy.Enabled {
-		opts = append(opts, cache.WithTenantResolver(tenantFromContext))
-	}
-	c, err := cache.Open(ctx, cfg.Cache, opts...)
-	if err != nil {
-		return fmt.Errorf("unable to setup cache: %w", err)
-	}
-	d.Cache = c
-	d.addShutdownFunc(c.Shutdown)
-	d.Logger.InfoContext(d.Context, "[CacheModule] Cache setup completed", "cache", cfg.Cache,
-		"tenant_isolation", cfg.Database.Tenancy.Enabled)
-	return nil
-}
-
-// tenantFromContext adapts database.TenantFromContext (the framework's
-// tenant context, already validated as a UUID v4) to the cache resolver.
-func tenantFromContext(ctx context.Context) (string, error) {
-	if id, ok := database.TenantFromContext(ctx); ok {
-		return id, nil
-	}
-	return "", database.ErrNoTenant
-}
-
-// logConfigWarnings reports what the configuration loader accepted but the
-// operator should know about (an unset ${VAR} that expanded to nothing).
-func (d *Deps) logConfigWarnings() {
-	// env prd filters the log below ERROR, so a WARN would never reach the
-	// terminal; the operator must see these at least once.
-	level := slog.LevelWarn
-	if d.Config.Env == "prd" {
-		level = slog.LevelError
-	}
-	for _, w := range d.Config.Warnings {
-		d.Logger.Log(d.Context, level, "[ConfigModule] "+w)
-	}
-}
 
 // NewDeps builds the dependencies of cfg and exits the process with status 1
 // when a required module cannot start (see NewDepsE). The reason is always
@@ -283,46 +141,99 @@ func NewDeps(cfg config.Config) Deps {
 }
 
 // NewDepsE is NewDeps that returns the startup error instead of exiting, for
-// embedding and tests. On failure it logs the error through the logger it
-// built, shuts down what was already started (so buffered logs and traces are
-// flushed) and returns the error joined with any shutdown error; the returned
-// Deps is the zero value.
+// embedding and tests. See Bootstrap, which it calls with no extra modules.
 func NewDepsE(cfg config.Config) (Deps, error) {
-	ctx := context.Background()
+	return Bootstrap(context.Background(), cfg)
+}
+
+// Bootstrap resolves the module graph of cfg and starts it. The built-in
+// modules (modules.go) come first, then extra, which may depend on them through
+// the exported capabilities.
+//
+// The graph is validated before anything starts: a required module that is
+// disabled or missing, a cycle or an ambiguous provider fails here, with nothing
+// opened and nothing enabled on the caller's behalf. A failure while starting
+// logs the error through the logger built so far, shuts down what had started
+// (so buffered logs and traces are flushed) and returns the error joined with
+// any shutdown error; the returned Deps is the zero value.
+//
+// Canceling ctx aborts a start in progress and has no effect after Bootstrap
+// returns; Deps.Shutdown is the way to stop.
+func Bootstrap(ctx context.Context, cfg config.Config, extra ...Module) (Deps, error) {
+	plan, err := module.Resolve(cfg, append(builtinModules(), extra...))
+	if err != nil {
+		return Deps{}, fmt.Errorf("unable to resolve modules: %w", err)
+	}
 
 	d := Deps{
 		Config:  cfg,
-		Context: ctx,
+		Context: context.WithoutCancel(ctx),
 		Aux: &Aux{
 			ShutdownFuncs: []func(context.Context) error{},
 		},
 	}
-
-	if err := d.setupLogger(ctx, cfg); err != nil {
-		return Deps{}, d.abort(err)
+	// The modules outlive ctx: only Runtime.Shutdown ends them, not the caller.
+	startCtx, stopWatching := detachAfterStart(ctx)
+	defer stopWatching()
+	rt, err := plan.Start(startCtx, module.StartOptions{
+		RollbackTimeout: abortShutdownTimeout,
+		OnFailure: func(rt *module.Runtime, cause error) {
+			if logger, ok := module.Value(rt, CapLogger); ok {
+				logger.ErrorContext(d.Context, "[Fatal ERROR] "+cause.Error())
+			}
+		},
+	})
+	if err != nil {
+		return Deps{}, err
 	}
 
-	if d.Config.HTTP.Server.Header {
-		str := fmt.Sprintf(" ***** AMS SOFT nForge v%s: %s v%s *****", nforge.Version, strings.ToUpper(d.Config.App.Name), d.Config.App.Version)
-		d.Logger.Info(str)
-		d.Logger.Info(strings.Repeat("=", len(str)+1))
-	}
-	d.Logger.InfoContext(d.Context, "  [LoggerModule] Logger setup completed")
-
-	d.logConfigWarnings()
-	for _, step := range []func(config.Config) error{d.setupCodec, d.setupDatabase, d.setupJOSE, d.setupCache} {
-		if err := step(cfg); err != nil {
-			return Deps{}, d.abort(err)
-		}
-	}
+	d.runtime = rt
+	d.addShutdownFunc(rt.Shutdown) // one closer: the runtime is the only sequencer
+	logger, _ := module.Value(rt, CapLogger)
+	d.Logger = *logger
+	d.Codec, _ = module.Value(rt, CapCodec)
+	d.DB, _ = module.Value(rt, CapDatabase)
+	d.JOSE, _ = module.Value(rt, CapJOSE)
+	d.Cache, _ = module.Value(rt, CapCache)
 	return d, nil
 }
 
-// abort reports a startup failure through the logger and releases whatever
-// was started before it, in reverse order.
-func (d *Deps) abort(cause error) error {
-	d.Logger.ErrorContext(d.Context, "[Fatal ERROR] "+cause.Error())
-	ctx, cancel := context.WithTimeout(context.Background(), abortShutdownTimeout)
-	defer cancel()
-	return errors.Join(cause, d.Shutdown(ctx))
+// detachAfterStart returns a context that follows ctx until stop is called and
+// is then only ended by its owner, because Plan.Start keeps the context it gets
+// alive until shutdown while a Bootstrap caller's ctx may end right after it.
+func detachAfterStart(ctx context.Context) (context.Context, func()) {
+	detached, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	if ctx.Err() != nil {
+		cancel() // AfterFunc runs in its own goroutine, possibly after the start
+	}
+	stop := context.AfterFunc(ctx, cancel)
+	return detached, func() { stop() }
+}
+
+// Graph returns the structure resolved at bootstrap. ok is false for a Deps
+// that Bootstrap did not build. The structure never changes after bootstrap.
+func (d *Deps) Graph() (graph module.Snapshot, ok bool) {
+	if d.runtime == nil {
+		return module.Snapshot{}, false
+	}
+	return d.runtime.Snapshot(), true
+}
+
+// ModuleStatus probes the modules; see module.Runtime.Status. It returns nil
+// for a Deps that Bootstrap did not build. Use a ctx with a short timeout.
+func (d *Deps) ModuleStatus(ctx context.Context) []module.Status {
+	if d.runtime == nil {
+		return nil
+	}
+	return d.runtime.Status(ctx)
+}
+
+// Value returns the resource published under c, for capabilities of modules
+// passed to Bootstrap; the built-in ones have their own Deps fields.
+func Value[T any](d *Deps, c module.Capability[T]) (T, bool) {
+	if d.runtime == nil {
+		var zero T
+		return zero, false
+	}
+	return module.Value(d.runtime, c)
 }
