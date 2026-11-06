@@ -65,7 +65,7 @@ Never move or recreate a published tag: the module proxy keeps the first
 content it saw for a version forever; fix forward with a new patch release.
 
 Toolchain: **Go 1.27**, pinned to `toolchain go1.27.3` in `go.mod` (stdlib
-security fixes; `GOTOOLCHAIN=auto` downloads it; go-ams-router v1.1.0 itself
+security fixes; `GOTOOLCHAIN=auto` downloads it; go-ams-router itself
 needs 1.24+). The code uses
 modern Go freely: `range` over ints, `strings.SplitSeq`, `reflect.TypeFor`,
 generics, `errors.Join`, `math/rand/v2`, `maps`/`slices` iterators.
@@ -80,6 +80,8 @@ generics, `errors.Join`, `math/rand/v2`, `maps`/`slices` iterators.
 ├── config.yaml         # FRAMEWORK metadata only (version). Not an app config.
 ├── CHANGELOG.md        # release notes, one section per tag
 ├── .golangci.yml       # golangci-lint v2 configuration (§15)
+├── .github/workflows/  # CI (§15)
+├── docs_test.go        # versions cited in the docs must match go.mod and config.yaml
 ├── config/             # app configuration: types, loading, env file, defaults, validation, ByteSize
 ├── module/             # neutral module core: Resolve (graph, no I/O), Plan.Start, Runtime (status, shutdown), Scope; stdlib only
 ├── deps/               # dependency container (Deps), Bootstrap/NewDeps, built-in module descriptors (modules.go)
@@ -119,7 +121,7 @@ generics, `errors.Join`, `math/rand/v2`, `maps`/`slices` iterators.
 │   ├── docker-compose.yml  # PostgreSQL, Redis, OTel Collector, Tempo, Loki, Grafana
 │   └── observability/      # collector/tempo/loki configs + Grafana provisioning
 ├── README.md / LICENSE # project overview; MIT, AMS Software e Consultoria LTDA
-├── llms.txt            # llmstxt.org index + condensed API reference for LLMs (kept in sync with this file)
+├── llms.txt            # llmstxt.org index for LLMs: notes, links to packages and examples; the reference is this file
 ├── .air.toml           # hot reload of _examples/basic (gitignored)
 └── Makefile            # container-up / dev (gitignored)
 ```
@@ -310,7 +312,7 @@ closes nothing); it exists for tests that tear modules down themselves.
 go-ams-router builds its middleware chain lazily on the first request, so
 `Use` (and `LoadGlobalMiddleware`) is valid any time **before the server
 serves its first request**, even after routes were registered. Calling `Use`
-**or registering a route** after serving starts panics (router v1.1.0). For inline routers (`With`/`Group`), middlewares
+**or registering a route** after serving starts panics. For inline routers (`With`/`Group`), middlewares
 must be added before routes on that inline router.
 
 Built-in routes registered by `NewHTTPServer`:
@@ -515,7 +517,8 @@ jose:                         # jose.Config — see §10 (unknown keys inside jo
             max_token_lifetime: 720h (≤ 8760h; caps every jwt ttl/max_ttl) }
   keys: [ { kid, algorithm: HS256, operations: <all of the algorithm>,
             secret: ${ENV} | source: { format: pem|jwk|oct, file }, publish: false } ]
-  profiles: [ { name, kind, typ, signing_*, verification_*, encryption_*, decryption_*,
+  profiles: [ { name, kind, typ, signing_key, signing_algorithm, verification_keys, verification_algorithms,
+                encryption_key, encryption_algorithm, decryption_keys, decryption_algorithms,
                 content_encryption: A256GCM, jwt: { issuer, audiences, ttl: 15m, max_ttl: 15m, clock_skew: 30s } } ]
   jwks: { enabled: false, path: /.well-known/jwks.json, cache_max_age: 60s }
 
@@ -1466,7 +1469,7 @@ CREATE POLICY tenant_isolation ON users
 
 Standalone package (no internal imports, no globals; several `*jose.Service`
 can coexist). Crypto is delegated to `github.com/go-jose/go-jose/v4`
-(pinned v4.1.5, `govulncheck` clean at adoption) behind unexported adapters:
+(pinned in `go.mod`, `govulncheck` clean at adoption) behind unexported adapters:
 **no go-jose type appears in the public API**. Protocol JSON (headers,
 claims, JWKs) uses `encoding/json` directly — the one deliberate exception to
 the codec rule — so JOSE works even when the app codec is XML/CBOR only.
@@ -1587,7 +1590,7 @@ and slog.
 Standalone package (imports only `codec`; no `config`, `deps`, `nhttp`,
 `database`, `logs` or `telemetry`). One **non-generic** `*cache.Cache` per
 instance, one driver per instance, no globals (several can coexist). Redis
-goes through `github.com/redis/go-redis/v9` (pinned **v9.22.0**) behind
+goes through `github.com/redis/go-redis/v9` (pinned in `go.mod`) behind
 unexported adapters: no go-redis type appears in the public API. The
 memory driver is stdlib only (`container/list` + `container/heap`).
 
@@ -2050,6 +2053,14 @@ standard `testing` (table-driven where it fits), in the same package as the
 code (white-box), no assertion library. HTTP tests use `httptest`. Every
 behavior change needs a test; every bug fix needs a regression test.
 
+CI (`.github/workflows/ci.yml`) runs on every pull request and on `main`: gofmt,
+build and vet with and without `nforge_graph`, golangci-lint, the race tests, the
+examples, the integration tests against real PostgreSQL and Redis, and
+`govulncheck`, which fails on a reachable vulnerability only. The standalone
+`gosec` binary is not a CI step: it ignores `//nolint` and reports the reviewed
+false positives, so gosec gates through golangci-lint and its line-level
+justifications. Run the binary by hand in an audit.
+
 Before finishing any change: `gofmt` clean, `go vet ./...` and golangci-lint clean,
 `go test ./...` green, and the examples build and their tests pass
 (commands above). JOSE security behavior needs negative tests (tampering, wrong
@@ -2126,8 +2137,12 @@ algorithm/kid/typ, boundaries), not only round trips.
   every binary links, for a feature that is off by default: it was measured as
   the main cost of the bootstrap. Parse on first use.
 - Update this AGENTS.md whenever you change architecture, config schema,
-  public API, or a behavior described here — and `llms.txt` and the
-  affected `README.md` files in the same change.
+  public API, or a behavior described here, and the affected `README.md` files
+  in the same change. This file is the only reference: `llms.txt` is an index and
+  changes only when a package or an example is added or removed.
+- Do not cite a dependency's version in prose: `go.mod` is the source, and
+  `docs_test.go` fails on any `vX.Y.Z` that it does not list.
+  `config/docs_test.go` fails when a key of `config.Config` is missing from §4.2.
 
 ---
 
