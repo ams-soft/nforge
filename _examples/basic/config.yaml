@@ -69,9 +69,14 @@ logging:
     terminal:
       enabled: true
     otel:
-      enabled: false # true (with the local stack up) sends logs and traces to Grafana
+      enabled: true # sends logs and traces to Grafana through the local stack; standalone.env turns it off
       endpoint: localhost:4317 # the compose OTel Collector (OTLP gRPC)
       insecure: true # the local collector has no TLS
+
+tracing: # follows logging.output.otel.enabled, with its own exporter settings
+  otel:
+    endpoint: localhost:4317 # the compose OTel Collector (OTLP gRPC)
+    insecure: true # the local collector has no TLS
 
 jose: # see the jose example for asymmetric keys, scopes, nested tokens and JWKS
   enabled: true # default: false

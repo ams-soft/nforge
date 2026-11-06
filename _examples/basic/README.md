@@ -24,7 +24,7 @@ go run ./_examples/basic -config _examples/basic/config.yaml -envfile _examples/
 | `database.go` | `/db/notes` create/list/get/delete with Squirrel + pgx, not registered when the database is off (`standalone.env`). Filters, transactions and tenancy are in the [database example](../database) |
 | `plain.go` | plain routes that parse and answer by hand in JSON, XML and CBOR, and `AddDocRoute` to document one |
 | `users.go` | typed routes (`TGet`/`TPost`/`TPut`/`TDelete`) over an in-memory store: one `User` struct for every format, `codec:"required"`, `Validate()`, a typed query string with defaults, a route whose codec is XML |
-| `config.yaml` | only the keys this example uses, commented; OpenTelemetry is preconfigured for the local collector (`localhost:4317`, insecure) but off: set `logging.output.otel.enabled: true` with the compose stack up to see logs and traces in Grafana (<http://localhost:3000>, dashboard *nForge · Logs*) |
+| `config.yaml` | only the keys this example uses, commented; OpenTelemetry is on and sends to the local collector (`localhost:4317`, insecure): with the compose stack up, logs and traces reach Grafana (<http://localhost:3000>, dashboard *nForge · Logs*). `standalone.env` turns it off |
 
 ## Try it
 
