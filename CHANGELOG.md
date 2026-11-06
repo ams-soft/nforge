@@ -21,9 +21,14 @@ All notable changes to nForge are documented here. The format follows
   bootstrap, and the warning is not access control. Restrict the path at the
   gateway. See `AGENTS.md` §7.13.
 - `FuzzDecodeXML` and `FuzzDecodeCBOR`.
+- CI on GitHub Actions: lint, race tests, examples, integration against PostgreSQL
+  and Redis, and `govulncheck`.
+- Tests that fail when the docs cite a version other than `go.mod` or omit a
+  configuration key.
 
 ### Changed
 
+- `llms.txt` is now an index; `AGENTS.md` is the only reference.
 - `deps` is now an orchestrator: logger, tracing, codec, database, JOSE and cache
   are module descriptors. `NewDeps`, `NewDepsE`, the `Deps` fields, the start
   sequence and the shutdown order are unchanged.

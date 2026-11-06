@@ -145,10 +145,9 @@ Full reference: [AGENTS.md §7.12](AGENTS.md#712-transports-http-https-and-http3
 [`AGENTS.md`](AGENTS.md) is the reference for the whole framework: the
 runtime lifecycle, every package, the configuration schema, conventions and
 known gotchas. It is written for contributors and AI agents alike.
-[`llms.txt`](llms.txt) is a condensed, self-contained version for LLMs and
-coding assistants ([llmstxt.org](https://llmstxt.org) format): every package,
-its public API, the configuration keys and the pitfalls, with links to the
-sources.
+[`llms.txt`](llms.txt) is the index for LLMs and coding assistants
+([llmstxt.org](https://llmstxt.org) format): the rules that matter when generating
+code and links to every package and example.
 
 ## Development
 

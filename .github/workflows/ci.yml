@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  EXAMPLES: ./_examples/basic/... ./_examples/jose/... ./_examples/cache/... ./_examples/database/...
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+      - name: Build
+        run: |
+          go build ./...
+          go build -tags nforge_graph ./...
+      - name: Vet
+        run: |
+          go vet ./... $EXAMPLES
+          go vet -tags nforge_graph ./http/...
+      - name: Lint
+        run: |
+          go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run ./... $EXAMPLES
+          go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run --build-tags nforge_graph ./http/...
+      - name: Test
+        run: |
+          go test -race ./... $EXAMPLES
+          go test -race -tags nforge_graph ./http/...
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: app
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U app"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+      redis:
+        image: redis:8-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      NFORGE_TEST_DATABASE_URL: postgres://app:app@localhost:5432/app?sslmode=disable
+      NFORGE_TEST_REDIS_URL: redis://localhost:6379/15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      # -p 1: the packages share one database and create and drop the same role.
+      - name: Integration tests
+        run: go test -race -p 1 -tags integration ./database/... ./cache/ ./deps/ $EXAMPLES
+
+  vulnerabilities:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
