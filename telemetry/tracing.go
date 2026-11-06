@@ -12,19 +12,28 @@ import (
 )
 
 // SetupTracing registers the global TracerProvider and propagator (W3C
-// traceparent + baggage). When tracing is off (see Config.IsTracingEnabled) no
-// TracerProvider is registered and otel stays on the no-op provider: spans are
-// not exported, but instrumented code keeps working.
+// traceparent + baggage). The propagator is always set, so a disabled tracer
+// still forwards context. It returns the shutdown of the provider.
 func SetupTracing(ctx context.Context, config config.Config) (func(context.Context) error, error) {
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
-		propagation.TraceContext{},
-		propagation.Baggage{},
-	))
-
+	otel.SetTextMapPropagator(Propagator())
 	if !config.IsTracingEnabled() {
 		return func(context.Context) error { return nil }, nil
 	}
+	provider, err := NewTracerProvider(ctx, config)
+	if err != nil {
+		return nil, err
+	}
+	otel.SetTracerProvider(provider)
+	return provider.Shutdown, nil
+}
 
+// Propagator returns the W3C propagators the framework uses.
+func Propagator() propagation.TextMapPropagator {
+	return propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})
+}
+
+// NewTracerProvider builds the provider of config and touches no global state.
+func NewTracerProvider(ctx context.Context, config config.Config) (*sdktrace.TracerProvider, error) {
 	cfg := config.Tracing.Otel
 	var opts []otlptracegrpc.Option
 	// Same rule as the logs exporter: a full URL goes through WithEndpointURL, "host:port" through WithEndpoint.
@@ -47,15 +56,12 @@ func SetupTracing(ctx context.Context, config config.Config) (func(context.Conte
 		return nil, err
 	}
 
-	provider := sdktrace.NewTracerProvider(
+	return sdktrace.NewTracerProvider(
 		sdktrace.WithResource(res),
 		sdktrace.WithBatcher(exporter),
 		sdktrace.WithIDGenerator(IDGenerator()), // trace_id taken from X-Request-Id
 		sdktrace.WithSampler(newSampler(cfg.Ratio())),
-	)
-	otel.SetTracerProvider(provider)
-
-	return provider.Shutdown, nil
+	), nil
 }
 
 // newSampler records the given fraction of traces, chosen by trace id, and

@@ -104,7 +104,7 @@ func BenchmarkResolveBuiltin(b *testing.B) {
 	cfg := minimalConfig()
 	b.ReportAllocs()
 	for b.Loop() {
-		if _, err := module.Resolve(cfg, builtinModules()); err != nil {
+		if _, err := module.Resolve(cfg, builtinModules(false)); err != nil {
 			b.Fatal(err)
 		}
 	}

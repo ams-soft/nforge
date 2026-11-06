@@ -16,6 +16,8 @@ import (
 	"github.com/ams-soft/nforge/logs"
 	"github.com/ams-soft/nforge/module"
 	"github.com/ams-soft/nforge/telemetry"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Module is a module of an nForge application; see Bootstrap.
@@ -26,7 +28,7 @@ type Module = module.Module[config.Config]
 // module.Lookup, so it shares the resource instead of opening a second one.
 var (
 	CapLogger   = module.NewCapability[*slog.Logger]("logger")
-	CapTracing  = module.NewCapability[struct{}]("tracing")
+	CapTracing  = module.NewCapability[trace.TracerProvider]("tracing")
 	CapCodec    = module.NewCapability[*codec.Registry]("codec")
 	CapDatabase = module.NewCapability[*database.DB]("database")
 	CapJOSE     = module.NewCapability[*jose.Service]("jose")
@@ -48,16 +50,17 @@ func caps(ids ...module.CapabilityID) func(config.Config) []module.CapabilityID 
 // builtinModules lists what the framework manages. The order is the tie-break of
 // the start order, so it is what keeps the sequence of v0.2.0: logger, tracing,
 // the startup report, codec, database, jose, cache. Shutdown runs it backwards.
-func builtinModules() []Module {
+func builtinModules(isolated bool) []Module {
+	b := builtins{isolated: isolated}
 	logger, tracing, codecCap := CapLogger.ID(), CapTracing.ID(), CapCodec.ID()
 	return []Module{
-		{ID: "logger", Provides: []module.CapabilityID{logger}, Init: initLogger},
+		{ID: "logger", Provides: []module.CapabilityID{logger}, Init: b.initLogger},
 		{
 			ID:       "tracing",
 			Provides: []module.CapabilityID{tracing},
 			Enabled:  func(cfg config.Config) bool { return cfg.IsTracingEnabled() },
 			Requires: caps(logger),
-			Init:     initTracing,
+			Init:     b.initTracing,
 		},
 		{
 			// It logs, so it follows the logger, and after tracing because a tracing
@@ -67,7 +70,7 @@ func builtinModules() []Module {
 			Optional: caps(tracing),
 			Init:     initStartupReport,
 		},
-		{ID: "codec", Provides: []module.CapabilityID{codecCap}, Requires: caps(logger), Init: initCodec},
+		{ID: "codec", Provides: []module.CapabilityID{codecCap}, Requires: caps(logger), Init: b.initCodec},
 		{
 			ID:       "database",
 			Provides: []module.CapabilityID{CapDatabase.ID()},
@@ -111,12 +114,19 @@ func builtinModules() []Module {
 	}
 }
 
-func initLogger(ctx context.Context, cfg config.Config, s *module.Scope) (module.Hooks, error) {
+// builtins are the Init functions that differ when the process globals are off.
+type builtins struct{ isolated bool }
+
+func (b builtins) initLogger(ctx context.Context, cfg config.Config, s *module.Scope) (module.Hooks, error) {
 	if !cfg.IsLoggingEnabled() {
 		module.Provide(s, CapLogger, logs.NewNoop())
 		return module.Hooks{}, nil
 	}
-	logger, shutdown, err := logs.Setup(ctx, cfg)
+	var opts []logs.Option
+	if b.isolated {
+		opts = append(opts, logs.WithoutGlobals())
+	}
+	logger, shutdown, err := logs.Setup(ctx, cfg, opts...)
 	if err != nil {
 		return module.Hooks{}, fmt.Errorf("unable to setup logger: %w", err)
 	}
@@ -124,13 +134,17 @@ func initLogger(ctx context.Context, cfg config.Config, s *module.Scope) (module
 	return module.Hooks{Shutdown: shutdown}, nil
 }
 
-func initTracing(ctx context.Context, cfg config.Config, s *module.Scope) (module.Hooks, error) {
-	shutdown, err := telemetry.SetupTracing(ctx, cfg)
+func (b builtins) initTracing(ctx context.Context, cfg config.Config, s *module.Scope) (module.Hooks, error) {
+	provider, err := telemetry.NewTracerProvider(ctx, cfg)
 	if err != nil {
 		return module.Hooks{}, fmt.Errorf("unable to setup tracing: %w", err)
 	}
-	module.Provide(s, CapTracing, struct{}{})
-	return module.Hooks{Shutdown: shutdown}, nil
+	if !b.isolated {
+		otel.SetTextMapPropagator(telemetry.Propagator())
+		otel.SetTracerProvider(provider)
+	}
+	module.Provide(s, CapTracing, trace.TracerProvider(provider))
+	return module.Hooks{Shutdown: provider.Shutdown}, nil
 }
 
 func initStartupReport(ctx context.Context, cfg config.Config, s *module.Scope) (module.Hooks, error) {
@@ -159,9 +173,9 @@ func logConfigWarnings(ctx context.Context, logger *slog.Logger, cfg config.Conf
 	}
 }
 
-// initCodec builds the Registry from the config and installs it as the process
-// default, which is the one used by the http helpers (SendJSON, ParseXML...).
-func initCodec(ctx context.Context, cfg config.Config, s *module.Scope) (module.Hooks, error) {
+// initCodec builds the Registry from the config and, unless isolated, installs it
+// as the process default, which the http helpers (SendJSON, ParseXML...) use.
+func (b builtins) initCodec(ctx context.Context, cfg config.Config, s *module.Scope) (module.Hooks, error) {
 	registry, err := codec.New(codec.Config{
 		Formats:             cfg.Codec.Formats.Enabled,
 		Default:             cfg.Codec.Default,
@@ -172,7 +186,9 @@ func initCodec(ctx context.Context, cfg config.Config, s *module.Scope) (module.
 	if err != nil {
 		return module.Hooks{}, fmt.Errorf("unable to setup codec: %w", err)
 	}
-	codec.SetDefault(registry)
+	if !b.isolated {
+		codec.SetDefault(registry)
+	}
 	module.Provide(s, CapCodec, registry)
 	module.Require(s, CapLogger).InfoContext(ctx, "  [CodecModule] Codec setup completed")
 	return module.Hooks{}, nil

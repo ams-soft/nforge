@@ -4,6 +4,9 @@ import (
 	"log/slog"
 	stdhttp "net/http"
 
+	"github.com/ams-soft/nforge/telemetry"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/ams-soft/nforge/http/internal/accesslog"
 	"github.com/ams-soft/nforge/http/internal/tracing"
 )
@@ -31,6 +34,15 @@ func Tracing(opts ...TracingOption) func(stdhttp.Handler) stdhttp.Handler {
 
 // TracingOption configures Tracing.
 type TracingOption func(*tracing.Options)
+
+// WithTracerProvider creates the spans on tp and propagates with the W3C
+// propagators, instead of reading the process-wide OTel state.
+func WithTracerProvider(tp trace.TracerProvider) TracingOption {
+	return func(o *tracing.Options) {
+		o.TracerProvider = tp
+		o.Propagators = telemetry.Propagator()
+	}
+}
 
 // WithTrustedIncomingContext continues the traceparent, adopts a valid
 // X-Request-Id as the trace id and propagates the baggage of the request.

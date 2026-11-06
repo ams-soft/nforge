@@ -122,7 +122,7 @@ func parse(r *stdhttp.Request, format string, v any) error {
 	if err := checkContentType(r.Header.Get("Content-Type"), format, hasBody); err != nil {
 		return err
 	}
-	return codec.Default().DecodeFrom(format, r.Body, v)
+	return codec.FromContext(r.Context()).DecodeFrom(format, r.Body, v)
 }
 
 // checkContentType accepts the format's content type, the structured suffix
@@ -178,7 +178,7 @@ func responseContentType(contentType string) string {
 // write serializes before writing anything: if encoding fails nothing has
 // been sent and the caller can still respond with an error.
 func write(w stdhttp.ResponseWriter, r *stdhttp.Request, status int, format string, message any) error {
-	registry := codec.Default()
+	registry := codec.FromContext(r.Context())
 	c, err := registry.Lookup(format)
 	if err != nil {
 		return err

@@ -21,6 +21,14 @@ All notable changes to nForge are documented here. The format follows
   bootstrap, and the warning is not access control. Restrict the path at the
   gateway. See `AGENTS.md` §7.13.
 - `FuzzDecodeXML` and `FuzzDecodeCBOR`.
+- Generic route functions `nhttp.Get`, `Post`, `Put`, `Patch` and `Delete`: the
+  compiler checks the request and response types and the handler returns its
+  result. `nhttp.Empty`, `nhttp.Error` and `Opts.Status` go with them. `TGet` and
+  friends stay supported.
+- `deps.WithoutGlobals()`: several `Deps` in one process, without touching
+  `codec.Default`, `slog.Default` or the OTel globals. Also `codec.WithRegistry`,
+  `codec.FromContext`, `logs.WithoutGlobals`, `telemetry.NewTracerProvider`,
+  `telemetry.Propagator` and `nhttp.WithTracerProvider`.
 - CI on GitHub Actions: lint, race tests, examples, integration against PostgreSQL
   and Redis, and `govulncheck`.
 - Tests that fail when the docs cite a version other than `go.mod` or omit a
@@ -31,6 +39,9 @@ All notable changes to nForge are documented here. The format follows
 - `deps.NewDeps`, `NewDepsE` and `Bootstrap` return `*Deps`, and `NewHTTPServer` and
   `ServerHttp.Deps` take it. Replace `dps deps.Deps` with `dps *deps.Deps`.
 - `Deps.Logger` is a `*slog.Logger`: drop the `&` from `&dps.Logger`.
+- `deps.Bootstrap` takes options: `Bootstrap(ctx, cfg, mods...)` becomes
+  `Bootstrap(ctx, cfg, deps.WithModules(mods...))`.
+- `deps.CapTracing` publishes a `trace.TracerProvider`.
 - `deps.Aux` and `Deps.ClearAux` are gone. Register closers with `Deps.AddShutdown`.
 
 ### Changed

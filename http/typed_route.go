@@ -18,6 +18,9 @@ import (
 
 // Opts configures a typed route. All fields are optional.
 type Opts struct {
+	// Status is the success status of the generic handlers (Get, Post...): 200 by
+	// default, 204 for an Empty response. T* routes ignore it.
+	Status int
 	// Codec is the request and response format ("json", "xml", "cbor" or
 	// the content type). Default: JSON.
 	Codec string
@@ -92,7 +95,7 @@ func (s *ServerHttp) Typed() *TypedRouter {
 // Authenticate yourself.
 func (s *ServerHttp) AddDocRoute(route TypedRoute) {
 	route.Method = strings.ToUpper(route.Method)
-	route.Codec = mustFormat(route.Codec)
+	route.Codec = mustFormat(s.registry(), route.Codec)
 	route.Handler = nil
 	route.Schema = zeroOf(typeOf(route.Schema))
 	route.Response = zeroOf(typeOf(route.Response))
@@ -183,7 +186,8 @@ func (tr *TypedRouter) handle(method, pattern string, request, response any, h s
 	if len(opts) > 0 {
 		o = opts[0]
 	}
-	format := mustFormat(o.Codec)
+	registry := tr.srv.registry()
+	format := mustFormat(registry, o.Codec)
 	reqType, resType := typeOf(request), typeOf(response)
 	isQuery := method == stdhttp.MethodGet
 	path := joinRoute(tr.prefix, pattern)
@@ -194,11 +198,11 @@ func (tr *TypedRouter) handle(method, pattern string, request, response any, h s
 				panic(fmt.Sprintf("nhttp: %s %s: %v", method, path, err))
 			}
 		} else {
-			mustValidTags(method, path, format, reqType)
+			mustValidTags(registry, method, path, format, reqType)
 		}
 	}
 	if resType != nil {
-		mustValidTags(method, path, format, resType)
+		mustValidTags(registry, method, path, format, resType)
 	}
 	auth, profile := tr.srv.routeAuth(method, path, o)
 	tenant, tenantHeader := tr.srv.routeTenant(method, path, o)
@@ -317,7 +321,7 @@ func (tr *TypedRouter) wrap(format string, reqType, resType reflect.Type, isQuer
 		cw := capture.NewWriter(w)
 		h(cw, r)
 
-		status, message, err := cw.Result(format, resType)
+		status, message, err := cw.Result(codec.FromContext(r.Context()), format, resType)
 		if err != nil {
 			logger.ErrorContext(r.Context(), "invalid handler response", "error", err)
 			status, message = stdhttp.StatusInternalServerError, "failed to build the response"
@@ -335,7 +339,7 @@ func decodeRequest(r *stdhttp.Request, format string, t reflect.Type, isQuery, s
 		if err != nil {
 			return nil, err
 		}
-		if err := codec.Default().Validate(ptr.Interface()); err != nil {
+		if err := codec.FromContext(r.Context()).Validate(ptr.Interface()); err != nil {
 			return nil, err
 		}
 		return ptr.Interface(), nil
@@ -349,11 +353,11 @@ func decodeRequest(r *stdhttp.Request, format string, t reflect.Type, isQuery, s
 
 // mustFormat resolves the route's format (default JSON) in the Registry,
 // panicking at registration if it is not enabled.
-func mustFormat(format string) string {
+func mustFormat(registry *codec.Registry, format string) string {
 	if format == "" {
 		format = codec.JSON
 	}
-	c, err := codec.Default().Lookup(format)
+	c, err := registry.Lookup(format)
 	if err != nil {
 		panic(fmt.Sprintf("nhttp: route codec: %v", err))
 	}
@@ -362,8 +366,8 @@ func mustFormat(format string) string {
 
 // mustValidTags moves to route registration the struct tag errors that the
 // codec would only report on the first request.
-func mustValidTags(method, path, format string, t reflect.Type) {
-	_, err := codec.Default().EncodeAs(format, reflect.New(t).Interface())
+func mustValidTags(registry *codec.Registry, method, path, format string, t reflect.Type) {
+	_, err := registry.EncodeAs(format, reflect.New(t).Interface())
 	if errors.Is(err, codec.ErrInvalidTags) {
 		panic(fmt.Sprintf("nhttp: %s %s: %v", method, path, err))
 	}

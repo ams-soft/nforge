@@ -73,6 +73,9 @@ func (s *ServerHttp) setStandardHandler() {
 	// Security and CORS (before routing, so preflights reach every path)
 	if s.Deps.Config.IsTracingEnabled() {
 		var tracingOpts []TracingOption
+		if s.Deps.Isolated() {
+			tracingOpts = append(tracingOpts, WithTracerProvider(s.Deps.TracerProvider))
+		}
 		if s.Deps.Config.Tracing.Otel.TrustsIncoming() {
 			tracingOpts = append(tracingOpts, WithTrustedIncomingContext())
 		}
@@ -82,6 +85,9 @@ func (s *ServerHttp) setStandardHandler() {
 		handler.Use(Logger(s.Deps.Logger))
 	}
 	handler.Use(middleware.Recoverer)
+	if s.Deps.Isolated() {
+		handler.Use(withRegistry(s.Deps.Codec))
+	}
 	limits := s.Deps.Config.HTTP.Server
 	config.ApplyServerDefaults(&limits)
 	handler.Use(bodyLimit(s.maxBodyBytes(limits)))
@@ -112,6 +118,24 @@ func (s *ServerHttp) setStandardHandler() {
 		})
 	}
 
+}
+
+// registry is the Registry of this server: the one of an isolated Deps, otherwise
+// the process default that requests also use.
+func (s *ServerHttp) registry() *codec.Registry {
+	if s.Deps.Isolated() {
+		return s.Deps.Codec
+	}
+	return codec.Default()
+}
+
+// withRegistry makes the requests of an isolated server use its Registry.
+func withRegistry(registry *codec.Registry) func(stdhttp.Handler) stdhttp.Handler {
+	return func(next stdhttp.Handler) stdhttp.Handler {
+		return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+			next.ServeHTTP(w, r.WithContext(codec.WithRegistry(r.Context(), registry)))
+		})
+	}
 }
 
 // Router returns the server's router, for registering application routes.

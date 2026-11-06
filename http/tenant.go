@@ -161,7 +161,7 @@ func (s *ServerHttp) tenantGuard() *tenantGuard {
 func (g *tenantGuard) middleware() func(stdhttp.Handler) stdhttp.Handler {
 	return func(next stdhttp.Handler) stdhttp.Handler {
 		return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-			if r, ok := g.apply(w, r, codec.Default().DefaultFormat()); ok {
+			if r, ok := g.apply(w, r, codec.FromContext(r.Context()).DefaultFormat()); ok {
 				next.ServeHTTP(w, r)
 			}
 		})

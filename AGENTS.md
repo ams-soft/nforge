@@ -219,9 +219,19 @@ Rules for descriptors: `Init` reads only what the module declared
 (`module.Require`/`module.Lookup`; anything else panics, so the graph stays true)
 and must publish everything in `Provides` (`module.Provide`; `ErrNotProvided`
 otherwise). A consumer shares the provider's resource and never closes it.
-Applications may pass their own modules to `deps.Bootstrap`, name the exported
-capabilities (`deps.CapDatabase`, `CapCache`, ...) and read their own with
-`deps.Value`. `Bootstrap`'s ctx only bounds the start; `Deps.Shutdown` stops.
+Applications may pass their own modules with `deps.Bootstrap(ctx, cfg,
+deps.WithModules(...))`, name the exported capabilities (`deps.CapDatabase`,
+`CapCache`, ...) and read their own with `deps.Value`. `Bootstrap`'s ctx only
+bounds the start; `Deps.Shutdown` stops.
+
+**Process globals.** By default the bootstrap installs `codec.SetDefault`,
+`slog.SetDefault` and the OTel provider, propagator and error handler.
+`deps.WithoutGlobals()` installs none of them, so several `Deps` can coexist in one
+process: `Deps.Isolated()` is true, the server puts `Deps.Codec` in every request
+context (`codec.WithRegistry`; `Send*`/`Parse*` read `codec.FromContext`) and spans
+go to `Deps.TracerProvider`. The default path pays no extra middleware. What is
+still process-wide there: a raw `Authenticate` logs through `slog.Default`, and OTel
+failures go to OTel's default handler.
 
 `crypto` and `helper/*` have no lifecycle and are not modules. The `http` node is
 **passive** (no `Init`): `ServerHttp` owns the listeners and calls `Deps.Shutdown`
@@ -298,7 +308,8 @@ the modules (`ok` false / nil for a `Deps` not built by `Bootstrap`).
 
 1. `Tracing()` — only if `IsTracingEnabled()`. Must be first.
 2. `Logger(deps.Logger)` — only if any logging output is enabled.
-3. `middleware.Recoverer` (from go-ams-router) — always.
+3. `middleware.Recoverer` (from go-ams-router) — always. A `WithoutGlobals` server
+   then adds its `Registry` to the request context.
 4. Body limit — always: `http.MaxBytesReader` at `http.server.max_body_bytes`
    (default: `codec.max_payload_bytes`) + 1 byte, so raw routes that read
    `r.Body` are bounded and typed routes still get their 413 from the codec
@@ -762,6 +773,24 @@ if err := nhttp.ParseJSON(r, &u); err != nil {
 ```
 
 ### 7.4 Typed routes (the main way to build APIs)
+
+Prefer the generic functions: the compiler checks the types and the handler returns
+instead of writing.
+
+```go
+nhttp.Get(api, "/users", func(r *http.Request, q ListUsersQuery) ([]User, error) { ... }, nhttp.Opts{DocTag: "users"})
+nhttp.Post(api, "/users", func(r *http.Request, u User) (User, error) { ... }, nhttp.Opts{Status: http.StatusCreated})
+nhttp.Delete(api, "/users/{id}", func(r *http.Request, _ nhttp.Empty) (nhttp.Empty, error) { ... })
+return User{}, nhttp.Error(http.StatusNotFound, "user not found")   // its message reaches the client
+```
+
+`Get`, `Post`, `Put`, `Patch` and `Delete` are thin wrappers over the flow below, so
+everything in it applies. `nhttp.Empty` means no request or no response; an `Empty`
+response answers 204. `Opts.Status` sets the success status (2xx, else a panic). A
+`*StatusError` of 400 or more becomes that response; any other error is a 500
+`internal error` and the real error goes to the log. `r` gives the context, path
+parameters and headers; a handler that must write the response itself (raw bytes, a
+stream) uses `TGet` and friends, which stay supported:
 
 ```go
 server.Typed().Route("/api/v1", func(api *nhttp.TypedRouter) {
@@ -2175,7 +2204,7 @@ algorithm/kid/typ, boundaries), not only round trips.
 10. **`Deps` is used through a pointer**: `go vet` rejects a copy (it holds a
     mutex). A `Deps` built by hand has a nil `Logger` until `NewHTTPServer` gives it
     a discarding one.
-11. **Codec default registry** before `NewDeps` is json+cbor+xml permissive;
+11. **Codec default registry** (without `deps.WithoutGlobals`) before `NewDeps` is json+cbor+xml permissive;
     tests that rely on config-driven behavior must build their own Registry
     (and restore the default with `SetDefault` afterwards).
 12. **Tracing needs both switches**: `logging.output.otel.enabled: true` *and*
