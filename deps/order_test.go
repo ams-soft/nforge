@@ -56,7 +56,7 @@ func orderConfig() config.Config {
 // runOrder starts the real modules of cfg, stops them and returns both sequences.
 func runOrder(t *testing.T, cfg config.Config) (started, stopped []module.ID) {
 	t.Helper()
-	plan, err := module.Resolve(cfg, recordLifecycle(builtinModules(), &started, &stopped))
+	plan, err := module.Resolve(cfg, recordLifecycle(builtinModules(false), &started, &stopped))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -125,71 +125,78 @@ func (s *userStore) list(q ListQuery) []User {
 	return out[start:min(start+q.Limit, len(out))]
 }
 
-func userID(req *stdhttp.Request) (int64, bool) {
+// userID reads the path parameter; a bad one is a 400.
+func userID(req *stdhttp.Request) (int64, error) {
 	id, err := strconv.ParseInt(router.URLParam(req, "id"), 10, 64)
-	return id, err == nil && id > 0
+	if err != nil || id <= 0 {
+		return 0, nhttp.Error(stdhttp.StatusBadRequest, "invalid id")
+	}
+	return id, nil
 }
 
-// registerUserRoutes shows typed routes: the request is decoded and
-// validated before the handler, the response is checked against the
-// declared type after it, and everything shows up in /docs.
+var errUserNotFound = nhttp.Error(stdhttp.StatusNotFound, "user not found")
+
+// registerUserRoutes shows typed routes: the compiler checks the request and
+// response types, the request is decoded and validated before the handler, the
+// response is checked after it, and everything shows up in /docs.
 func registerUserRoutes(api *nhttp.TypedRouter, store *userStore) {
 	tag := func(description string) nhttp.Opts { return nhttp.Opts{DocTag: "users", Description: description} }
+	created := func(description string) nhttp.Opts {
+		o := tag(description)
+		o.Status = stdhttp.StatusCreated
+		return o
+	}
 
 	// curl 'localhost:8080/api/v1/users?limit=10&name=an&active=true'
-	api.TGet("/users", ListQuery{}, []User{}, func(w stdhttp.ResponseWriter, req *stdhttp.Request) {
-		_ = nhttp.SendJSON(w, req, stdhttp.StatusOK, store.list(nhttp.Query[ListQuery](req)))
+	nhttp.Get(api, "/users", func(_ *stdhttp.Request, q ListQuery) ([]User, error) {
+		return store.list(q), nil
 	}, tag("Lists users with filters and pagination"))
 
 	// curl localhost:8080/api/v1/users/1
-	api.TGet("/users/{id}", nil, User{}, func(w stdhttp.ResponseWriter, req *stdhttp.Request) {
-		id, ok := userID(req)
-		if !ok {
-			_ = nhttp.SendJSON(w, req, stdhttp.StatusBadRequest, "invalid id")
-			return
+	nhttp.Get(api, "/users/{id}", func(req *stdhttp.Request, _ nhttp.Empty) (User, error) {
+		id, err := userID(req)
+		if err != nil {
+			return User{}, err
 		}
 		u, ok := store.get(id)
 		if !ok {
-			_ = nhttp.SendJSON(w, req, stdhttp.StatusNotFound, "user not found")
-			return
+			return User{}, errUserNotFound
 		}
-		_ = nhttp.SendJSON(w, req, stdhttp.StatusOK, u)
+		return u, nil
 	}, tag("Gets a user"))
 
 	// curl -X POST localhost:8080/api/v1/users -H 'Content-Type: application/json' -d '{"name":"Ana","email":"ana@example.com"}'
-	api.TPost("/users", User{}, User{}, func(w stdhttp.ResponseWriter, req *stdhttp.Request) {
-		_ = nhttp.SendJSON(w, req, stdhttp.StatusCreated, store.create(nhttp.Body[User](req)))
-	}, tag("Creates a user"))
+	nhttp.Post(api, "/users", func(_ *stdhttp.Request, u User) (User, error) {
+		return store.create(u), nil
+	}, created("Creates a user"))
 
 	// curl -X PUT localhost:8080/api/v1/users/1 -H 'Content-Type: application/json' -d '{"name":"Ana Maria","active":false}'
-	api.TPut("/users/{id}", User{}, User{}, func(w stdhttp.ResponseWriter, req *stdhttp.Request) {
-		id, ok := userID(req)
-		if !ok {
-			_ = nhttp.SendJSON(w, req, stdhttp.StatusBadRequest, "invalid id")
-			return
+	nhttp.Put(api, "/users/{id}", func(req *stdhttp.Request, body User) (User, error) {
+		id, err := userID(req)
+		if err != nil {
+			return User{}, err
 		}
-		u, ok := store.update(id, nhttp.Body[User](req))
+		u, ok := store.update(id, body)
 		if !ok {
-			_ = nhttp.SendJSON(w, req, stdhttp.StatusNotFound, "user not found")
-			return
+			return User{}, errUserNotFound
 		}
-		_ = nhttp.SendJSON(w, req, stdhttp.StatusOK, u)
+		return u, nil
 	}, tag("Replaces a user"))
 
 	// curl -X DELETE localhost:8080/api/v1/users/1
-	api.TDelete("/users/{id}", nil, nil, func(w stdhttp.ResponseWriter, req *stdhttp.Request) {
-		id, ok := userID(req)
-		if !ok || !store.delete(id) {
-			_ = nhttp.SendJSON(w, req, stdhttp.StatusNotFound, "user not found")
-			return
+	nhttp.Delete(api, "/users/{id}", func(req *stdhttp.Request, _ nhttp.Empty) (nhttp.Empty, error) {
+		id, err := userID(req)
+		if err != nil || !store.delete(id) {
+			return nhttp.Empty{}, errUserNotFound
 		}
-		w.WriteHeader(stdhttp.StatusNoContent) // no body
+		return nhttp.Empty{}, nil // Empty answers 204
 	}, tag("Deletes a user"))
 
-	// The route codec decides the wire format: this route reads and writes
-	// XML even though the handler calls SendJSON.
+	// The route codec decides the wire format: this route reads and writes XML.
 	// curl -X POST localhost:8080/api/v1/xml/users -H 'Content-Type: application/xml' -d '<user><name>Bia</name></user>'
-	api.TPost("/xml/users", User{}, User{}, func(w stdhttp.ResponseWriter, req *stdhttp.Request) {
-		_ = nhttp.SendJSON(w, req, stdhttp.StatusCreated, store.create(nhttp.Body[User](req)))
-	}, nhttp.Opts{DocTag: "users", Description: "Creates a user (XML route)", Codec: "xml"})
+	xmlRoute := created("Creates a user (XML route)")
+	xmlRoute.Codec = "xml"
+	nhttp.Post(api, "/xml/users", func(_ *stdhttp.Request, u User) (User, error) {
+		return store.create(u), nil
+	}, xmlRoute)
 }

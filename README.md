@@ -31,7 +31,7 @@ _ = server.Start()                 // graceful shutdown on SIGINT/SIGTERM
 | Logging | `logs` | `log/slog` to the terminal (tint) and/or OpenTelemetry (OTLP), `request_id` on every record |
 | Tracing | `telemetry` | OpenTelemetry spans per request, with `request_id == trace_id` |
 | Codec | `codec` | JSON, CBOR and XML from **one struct**: required fields, strict mode, payload limits, XXE protection, `Validate()` |
-| HTTP | `http` (`nhttp`) | Plain HTTP, opt-in **HTTPS** (TLS 1.3) and **HTTP/3**, a standard response envelope, **typed routes** validated before and after the handler, typed query strings, **OpenAPI 3.1** docs, health/readiness, an optional module graph page |
+| HTTP | `http` (`nhttp`) | Plain HTTP, opt-in **HTTPS** (TLS 1.3) and **HTTP/3**, a standard response envelope, **typed routes** checked by the compiler and validated before and after the handler, typed query strings, **OpenAPI 3.1** docs, health/readiness, an optional module graph page |
 | Database | `database` | PostgreSQL with pgx + Squirrel, transactions, **multi-tenancy** by tenant column or Row-Level Security |
 | JOSE | `jose` | JWT, JWS and JWE through explicit profiles, bearer authentication with scopes, JWKS, key rotation |
 | Cache | `cache` | Redis or a bounded in-process LRU behind one API: objects, bytes, counters, TTLs, NX, cache-aside `GetOrLoad`, tenant namespaces |

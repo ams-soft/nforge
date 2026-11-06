@@ -15,6 +15,7 @@ import (
 	"github.com/ams-soft/nforge/database"
 	"github.com/ams-soft/nforge/jose"
 	"github.com/ams-soft/nforge/module"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Deps holds what the modules built. Use it through a pointer: it is shared by
@@ -32,8 +33,11 @@ type Deps struct {
 	JOSE *jose.Service
 	// Cache is nil when cache.enabled is false.
 	Cache *cache.Cache
+	// TracerProvider is nil when tracing is off.
+	TracerProvider trace.TracerProvider
 
-	runtime *module.Runtime // nil for a Deps not built by Bootstrap
+	isolated bool
+	runtime  *module.Runtime // nil for a Deps not built by Bootstrap
 
 	mu      sync.Mutex // guards closers: Shutdown may be called from two places
 	closers []func(context.Context) error
@@ -138,9 +142,30 @@ func NewDepsE(cfg config.Config) (*Deps, error) {
 	return Bootstrap(context.Background(), cfg)
 }
 
-// Bootstrap resolves the module graph of cfg and starts it. The built-in
-// modules (modules.go) come first, then extra, which may depend on them through
-// the exported capabilities.
+// Option configures Bootstrap.
+type Option func(*bootstrapOptions)
+
+type bootstrapOptions struct {
+	extra    []Module
+	isolated bool
+}
+
+// WithModules adds application modules after the built-in ones. They may depend
+// on them through the exported capabilities.
+func WithModules(mods ...Module) Option {
+	return func(o *bootstrapOptions) { o.extra = append(o.extra, mods...) }
+}
+
+// WithoutGlobals leaves the process-wide state alone: codec.Default, slog.Default
+// and the OTel provider, propagator and error handler. The server of this Deps
+// uses its own, so several can coexist in one process. Package-level code that
+// reads the globals, such as a raw Authenticate logging through slog.Default, keeps
+// seeing them.
+func WithoutGlobals() Option {
+	return func(o *bootstrapOptions) { o.isolated = true }
+}
+
+// Bootstrap resolves the module graph of cfg and starts it.
 //
 // The graph is validated before anything starts: a required module that is
 // disabled or missing, a cycle or an ambiguous provider fails here, with nothing
@@ -151,13 +176,17 @@ func NewDepsE(cfg config.Config) (*Deps, error) {
 //
 // Canceling ctx aborts a start in progress and has no effect after Bootstrap
 // returns; Deps.Shutdown is the way to stop.
-func Bootstrap(ctx context.Context, cfg config.Config, extra ...Module) (*Deps, error) {
-	plan, err := module.Resolve(cfg, append(builtinModules(), extra...))
+func Bootstrap(ctx context.Context, cfg config.Config, opts ...Option) (*Deps, error) {
+	var o bootstrapOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	plan, err := module.Resolve(cfg, append(builtinModules(o.isolated), o.extra...))
 	if err != nil {
 		return nil, fmt.Errorf("unable to resolve modules: %w", err)
 	}
 
-	d := &Deps{Config: cfg, Context: context.WithoutCancel(ctx)}
+	d := &Deps{Config: cfg, Context: context.WithoutCancel(ctx), isolated: o.isolated}
 	// The modules outlive ctx: only Runtime.Shutdown ends them, not the caller.
 	startCtx, stopWatching := detachAfterStart(ctx)
 	defer stopWatching()
@@ -180,6 +209,7 @@ func Bootstrap(ctx context.Context, cfg config.Config, extra ...Module) (*Deps, 
 	d.DB, _ = module.Value(rt, CapDatabase)
 	d.JOSE, _ = module.Value(rt, CapJOSE)
 	d.Cache, _ = module.Value(rt, CapCache)
+	d.TracerProvider, _ = module.Value(rt, CapTracing)
 	return d, nil
 }
 
@@ -194,6 +224,9 @@ func detachAfterStart(ctx context.Context) (context.Context, func()) {
 	stop := context.AfterFunc(ctx, cancel)
 	return detached, func() { stop() }
 }
+
+// Isolated reports whether this Deps was built WithoutGlobals.
+func (d *Deps) Isolated() bool { return d.isolated }
 
 // Graph returns the structure resolved at bootstrap. ok is false for a Deps
 // that Bootstrap did not build. The structure never changes after bootstrap.

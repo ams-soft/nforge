@@ -16,7 +16,21 @@ import (
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 )
 
-func Setup(ctx context.Context, config config.Config) (*slog.Logger, func(context.Context) error, error) {
+// Option configures Setup.
+type Option func(*options)
+
+type options struct{ noGlobals bool }
+
+// WithoutGlobals leaves slog.Default and the OTel error handler alone, so several
+// loggers can coexist in one process. OTel failures then go to OTel's default
+// handler instead of the terminal.
+func WithoutGlobals() Option { return func(o *options) { o.noGlobals = true } }
+
+func Setup(ctx context.Context, config config.Config, opts ...Option) (*slog.Logger, func(context.Context) error, error) {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
 	loglevel := SetLogLevelByEnv(config.Env)
 
 	prettyHandler := tint.NewTextHandler(os.Stdout, &tint.Options{
@@ -51,14 +65,18 @@ func Setup(ctx context.Context, config config.Config) (*slog.Logger, func(contex
 		// log, which slog.SetDefault turns into INFO records that also reach the
 		// otel handler. Send them to the terminal only, as warnings: queueing them on
 		// the exporter that is failing would just feed it more records.
-		terminal := slog.New(&leveledHandler{Handler: prettyHandler, level: loglevel})
-		otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
-			terminal.Warn(" [LoggerModule] Telemetry export failed", "err", err) //nolint:sloglint // runs later, outside the setup ctx
-		}))
+		if !o.noGlobals {
+			terminal := slog.New(&leveledHandler{Handler: prettyHandler, level: loglevel})
+			otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
+				terminal.Warn(" [LoggerModule] Telemetry export failed", "err", err) //nolint:sloglint // runs later, outside the setup ctx
+			}))
+		}
 	}
 
 	logger := slog.New(&contextHandler{Handler: NewMultiHandler(handlers...)})
-	slog.SetDefault(logger)
+	if !o.noGlobals {
+		slog.SetDefault(logger)
+	}
 
 	return logger, shutdown, nil
 }

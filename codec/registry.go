@@ -2,6 +2,7 @@ package codec
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -276,6 +277,22 @@ func init() {
 // bootstrap, it is a registry with json, cbor and xml, permissive mode and
 // limit DefaultMaxPayloadBytes (5 MiB).
 func Default() *Registry { return defaultRegistry.Load() }
+
+type registryKey struct{}
+
+// WithRegistry returns a context that makes FromContext answer r. An application
+// bootstrapped without process globals uses it so requests never reach Default.
+func WithRegistry(ctx context.Context, r *Registry) context.Context {
+	return context.WithValue(ctx, registryKey{}, r)
+}
+
+// FromContext returns the Registry of ctx, or Default when it has none.
+func FromContext(ctx context.Context) *Registry {
+	if r, ok := ctx.Value(registryKey{}).(*Registry); ok {
+		return r
+	}
+	return Default()
+}
 
 // SetDefault replaces the process Registry (done once during bootstrap).
 func SetDefault(r *Registry) {

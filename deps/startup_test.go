@@ -70,7 +70,7 @@ func TestFailedStartLogsAndRollsBackEarlierModules(t *testing.T) {
 			return module.Hooks{}, cause
 		}},
 	}
-	d, err := Bootstrap(context.Background(), minimalConfig(), mods...)
+	d, err := Bootstrap(context.Background(), minimalConfig(), WithModules(mods...))
 	if !errors.Is(err, cause) || !strings.Contains(err.Error(), "close failed") {
 		t.Fatalf("the cause and the rollback errors must be joined: %v", err)
 	}
@@ -85,9 +85,9 @@ func TestFailedStartLogsAndRollsBackEarlierModules(t *testing.T) {
 // The failing module can be told from the error, whose text stays the cause's.
 func TestStartFailureNamesTheModule(t *testing.T) {
 	boom := errors.New("boom")
-	_, err := Bootstrap(context.Background(), minimalConfig(), Module{ID: "bad", Init: func(context.Context, config.Config, *module.Scope) (module.Hooks, error) {
+	_, err := Bootstrap(context.Background(), minimalConfig(), WithModules(Module{ID: "bad", Init: func(context.Context, config.Config, *module.Scope) (module.Hooks, error) {
 		return module.Hooks{}, boom
-	}})
+	}}))
 	var init *module.InitError
 	if !errors.Is(err, boom) || !errors.As(err, &init) || init.Module != "bad" {
 		t.Fatalf("err = %v", err)
@@ -106,7 +106,7 @@ func TestDisabledDependencyFailsBeforeAnythingStarts(t *testing.T) {
 			return module.Hooks{}, nil
 		},
 	}
-	_, err := Bootstrap(context.Background(), minimalConfig(), consumer)
+	_, err := Bootstrap(context.Background(), minimalConfig(), WithModules(consumer))
 	if !errors.Is(err, module.ErrDisabledDependency) {
 		t.Fatalf("err = %v", err)
 	}
@@ -136,7 +136,7 @@ func TestExtraModuleReceivesTheProvidedResource(t *testing.T) {
 	cache.ApplyDefaults(&cfg.Cache)
 	var got *cache.Cache
 	out := module.NewCapability[string]("report")
-	d, err := Bootstrap(context.Background(), cfg, Module{
+	d, err := Bootstrap(context.Background(), cfg, WithModules(Module{
 		ID:       "consumer",
 		Provides: []module.CapabilityID{out.ID()},
 		Requires: caps(CapCache.ID()),
@@ -145,7 +145,7 @@ func TestExtraModuleReceivesTheProvidedResource(t *testing.T) {
 			module.Provide(s, out, "done")
 			return module.Hooks{}, nil
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestBuiltinOrder(t *testing.T) {
 	cfg.Database.Enabled = true
 	cfg.JOSE.Enabled = true
 	cfg.Cache.Enabled = true
-	plan, err := module.Resolve(cfg, builtinModules())
+	plan, err := module.Resolve(cfg, builtinModules(false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,10 +187,10 @@ func TestBootstrapContext(t *testing.T) {
 
 	ctx, cancel = context.WithCancel(context.Background())
 	var moduleCtx context.Context
-	d, err := Bootstrap(ctx, minimalConfig(), Module{ID: "bg", Init: func(c context.Context, _ config.Config, _ *module.Scope) (module.Hooks, error) {
+	d, err := Bootstrap(ctx, minimalConfig(), WithModules(Module{ID: "bg", Init: func(c context.Context, _ config.Config, _ *module.Scope) (module.Hooks, error) {
 		moduleCtx = c
 		return module.Hooks{}, nil
-	}})
+	}}))
 	if err != nil {
 		t.Fatal(err)
 	}

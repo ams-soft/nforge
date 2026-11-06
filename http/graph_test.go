@@ -46,7 +46,7 @@ func keepDefaultCodec(t *testing.T) {
 func graphServer(t *testing.T, cfg config.Config, extra ...deps.Module) *ServerHttp {
 	t.Helper()
 	keepDefaultCodec(t)
-	d, err := deps.Bootstrap(context.Background(), cfg, extra...)
+	d, err := deps.Bootstrap(context.Background(), cfg, deps.WithModules(extra...))
 	if err != nil {
 		t.Fatal(err)
 	}

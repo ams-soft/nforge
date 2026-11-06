@@ -69,7 +69,7 @@ func Find(w stdhttp.ResponseWriter) *Writer {
 // message. On success with a body and a declared response, the message is
 // converted to the response type and validated; an error here is a handler
 // bug (500).
-func (c *Writer) Result(format string, resType reflect.Type) (int, any, error) {
+func (c *Writer) Result(registry *codec.Registry, format string, resType reflect.Type) (int, any, error) {
 	status := c.status
 	if status == 0 {
 		status = stdhttp.StatusOK
@@ -81,11 +81,11 @@ func (c *Writer) Result(format string, resType reflect.Type) (int, any, error) {
 		var decoded any
 		if success && resType != nil {
 			ptr := reflect.New(resType)
-			if err := codec.Default().DecodeAs(format, c.buf.Bytes(), ptr.Interface()); err != nil {
+			if err := registry.DecodeAs(format, c.buf.Bytes(), ptr.Interface()); err != nil {
 				return 0, nil, err
 			}
 			decoded = ptr.Interface()
-		} else if err := codec.Default().DecodeAs(format, c.buf.Bytes(), &decoded); err != nil {
+		} else if err := registry.DecodeAs(format, c.buf.Bytes(), &decoded); err != nil {
 			decoded = c.buf.String()
 		}
 		message = decoded
@@ -93,18 +93,17 @@ func (c *Writer) Result(format string, resType reflect.Type) (int, any, error) {
 	if !success || resType == nil {
 		return status, message, nil
 	}
-	v, err := conform(format, message, resType)
+	v, err := conform(registry, format, message, resType)
 	return status, v, err
 }
 
 // conform converts message to resType (directly, if it already is that type
 // or a pointer to it; otherwise by encode/decode in the route's codec, which
 // checks the types) and runs the required fields and validation.
-func conform(format string, message any, resType reflect.Type) (any, error) {
+func conform(registry *codec.Registry, format string, message any, resType reflect.Type) (any, error) {
 	if message == nil {
 		return nil, fmt.Errorf("nhttp: empty response, expected %s", resType)
 	}
-	registry := codec.Default()
 	mv := reflect.ValueOf(message)
 	var ptr reflect.Value
 	switch {

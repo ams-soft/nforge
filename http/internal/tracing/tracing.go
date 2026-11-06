@@ -10,6 +10,7 @@ import (
 	"github.com/ams-soft/nforge/telemetry"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -26,11 +27,16 @@ import (
 // trace id: every request starts its own trace, so a caller cannot force
 // sampling, join someone else's trace or inject baggage.
 func Middleware(o Options) func(stdhttp.Handler) stdhttp.Handler {
-	otelMw := otelhttp.NewMiddleware("http.server",
-		otelhttp.WithSpanNameFormatter(func(_ string, r *stdhttp.Request) string {
-			return r.Method
-		}),
-	)
+	otelOpts := []otelhttp.Option{otelhttp.WithSpanNameFormatter(func(_ string, r *stdhttp.Request) string {
+		return r.Method
+	})}
+	if o.TracerProvider != nil {
+		otelOpts = append(otelOpts, otelhttp.WithTracerProvider(o.TracerProvider))
+	}
+	if o.Propagators != nil {
+		otelOpts = append(otelOpts, otelhttp.WithPropagators(o.Propagators))
+	}
+	otelMw := otelhttp.NewMiddleware("http.server", otelOpts...)
 	adopt := traceIDFromRequestID
 	if !o.TrustIncoming {
 		adopt = dropIncomingContext
@@ -61,6 +67,10 @@ type Options struct {
 	// TrustIncoming continues a received traceparent, adopts a valid
 	// X-Request-Id as the trace id and keeps received baggage.
 	TrustIncoming bool
+	// TracerProvider and Propagators replace the process-wide OTel state. Nil
+	// keeps it.
+	TracerProvider trace.TracerProvider
+	Propagators    propagation.TextMapPropagator
 }
 
 // dropIncomingContext removes the caller's trace context before the span is

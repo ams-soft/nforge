@@ -10,6 +10,7 @@ Important notes for code generation:
 - `deps.NewDeps` returns `*deps.Deps` and `Deps.Logger` is a `*slog.Logger`; register your own closers with `Deps.AddShutdown`.
 - Register every route and middleware **before** the server serves its first request; go-ams-router panics afterwards.
 - Programmer errors detected at startup or route registration panic; request-time errors are returned. Startup failures of enabled modules are fatal (`os.Exit(1)`).
+- Prefer the generic route functions: `nhttp.Post(api, "/users", func(r *http.Request, u User) (User, error) {...})`, returning `nhttp.Error(404, "...")` for client errors. `TGet`/`TPost` remain for handlers that write the response themselves.
 - Everything in the codebase (comments, logs, errors, API texts, tests) is English.
 - Build with Go 1.27.2+ (the repository pins `toolchain go1.27.3`); lint with golangci-lint v2.15.0+ (older releases cannot read go1.27.2 export data) and the repo's `.golangci.yml`.
 

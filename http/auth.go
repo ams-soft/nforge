@@ -143,7 +143,7 @@ func Authenticate(service *jose.Service, profile string, opts ...AuthOption) fun
 	}
 	return func(next stdhttp.Handler) stdhttp.Handler {
 		return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-			r, ok := a.authenticate(w, r, codec.Default().DefaultFormat())
+			r, ok := a.authenticate(w, r, codec.FromContext(r.Context()).DefaultFormat())
 			if ok {
 				next.ServeHTTP(w, r)
 			}
@@ -162,7 +162,7 @@ func RequireScopes(scopes ...string) func(stdhttp.Handler) stdhttp.Handler {
 	}
 	return func(next stdhttp.Handler) stdhttp.Handler {
 		return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-			format := codec.Default().DefaultFormat()
+			format := codec.FromContext(r.Context()).DefaultFormat()
 			p, ok := PrincipalFromContext(r.Context())
 			if !ok {
 				fail(w, r, format, DefaultRealm, stdhttp.StatusUnauthorized, detailAuthRequired, "", nil)
