@@ -98,7 +98,7 @@ generics, `errors.Join`, `math/rand/v2`, `maps`/`slices` iterators.
 │   ├── server.go       # ServerHttp, NewHTTPServer, middleware loading, Start
 │   ├── transport.go    # StartContext: HTTP/HTTPS/HTTP3 listeners, redirect-only handler, Alt-Svc, shutdown
 │   ├── routes.go       # built-in routes: health/readiness, docs + OpenAPI spec, JWKS (collision check)
-│   ├── graph.go        # optional module graph page (http.routes.graph) and its Mermaid script
+│   ├── graph.go        # module graph page and its Mermaid script (build tag nforge_graph; graph_off.go without it)
 │   ├── response.go     # Send*/Parse*/ParseStatus, Envelope, ErrorTitle, SuccessResponse/ErrorResponse (aliases)
 │   ├── middleware.go   # Tracing, Logger (thin wrappers)
 │   ├── typed_route.go  # Opts, TypedRoute, TypedRouter, T*, Body/Query, request flow (wrap)
@@ -1139,13 +1139,17 @@ unquoted `1.3`, but `1.30` or `1.1` fail.
 
 ### 7.13 Module graph page (`graph.go`, `internal/graph`)
 
-Off by default: with `http.routes.graph.enabled: false` no route is registered,
-nothing is rendered and the template is not even parsed. The structural graph
-exists anyway, because the orchestrator needs it, so this is not "zero cost":
-the Mermaid bundle (about 1.5 MB) is also linked into every binary that imports
-`nhttp`, enabled or not.
+Off twice. The page and its Mermaid bundle are compiled only with
+`-tags nforge_graph`, so an ordinary binary does not carry them; enabling the route
+in a binary built without the tag panics at `NewHTTPServer`, because a route that
+silently answers 404 would hide the mistake. With the tag,
+`http.routes.graph.enabled: false` registers nothing and does not even parse the
+template, but the bundle is linked (about 2.2 MB). The structural graph exists in
+every case, because the orchestrator needs it: `Deps.Graph` and
+`Deps.ModuleStatus` work without the tag.
 
 ```yaml
+# go build -tags nforge_graph ./...
 http:
   routes:
     graph: { enabled: true }                 # GET /graph
@@ -1975,6 +1979,8 @@ go run ./_examples/jose -config _examples/jose/config.yaml
 go run ./_examples/cache -config _examples/cache/config.yaml [-envfile _examples/cache/standalone.env]
 go run ./_examples/database -config _examples/database/config.yaml [-envfile _examples/database/rls.env]
 make dev                                                  # air: hot reload of _examples/basic (needs PostgreSQL)
+make run-graph                                            # basic with -tags nforge_graph and /graph on (needs PostgreSQL)
+make run-graph-standalone                                 # the same without Docker
 ```
 Then `http://localhost:8080/docs`; Grafana at `http://localhost:3000`.
 
@@ -1985,6 +1991,7 @@ Then `http://localhost:8080/docs`; Grafana at `http://localhost:3000`.
 ```bash
 go build ./...
 go vet ./...
+go test -tags nforge_graph ./http/...   # the module graph page, compiled only with this tag
 go test ./...                    # unit tests (cache, codec, config, crypto, database, deps, helper, http, jose)
 go test -race ./...
 
@@ -2221,7 +2228,7 @@ algorithm/kid/typ, boundaries), not only round trips.
     (`config.Load` already refused it).
 32. **`module.Lookup` panics on an undeclared capability**: add it to `Requires`
     or `Optional`, or the graph would not show the dependency.
-33. **`/graph` needs a `Deps` from `Bootstrap`/`NewDeps`**: a `Deps` built by hand
+33. **`/graph` needs `-tags nforge_graph` and a `Deps` from `Bootstrap`/`NewDeps`**: without the tag, enabling the route panics at `NewHTTPServer`: a `Deps` built by hand
     (tests) with the route enabled panics at `NewHTTPServer`.
 34. **`codec`'s default is global**: every bootstrap replaces it, so a test that
     calls `Bootstrap` in a package that relies on the permissive default must

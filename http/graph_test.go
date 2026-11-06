@@ -1,3 +1,5 @@
+//go:build nforge_graph
+
 package nhttp
 
 import (

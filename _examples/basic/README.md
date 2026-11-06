@@ -59,9 +59,17 @@ curl -s -X POST localhost:8080/db/notes -H 'Content-Type: application/json' -d '
 curl -s localhost:8080/db/notes
 ```
 
-The module graph page is off in `config.yaml`. Turn it on for one run with an env
-file holding `HTTP_ROUTES_GRAPH_ENABLED=true`, or set `http.routes.graph.enabled:
-true`, and open <http://localhost:8080/graph>. It is public and shows the module
+The module graph page is off in `config.yaml` and is compiled only with
+`-tags nforge_graph`. From the repository root, with the env files of this
+example:
+
+```bash
+go run -tags nforge_graph ./_examples/basic -config _examples/basic/config.yaml -envfile _examples/basic/graph.env
+# without Docker:
+go run -tags nforge_graph ./_examples/basic -config _examples/basic/config.yaml -envfile _examples/basic/graph-standalone.env
+```
+
+Then open <http://localhost:8080/graph>. It is public and shows the module
 topology, so in a real deployment restrict the path at the gateway.
 
 Every response uses the standard envelope:

@@ -97,8 +97,8 @@ logging:
       enabled: true
 ```
 
-`http.routes.graph` (off by default) adds a page with the module graph, as a
-diagram, Mermaid source and JSON. It is public and exposes your topology: keep it
+`http.routes.graph` (off by default, built with `-tags nforge_graph`) adds a page
+with the module graph, as a diagram, Mermaid source and JSON. It is public and exposes your topology: keep it
 behind the gateway or a private network. In `env: prd` it logs a warning, which
 protects nothing by itself.
 
