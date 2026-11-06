@@ -81,7 +81,8 @@ generics, `errors.Join`, `math/rand/v2`, `maps`/`slices` iterators.
 ├── CHANGELOG.md        # release notes, one section per tag
 ├── .golangci.yml       # golangci-lint v2 configuration (§15)
 ├── config/             # app configuration: types, loading, env file, defaults, validation, ByteSize
-├── deps/               # dependency container (Deps) + bootstrap (NewDeps) + LIFO shutdown
+├── module/             # neutral module core: Resolve (graph, no I/O), Plan.Start, Runtime (status, shutdown), Scope; stdlib only
+├── deps/               # dependency container (Deps), Bootstrap/NewDeps, built-in module descriptors (modules.go)
 ├── logs/               # slog setup: terminal (tint) + OTel handlers, multi/leveled/context handlers
 ├── telemetry/          # OTel resource, TracerProvider setup, custom trace-id generator
 ├── codec/              # multi-format encode/decode (JSON, CBOR, XML) + Registry
@@ -97,6 +98,7 @@ generics, `errors.Join`, `math/rand/v2`, `maps`/`slices` iterators.
 │   ├── server.go       # ServerHttp, NewHTTPServer, middleware loading, Start
 │   ├── transport.go    # StartContext: HTTP/HTTPS/HTTP3 listeners, redirect-only handler, Alt-Svc, shutdown
 │   ├── routes.go       # built-in routes: health/readiness, docs + OpenAPI spec, JWKS (collision check)
+│   ├── graph.go        # optional module graph page (http.routes.graph) and its Mermaid script
 │   ├── response.go     # Send*/Parse*/ParseStatus, Envelope, ErrorTitle, SuccessResponse/ErrorResponse (aliases)
 │   ├── middleware.go   # Tracing, Logger (thin wrappers)
 │   ├── typed_route.go  # Opts, TypedRoute, TypedRouter, T*, Body/Query, request flow (wrap)
@@ -108,6 +110,7 @@ generics, `errors.Join`, `math/rand/v2`, `maps`/`slices` iterators.
 │       ├── capture/    # capture.Writer handed to typed handlers + response conforming
 │       ├── query/      # typed query string model and decoding
 │       ├── openapi/    # OpenAPI 3.1 builder, schemas, docs page (embedded docs.html)
+│       ├── graph/      # graph Document (the canonical form), JSON, Mermaid, page.html, embedded Mermaid bundle
 │       ├── authn/      # bearer transport, WWW-Authenticate challenge, scope/realm/header syntax
 │       ├── jwks/       # JWKS handler (GET/HEAD, ETag, 304)
 │       ├── tracing/    # Tracing middleware + request_id = trace_id
@@ -144,6 +147,7 @@ Notes:
 
 ```
 nforge (root) ───────────────────────────────┐
+module    (no internal deps; stdlib only)    │
 database  (no internal deps)                 │
 codec     (no internal deps)                 │
 jose      (no internal deps; go-jose/v4 behind unexported adapters)
@@ -153,11 +157,11 @@ helper/*  (no internal deps; stdlib only)
 config ──► database, jose, cache (their Config types are embedded in config.Config)
 telemetry ──► config
 logs ──► config, telemetry, go-ams-router/middleware (GetRequestID)
-deps ──► nforge, config, codec, database, jose, cache, logs, telemetry
-nhttp ──► config, database, deps, codec, jose, cache (tests), telemetry, go-ams-router, quic-go (http3)
+deps ──► nforge, module, config, codec, database, jose, cache, logs, telemetry
+nhttp ──► config, database, deps, module, codec, jose, cache (tests), telemetry, go-ams-router, quic-go (http3)
 ```
 
-Keep it acyclic. `database`, `codec`, `jose`, `ncrypto` and `helper/*` must stay free of internal
+Keep it acyclic. `module`, `database`, `codec`, `jose`, `ncrypto` and `helper/*` must stay free of internal
 imports (they are reusable standalone); `cache` may only import `codec`.
 `config` may only depend on `database`, `jose` and `cache` (for their
 standalone config types). A package may import its own `internal/`
@@ -183,43 +187,82 @@ if err := server.Start(); err != nil {    // 6. blocks until SIGINT/SIGTERM
 }
 ```
 
-### 3.1 `deps.NewDeps(cfg)` — order matters
+### 3.1 `deps.NewDeps(cfg)` — the module graph
 
-1. **Logger** (`setupLogger`): if terminal or OTel logging is enabled,
-   `logs.Setup` builds the logger and registers its shutdown; then, if
-   `cfg.IsTracingEnabled()`, `telemetry.SetupTracing` registers the global
-   TracerProvider and its shutdown. Otherwise a **no-op logger**
-   (`slog.DiscardHandler`). Logger or tracing failure → startup error
+`deps` is an orchestrator: it holds no `switch` per resource. Each module is a
+`module.Module[config.Config]` descriptor (`deps/modules.go`) with an `ID`,
+`Provides`, `Enabled(cfg)`, `Requires(cfg)`, `Optional(cfg)` and `Init`, which
+returns `module.Hooks{Ready, Shutdown}`. `NewDeps`/`NewDepsE` call
+`deps.Bootstrap(ctx, cfg, extra...)`:
+
+1. `module.Resolve` validates the whole graph **before anything starts** and does
+   no I/O: duplicate IDs, two enabled providers of a capability, a required
+   capability that is missing or whose provider is disabled, cycles. Failure is
+   `unable to resolve modules: ...` with `errors.Is` on `module.ErrDuplicateModule`,
+   `ErrAmbiguousProvider`, `ErrMissingDependency`, `ErrDisabledDependency`,
+   `ErrCycle` or `ErrInvalidModule`. A module is **never enabled implicitly**.
+2. The start order is topological; ties go by registration order, so one config
+   gives one plan. `builtinModules` is ordered to keep the sequence below. The
+   plan is immutable, resolved once per bootstrap, whether or not `/graph` is on.
+3. `Plan.Start` runs each `Init`. On failure it cancels the start context, calls
+   `OnFailure` (the fatal log, while the logger still works), shuts down what had
+   started in reverse order with its own 5 s timeout and returns the
+   `*module.InitError` joined with the rollback errors; `Bootstrap` returns the
+   zero `Deps`. `Init` must release what it created before returning an error.
+4. `Bootstrap` copies the published values into the `Deps` fields and registers
+   the one closer `Runtime.Shutdown` in `Aux`.
+
+Rules for descriptors: `Init` reads only what the module declared
+(`module.Require`/`module.Lookup`; anything else panics, so the graph stays true)
+and must publish everything in `Provides` (`module.Provide`; `ErrNotProvided`
+otherwise). A consumer shares the provider's resource and never closes it.
+Applications may pass their own modules to `deps.Bootstrap`, name the exported
+capabilities (`deps.CapDatabase`, `CapCache`, ...) and read their own with
+`deps.Value`. `Bootstrap`'s ctx only bounds the start; `Deps.Shutdown` stops.
+
+`crypto` and `helper/*` have no lifecycle and are not modules. The `http` node is
+**passive** (no `Init`): `ServerHttp` owns the listeners and calls `Deps.Shutdown`
+once, so there is a single sequencer. It requires logger and codec, plus jose when
+`http.auth.default_profile` is set, and optionally uses the rest.
+
+The sequence, one step per module (`logger`, `tracing`, `startup-report`,
+`codec`, `database`, `jose`, `cache`, `http`):
+
+1. **Logger** (`initLogger`): `logs.Setup` when terminal or OTel logging is
+   enabled, otherwise a **no-op logger** (`slog.DiscardHandler`). **Tracing**
+   (`initTracing`, enabled by `cfg.IsTracingEnabled()`): `telemetry.SetupTracing`
+   registers the global TracerProvider. Failure of either → startup error
    (see below).
-2. **Banner**: if `http.server.header: true`, logs
-   `***** AMS SOFT nForge v<ver>: <APP> v<appver> *****`.
-3. **Codec** (`setupCodec`): builds a `codec.Registry` from `cfg.Codec` and
+2. **Startup report**: if `http.server.header: true`, logs
+   `***** AMS SOFT nForge v<ver>: <APP> v<appver> *****`, then the config warnings.
+3. **Codec** (`initCodec`): builds a `codec.Registry` from `cfg.Codec` and
    installs it as the process default with `codec.SetDefault` (the HTTP
    helpers always use `codec.Default()`). Failure → startup error.
-4. **Database** (`setupDatabase`): only if `database.enabled: true`. Opens the
+4. **Database** (`initDatabase`): only if `database.enabled: true`. Opens the
    pool with a 15 s startup timeout and a ping; failure → startup error (the app
    never starts without its database). With `database.tenancy.enabled` the
    startup also runs `CheckTenancy` (§9.1), whose failure is fatal too.
-   Registers `db.Shutdown`.
-5. **JOSE** (`setupJOSE`): only if `jose.enabled: true`. `jose.New` with a
+5. **JOSE** (`initJOSE`): only if `jose.enabled: true`. `jose.New` with a
    15 s startup timeout reads and validates every key source; failure →
    `unable to setup jose` startup error (the error is already
    sanitized: no key paths or material). Logs `[JOSEModule] JOSE setup
    completed` with `Config.LogValue` (counts and profile names only).
-   Registers `service.Shutdown`.
-6. **Cache** (`setupCache`): only if `cache.enabled: true`. `cache.Open`
+6. **Cache** (`initCache`): only if `cache.enabled: true`. `cache.Open`
    with a 15 s startup timeout, `WithCodecRegistry(d.Codec)`,
-   `WithNamespace(cfg.Env, cfg.App.Name)`, `WithLogger(&d.Logger)` and, when
+   `WithNamespace(cfg.Env, cfg.App.Name)`, `WithLogger` and, when
    `database.tenancy.enabled`, `WithTenantResolver` bound to
    `database.TenantFromContext` (§11.4). The startup ping must pass (Redis
    down → `unable to setup cache` startup error; `Open` has
    already released its resources). Logs `[CacheModule] Cache setup
-   completed` with `cache.Config.LogValue`. Registers `Cache.Shutdown`.
+   completed` with `cache.Config.LogValue`. The database is an optional
+   dependency, which only orders the two: the cache closes first.
 
 `Deps` fields: `Context` (background), `Config` (value copy), `Logger`
 (`slog.Logger` **value**, take `&deps.Logger`), `Codec`, `DB` (**nil when the
 database is disabled**), `JOSE` (**nil when jose is disabled**), `Cache`
 (**nil when the cache is disabled**), `Aux` (shutdown funcs).
+`Deps.Graph()` returns the resolved structure and `Deps.ModuleStatus(ctx)` probes
+the modules (`ok` false / nil for a `Deps` not built by `Bootstrap`).
 `Deps.CheckJOSE(ctx)` returns `deps.ErrJOSEDisabled` when nil, else
 `Service.Check` (no I/O, no crypto). `Deps.PingCache(ctx)` returns
 `deps.ErrCacheDisabled` when nil, else `Cache.Ping`. `Deps.ClearAux()`
@@ -240,6 +283,9 @@ closes nothing); it exists for tests that tear modules down themselves.
   cache closes first, then JOSE, then the database, then tracing, then logs
   (so they can still log). All run even
   if one fails; errors are joined. Logs emitted after this point may be lost.
+  A hook that starts after the context ended gets its own 1 s (`shutdownGrace`),
+  so a consumer hanging until the deadline does not cost the telemetry flush;
+  `Shutdown` can therefore outlast its ctx by 1 s per remaining hook.
 - `ServerHttp.ShutdownFunc` / `AddShutdownFunc` / `Shutdown()` are a separate,
   app-level list of `func()` that the **application** calls itself (the
   example calls it only when `Start` returns an error). `Start` does not call
@@ -272,6 +318,8 @@ Built-in routes registered by `NewHTTPServer`:
   `{path}/swagger.yaml`.
 - JWKS (`jose.enabled` and `jose.jwks.enabled`): `GET`/`HEAD`
   `{jose.jwks.path}`; see §7.9.
+- Module graph (`http.routes.graph.enabled`): `GET {path}`,
+  `GET {path}/mermaid.min.js`; see §7.13.
 - Health/readiness (if either is enabled): see §7.6.
 
 ---
@@ -333,9 +381,9 @@ Built-in routes registered by `NewHTTPServer`:
    `Config.Warnings`; with `env: prd` each one is a **load error** unless its
    `prd_exceptions` key is true (`tls_key_permissions`, `redis_plaintext`,
    `database_plaintext`), in which case it stays a warning. In `prd`,
-   `http.docs`, `http.routes.health` or `http.routes.readiness` enabled is
-   only a warning (unauthenticated endpoints), silenced by
-   `app.internal_use: true`. `deps` logs config warnings at ERROR level in
+   `http.docs`, `http.routes.health`, `http.routes.readiness` or
+   `http.routes.graph` enabled is only a warning (unauthenticated endpoints),
+   silenced by `app.internal_use: true`. `deps` logs config warnings at ERROR level in
    `prd`, because that environment filters the log below ERROR.
    `codec.max_payload_bytes` must be at
    most 256 MiB.
@@ -392,6 +440,7 @@ http:
   routes:
     health:    { enabled: false, path: /health }   # path defaults only when enabled
     readiness: { enabled: false, path: /ready }
+    graph:     { enabled: false, path: /graph }    # module graph page, §7.13; literal path, also serves {path}/mermaid.min.js
   auth:                       # bearer auth of private typed routes; see §7.9
     default_profile: ""       # jwt profile for IsPrivate routes without AuthProfile; requires jose.enabled
     realm: nforge-api         # WWW-Authenticate realm; printable ASCII, no quotes/backslashes
@@ -1087,6 +1136,60 @@ unquoted `1.3`, but `1.30` or `1.1` fail.
   `HTTP_SERVER_HTTP3_ENABLED`, `HTTP_SERVER_HTTP3_PORT`,
   `HTTP_SERVER_HTTP3_ADVERTISE=false`, … (`*bool` keeps an explicit false).
 - Runnable demo: `_examples/basic/config.https-http3.yaml` (§14).
+
+### 7.13 Module graph page (`graph.go`, `internal/graph`)
+
+Off by default: with `http.routes.graph.enabled: false` no route is registered,
+nothing is rendered and the template is not even parsed. The structural graph
+exists anyway, because the orchestrator needs it, so this is not "zero cost":
+the Mermaid bundle (about 1.5 MB) is also linked into every binary that imports
+`nhttp`, enabled or not.
+
+```yaml
+http:
+  routes:
+    graph: { enabled: true }                 # GET /graph
+    # graph: { enabled: true, path: /internal/graph }
+```
+
+`GET {path}` returns one self-contained HTML page with three tabs: **Visual**
+(Mermaid rendered in the browser), **Mermaid JS** (the source) and **JSON**.
+`graph.Document` is the one canonical form: the JSON is its encoding and the
+Mermaid source is derived from it. Layout (`schema_version` 1): `generated_at`,
+`modules[]` (`id`, `enabled`, `provides`, `dependencies`,
+`optional_dependencies`, `startup_order`, 0 when disabled), `edges[]` (`from`,
+`to`, `capability`, `required`), `operational_status[]` (`id`, `initialization`:
+`pending|started|failed|stopped|disabled`, `status`: `ready|not_ready|disabled`).
+An arrow points from a consumer to its dependency; dotted means optional.
+
+- A graph that does not resolve stops the bootstrap, so the page never shows an
+  invalid graph as a healthy application.
+- The state is sampled at most every 5 s (`graphStatusTTL`) with a 2 s budget and
+  one probe at a time, so a burst of requests costs one probe per dependency. A
+  module with a `Ready` hook is probed (database and cache really ping); a
+  failure is shown as `not_ready` and logged as WARN with the module ID only.
+- Mermaid (`graph.MermaidVersion`, MIT) is embedded gzipped and served from
+  `{path}/mermaid.min.js`: no CDN. To update it, replace
+  `assets/mermaid.min.js.gz` (`gzip -9 -n` of npm `dist/mermaid.min.js`) and the
+  constant together, and open the page in a browser with the console open.
+- The page always gets its own policy, replacing `http.security`'s:
+  `default-src 'none'`, scripts by per-render nonce only, no remote origin,
+  `frame-ancestors 'none'`. `style-src 'unsafe-inline'` is needed because Mermaid
+  writes styles into the SVG. `securityLevel: 'strict'`; data reaches the script
+  through the DOM, never interpolated into JavaScript.
+- Only module IDs, capability names and states are output: no config values,
+  DSNs, addresses or error text. IDs are limited by `module.validID`, the plan to
+  256 modules and each render to 1 MiB (`graph.ErrTooLarge`).
+- `{path}/mermaid.min.js` is 1.5 MB per uncached response: a public page is also a
+  cheap way to spend the server's bandwidth, one more reason to restrict the path.
+- **Exposure**: the page is public and shows the topology. `env: prd` logs one
+  warning per bootstrap (at ERROR, like every config warning there, because prd
+  filters below it) unless `app.internal_use: true`, and does not stop the
+  startup. **The warning is not access control**: restrict the path at the
+  gateway or by network, or wrap it with a global middleware of your own.
+- `config.ValidateGraphRoute` runs at load and at registration: a literal path
+  only, no collision with docs, health, readiness or JWKS. A collision with an
+  application route is the router's registration panic.
 
 ---
 
@@ -1896,9 +1999,14 @@ for f in FuzzValidateJWT FuzzStrictJSON FuzzParseCompact FuzzKeyImport; do
 # codec: streaming JSON presence check vs the tree reference (run after any
 # change to codec/presence*.go):
 go test ./codec -run '^$' -fuzz '^FuzzPresenceJSON$' -fuzztime 60s
+# codec: hostile XML and CBOR through a strict registry:
+go test ./codec -run '^$' -fuzz '^FuzzDecodeXML$' -fuzztime 60s
+go test ./codec -run '^$' -fuzz '^FuzzDecodeCBOR$' -fuzztime 60s
 go test ./jose -run '^$' -bench . -benchmem
 
 govulncheck ./...                # required before changing security dependencies
+gosec ./...                      # must be built with this Go: an older build cannot read the export data,
+                                 # reports "could not import" and silently analyzes much less
 
 # golangci-lint v2.15.0+ with the repo's .golangci.yml; older releases
 # (v2.13.x) cannot read go1.27.2 export data and fail every package with
@@ -1910,6 +2018,9 @@ golangci-lint run ./... $EXAMPLES
 # tenancy tests create/drop a role, so the URL's user must be able to CREATE ROLE:
 NFORGE_TEST_DATABASE_URL='postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable' \
   go test -tags integration ./database/...
+# module lifecycle against the real services (rollback and shutdown are checked
+# from pg_stat_activity); needs both URLs below:
+NFORGE_TEST_DATABASE_URL=... NFORGE_TEST_REDIS_URL=... go test -race -tags integration ./deps/
 
 # cache integration tests against a DISPOSABLE Redis (unique prefixes, only
 # their own keys are deleted, never FLUSHDB):
@@ -2004,6 +2115,9 @@ algorithm/kid/typ, boundaries), not only round trips.
 - Files `database.md`, `cache.md`, `encoder.md` (if present) are temporary
   design specs slated for deletion: don't update or rely on them; the code
   and this file are the reference.
+- Never compile a regexp or parse a template at package init in a package that
+  every binary links, for a feature that is off by default: it was measured as
+  the main cost of the bootstrap. Parse on first use.
 - Update this AGENTS.md whenever you change architecture, config schema,
   public API, or a behavior described here — and `llms.txt` and the
   affected `README.md` files in the same change.
@@ -2101,7 +2215,18 @@ algorithm/kid/typ, boundaries), not only round trips.
 30. **The example certificate is public**: `_examples/basic/certs/localhost.key`
     is committed on purpose. Never deploy or trust it; the framework has no
     default certificate.
-31. **`codec` needs the `jsonv2` Go experiment**: it imports
+31. **A module that needs a disabled one fails the bootstrap** with
+    `module.ErrDisabledDependency`; it is never switched on for you. A hand-built
+    `Config` with `http.auth.default_profile` and jose off fails the same way
+    (`config.Load` already refused it).
+32. **`module.Lookup` panics on an undeclared capability**: add it to `Requires`
+    or `Optional`, or the graph would not show the dependency.
+33. **`/graph` needs a `Deps` from `Bootstrap`/`NewDeps`**: a `Deps` built by hand
+    (tests) with the route enabled panics at `NewHTTPServer`.
+34. **`codec`'s default is global**: every bootstrap replaces it, so a test that
+    calls `Bootstrap` in a package that relies on the permissive default must
+    restore it (`http/graph_test.go` `keepDefaultCodec`).
+35. **`codec` needs the `jsonv2` Go experiment**: it imports
     `encoding/json/jsontext` (the presence walker). Go 1.27 enables it by
     default; `GOEXPERIMENT=nojsonv2` makes `go build ./codec` fail with
     "build constraints exclude all Go files".

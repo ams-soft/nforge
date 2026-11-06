@@ -157,6 +157,9 @@ func feedRoutesDefaults(cfg *Config) {
 			cfg.HTTP.Routes.Readiness.Path = "/ready"
 		}
 	}
+	if cfg.HTTP.Routes.Graph.Enabled && cfg.HTTP.Routes.Graph.Path == "" {
+		cfg.HTTP.Routes.Graph.Path = DefaultGraphPath
+	}
 }
 
 func feedDocsDefaults(cfg *Config) {
@@ -211,6 +214,9 @@ func validateRequiredConfig(cfg *Config) (bool, error) {
 	}
 	if r := cfg.Tracing.Otel.Ratio(); r < 0 || r > 1 || math.IsNaN(r) {
 		return false, fmt.Errorf("tracing.otel.sample_ratio must be between 0 and 1, got %v", r)
+	}
+	if err := ValidateGraphRoute(cfg); err != nil {
+		return false, err
 	}
 	if err := validateAuth(cfg); err != nil {
 		return false, err

@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// TestImportGraph keeps jose, crypto and the helpers standalone (no internal nForge imports), cache
+// TestImportGraph keeps jose, module, crypto and the helpers standalone (no internal nForge imports), cache
 // limited to codec, and config limited to its standalone config dependencies.
 // A package may always import its own internal/ subpackages, and those follow
 // the rules of their parent.
@@ -56,6 +56,7 @@ func TestImportGraph(t *testing.T) {
 	check("../cache", "github.com/ams-soft/nforge/codec")
 	check("../database")
 	check("../codec")
+	check("../module")
 	check("../crypto")
 	check("../helper/safecalc")
 }

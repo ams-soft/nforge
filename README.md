@@ -31,13 +31,13 @@ _ = server.Start()                 // graceful shutdown on SIGINT/SIGTERM
 | Logging | `logs` | `log/slog` to the terminal (tint) and/or OpenTelemetry (OTLP), `request_id` on every record |
 | Tracing | `telemetry` | OpenTelemetry spans per request, with `request_id == trace_id` |
 | Codec | `codec` | JSON, CBOR and XML from **one struct**: required fields, strict mode, payload limits, XXE protection, `Validate()` |
-| HTTP | `http` (`nhttp`) | Plain HTTP, opt-in **HTTPS** (TLS 1.3) and **HTTP/3**, a standard response envelope, **typed routes** validated before and after the handler, typed query strings, **OpenAPI 3.1** docs, health/readiness |
+| HTTP | `http` (`nhttp`) | Plain HTTP, opt-in **HTTPS** (TLS 1.3) and **HTTP/3**, a standard response envelope, **typed routes** validated before and after the handler, typed query strings, **OpenAPI 3.1** docs, health/readiness, an optional module graph page |
 | Database | `database` | PostgreSQL with pgx + Squirrel, transactions, **multi-tenancy** by tenant column or Row-Level Security |
 | JOSE | `jose` | JWT, JWS and JWE through explicit profiles, bearer authentication with scopes, JWKS, key rotation |
 | Cache | `cache` | Redis or a bounded in-process LRU behind one API: objects, bytes, counters, TTLs, NX, cache-aside `GetOrLoad`, tenant namespaces |
 | Crypto | `crypto` (`ncrypto`) | Standalone primitives, no config: XChaCha20-Poly1305 and AES-256-GCM encryption, HMAC-SHA256, bcrypt/Argon2id password hashing, BLAKE3/SHA-256, secure random values and ULIDs |
 | Helpers | `helper/safecalc` | Money as integer cents: exact formatting (BRL by default, any separators), float input rounded half-to-even |
-| Bootstrap | `deps` | Builds every module from the config and shuts them down in reverse order |
+| Bootstrap | `deps`, `module` | Resolves the module graph before anything starts (a required module that is disabled is an error, never switched on for you), starts it in order, rolls back on failure and shuts down in reverse |
 
 Security defaults stay on: HTTP server timeouts (no Slowloris), DTD/XXE
 blocked, payload limits, a restricted
@@ -96,6 +96,11 @@ logging:
     terminal:
       enabled: true
 ```
+
+`http.routes.graph` (off by default) adds a page with the module graph, as a
+diagram, Mermaid source and JSON. It is public and exposes your topology: keep it
+behind the gateway or a private network. In `env: prd` it logs a warning, which
+protects nothing by itself.
 
 `http.server.port` is optional: omitted, the server listens on plain HTTP
 `:8080`. Modules such as `database`, `jose` and `cache` are off until enabled. The full

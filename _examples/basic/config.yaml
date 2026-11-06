@@ -49,6 +49,9 @@ http:
       enabled: true # default: false
     readiness:
       enabled: true # default: false; reports the cache (and the database when on)
+    graph: # module graph page at /graph (diagram, Mermaid, JSON)
+      enabled: false # default: false; true serves it. Public: restrict it at the gateway
+      # path: /internal/graph # default: /graph
   auth: # bearer authentication of private typed routes (Opts.IsPrivate)
     default_profile: access # jwt profile used when a private route has no Opts.AuthProfile
 
