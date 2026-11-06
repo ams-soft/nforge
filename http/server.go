@@ -24,7 +24,7 @@ type ServerHttp struct {
 	TypedRoutes []TypedRoute
 
 	specs specCache
-	graph graphPage
+	graph graphPage //nolint:unused // used by graph.go, which only the nforge_graph build compiles
 }
 
 func NewHTTPServer(deps deps.Deps) *ServerHttp {

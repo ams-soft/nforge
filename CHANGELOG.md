@@ -13,8 +13,10 @@ All notable changes to nForge are documented here. The format follows
   lifecycle (rollback, reverse shutdown, status).
 - `deps.Bootstrap(ctx, cfg, extra...)`, exported capabilities (`deps.CapDatabase`,
   `CapCache`, ...), `deps.Value`, `Deps.Graph` and `Deps.ModuleStatus`.
-- `http.routes.graph`, off by default: an HTML page with the module graph in three
-  tabs (Visual, Mermaid JS, JSON). Mermaid is embedded, nothing loads from a CDN.
+- `http.routes.graph`, off by default and compiled only with `-tags nforge_graph`:
+  an HTML page with the module graph in three tabs (Visual, Mermaid JS, JSON).
+  Mermaid is embedded, nothing loads from a CDN. Enabling it in a binary built
+  without the tag panics at startup.
   The page is **public** and exposes the topology: `env: prd` warns once per
   bootstrap, and the warning is not access control. Restrict the path at the
   gateway. See `AGENTS.md` §7.13.
@@ -28,8 +30,6 @@ All notable changes to nForge are documented here. The format follows
 - A `Config` built by hand with `http.auth.default_profile` and jose disabled now
   fails at bootstrap instead of panicking when a private route is registered.
   `config.Load` already refused it.
-- Every binary importing `nhttp` grows by about 2.2 MB (the Mermaid bundle), even
-  with the route disabled.
 
 ### Fixed
 
