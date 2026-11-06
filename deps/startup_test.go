@@ -74,8 +74,8 @@ func TestFailedStartLogsAndRollsBackEarlierModules(t *testing.T) {
 	if !errors.Is(err, cause) || !strings.Contains(err.Error(), "close failed") {
 		t.Fatalf("the cause and the rollback errors must be joined: %v", err)
 	}
-	if d.Aux != nil {
-		t.Fatal("a failed bootstrap returns the zero Deps")
+	if d != nil {
+		t.Fatal("a failed bootstrap returns no Deps")
 	}
 	if want := []string{"first", "log"}; !slices.Equal(closed, want) {
 		t.Fatalf("rollback order = %v, want %v", closed, want)
@@ -152,7 +152,7 @@ func TestExtraModuleReceivesTheProvidedResource(t *testing.T) {
 	if got == nil || got != d.Cache {
 		t.Fatal("the consumer must receive the instance in Deps.Cache")
 	}
-	if v, ok := Value(&d, out); !ok || v != "done" {
+	if v, ok := Value(d, out); !ok || v != "done" {
 		t.Fatalf("Value = %q %v", v, ok)
 	}
 	if err := d.Shutdown(context.Background()); err != nil {
@@ -264,11 +264,10 @@ func TestNewDepsPrintsTheFatalReasonToStderr(t *testing.T) {
 // stay quiet.
 func TestShutdownIsSafeToCallConcurrently(t *testing.T) {
 	var runs atomic.Int32
-	d := Deps{Aux: &Aux{ShutdownFuncs: []func(context.Context) error{
-		func(context.Context) error { runs.Add(1); return nil },
-		func(context.Context) error { runs.Add(1); return nil },
-		func(context.Context) error { runs.Add(1); return nil },
-	}}}
+	var d Deps
+	for range 3 {
+		d.AddShutdown(func(context.Context) error { runs.Add(1); return nil })
+	}
 	var wg sync.WaitGroup
 	for range 16 {
 		wg.Go(func() { _ = d.Shutdown(context.Background()) })
@@ -277,7 +276,6 @@ func TestShutdownIsSafeToCallConcurrently(t *testing.T) {
 	if got := runs.Load(); got != 3 {
 		t.Fatalf("closers ran %d times, want exactly 3", got)
 	}
-	d.ClearAux()
 	if err := d.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}

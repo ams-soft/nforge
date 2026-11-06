@@ -7,7 +7,7 @@ Important notes for code generation:
 - Import the HTTP package as `nhttp "github.com/ams-soft/nforge/http"` and the crypto package as `ncrypto "github.com/ams-soft/nforge/crypto"`. Inside nForge, `net/http` is imported as `stdhttp`.
 - Business code never imports `encoding/json`, `encoding/xml` or a CBOR library: it goes through `codec.Default()` / `deps.Codec`. The `jose` package is the only deliberate exception (protocol JSON).
 - `deps.DB`, `deps.JOSE` and `deps.Cache` are **nil** when their module is disabled in the config. Check before use.
-- `Deps.Logger` is a `slog.Logger` value: pass `&dps.Logger`.
+- `deps.NewDeps` returns `*deps.Deps` and `Deps.Logger` is a `*slog.Logger`; register your own closers with `Deps.AddShutdown`.
 - Register every route and middleware **before** the server serves its first request; go-ams-router panics afterwards.
 - Programmer errors detected at startup or route registration panic; request-time errors are returned. Startup failures of enabled modules are fatal (`os.Exit(1)`).
 - Everything in the codebase (comments, logs, errors, API texts, tests) is English.

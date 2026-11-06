@@ -120,8 +120,8 @@ func newHarness(t *testing.T, mutate func(c *config.ServerConfig)) *harness {
 	cfg.HTTP.Server.TLS = config.ServerTLSConfig{Port: h.tls, CertFile: certFile, KeyFile: keyFile}
 	cfg.HTTP.Server.HTTP3 = config.ServerHTTP3Config{Port: h.h3}
 	mutate(&cfg.HTTP.Server)
-	d := deps.Deps{Config: cfg, Logger: *slog.New(slog.DiscardHandler), Aux: &deps.Aux{}}
-	d.Aux.ShutdownFuncs = append(d.Aux.ShutdownFuncs, func(context.Context) error { h.auxRan.Add(1); return nil })
+	d := &deps.Deps{Config: cfg, Logger: slog.New(slog.DiscardHandler)}
+	d.AddShutdown(func(context.Context) error { h.auxRan.Add(1); return nil })
 	h.s = NewHTTPServer(d)
 	h.s.Router().Get("/ping", func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		h.hits.Add(1)
@@ -208,7 +208,7 @@ func refused(port int) bool {
 }
 
 func TestZeroConfigDefaultsTo8080(t *testing.T) {
-	s := NewHTTPServer(deps.Deps{Logger: *slog.New(slog.DiscardHandler)})
+	s := NewHTTPServer(&deps.Deps{Logger: slog.New(slog.DiscardHandler)})
 	if s.Srv.Addr != ":8080" {
 		t.Fatalf("Addr = %q, want :8080", s.Srv.Addr)
 	}
@@ -420,7 +420,7 @@ func TestStartupFailuresLeaveNothingRunning(t *testing.T) {
 func TestShutdownReleasesListenersBeforeDeps(t *testing.T) {
 	h := newHarness(t, func(c *config.ServerConfig) { c.TLS.Enabled, c.HTTP3.Enabled = true, true })
 	var rebound atomic.Bool
-	h.s.Deps.Aux.ShutdownFuncs = append(h.s.Deps.Aux.ShutdownFuncs, func(context.Context) error {
+	h.s.Deps.AddShutdown(func(context.Context) error {
 		// runs first (LIFO): every port must already be free
 		ok := true
 		for _, p := range []int{h.http, h.tls} {

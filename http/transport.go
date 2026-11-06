@@ -111,7 +111,7 @@ func (s *ServerHttp) reloadOnSIGHUP(ctx context.Context, run *running) (stop fun
 // reloadCredentials re-reads the certificate files and the JOSE key files.
 // Errors are logged without paths or key material.
 func (s *ServerHttp) reloadCredentials(ctx context.Context, run *running) {
-	log := &s.Deps.Logger
+	log := s.Deps.Logger
 	for _, rl := range run.reloaders {
 		if err := rl.Reload(); err != nil {
 			log.WarnContext(ctx, "[HTTPModule] TLS certificate reload failed; keeping the previous one", "error", err)
@@ -243,7 +243,7 @@ func (s *ServerHttp) prepare(ctx context.Context, cfg config.ServerConfig) (_ *r
 			Handler:        streamTimeout(app, cfg.HTTP3.MaxStreamTimeout),
 			IdleTimeout:    cfg.IdleTimeout,
 			MaxHeaderBytes: s.Srv.MaxHeaderBytes,
-			Logger:         &s.Deps.Logger,
+			Logger:         s.Deps.Logger,
 		}
 		run.servers = append(run.servers, transport{
 			name: "http3", addr: h3Addr,

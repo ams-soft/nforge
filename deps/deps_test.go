@@ -24,10 +24,10 @@ import (
 func TestShutdownRunsLIFOAndJoinsErrors(t *testing.T) {
 	var order []string
 	errDB := errors.New("db")
-	d := Deps{Aux: &Aux{}}
-	d.addShutdownFunc(func(context.Context) error { order = append(order, "logger"); return nil })
-	d.addShutdownFunc(func(context.Context) error { order = append(order, "tracing"); return nil })
-	d.addShutdownFunc(func(context.Context) error { order = append(order, "database"); return errDB })
+	var d Deps
+	d.AddShutdown(func(context.Context) error { order = append(order, "logger"); return nil })
+	d.AddShutdown(func(context.Context) error { order = append(order, "tracing"); return nil })
+	d.AddShutdown(func(context.Context) error { order = append(order, "database"); return errDB })
 
 	err := d.Shutdown(context.Background())
 	if !errors.Is(err, errDB) {
@@ -121,7 +121,7 @@ func TestPingCacheDisabled(t *testing.T) {
 	}
 }
 
-func newCacheDeps(t *testing.T, tenancy bool) Deps {
+func newCacheDeps(t *testing.T, tenancy bool) *Deps {
 	t.Helper()
 	cfg := minimalConfig()
 	cfg.Cache = cache.Config{Enabled: true, Driver: cache.DriverMemory}

@@ -26,6 +26,13 @@ All notable changes to nForge are documented here. The format follows
 - Tests that fail when the docs cite a version other than `go.mod` or omit a
   configuration key.
 
+### Upgrading
+
+- `deps.NewDeps`, `NewDepsE` and `Bootstrap` return `*Deps`, and `NewHTTPServer` and
+  `ServerHttp.Deps` take it. Replace `dps deps.Deps` with `dps *deps.Deps`.
+- `Deps.Logger` is a `*slog.Logger`: drop the `&` from `&dps.Logger`.
+- `deps.Aux` and `Deps.ClearAux` are gone. Register closers with `Deps.AddShutdown`.
+
 ### Changed
 
 - `llms.txt` is now an index; `AGENTS.md` is the only reference.

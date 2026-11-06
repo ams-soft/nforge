@@ -250,7 +250,7 @@ func (s *ServerHttp) routeAuth(method, path string, o Opts) (*authenticator, str
 	if realm == "" {
 		realm = DefaultRealm
 	}
-	logger := func() *slog.Logger { return &s.Deps.Logger }
+	logger := func() *slog.Logger { return s.Deps.Logger }
 	auth, err := newAuthenticator(s.Deps.JOSE, profile, []AuthOption{WithRealm(realm), WithScopes(o.RequiredScopes...)}, logger)
 	if err != nil {
 		fail("%v", err)
@@ -282,7 +282,7 @@ func authScopes(a *authenticator) []string {
 }
 
 func (tr *TypedRouter) wrap(format string, reqType, resType reflect.Type, isQuery bool, auth *authenticator, tenant *tenantGuard, h stdhttp.HandlerFunc) stdhttp.HandlerFunc {
-	logger := &tr.srv.Deps.Logger
+	logger := tr.srv.Deps.Logger
 	strict := tr.srv.Deps.Config.Codec.StrictUnknownFields
 	return func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		if auth != nil {

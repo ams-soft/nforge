@@ -33,7 +33,7 @@ func main() {
 
 // newServer builds the server with every route; the tests drive it without
 // listening on a port and with their own catalog.
-func newServer(dps deps.Deps, products *catalog) *nhttp.ServerHttp {
+func newServer(dps *deps.Deps, products *catalog) *nhttp.ServerHttp {
 	server := nhttp.NewHTTPServer(dps)
 	registerRoutes(server, products)
 	return server

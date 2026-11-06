@@ -34,10 +34,10 @@ func newMaintenanceServer(t *testing.T, routes config.RoutesConfig, db *database
 	cfg.App.OnlineSince = "2026-01-02T03:04:05Z"
 	cfg.HTTP.Routes = routes
 	s := &ServerHttp{
-		Deps: deps.Deps{Config: cfg, Logger: *slog.New(slog.DiscardHandler), DB: db},
+		Deps: &deps.Deps{Config: cfg, Logger: slog.New(slog.DiscardHandler), DB: db},
 		Srv:  &stdhttp.Server{Handler: router.NewRouter()},
 	}
-	s.Typed().Route("/", func(api *TypedRouter) { setRoutes(api, &s.Deps) })
+	s.Typed().Route("/", func(api *TypedRouter) { setRoutes(api, s.Deps) })
 	return s
 }
 
@@ -359,7 +359,7 @@ func newJWKSServer(t *testing.T, svc *jose.Service) *ServerHttp {
 	jose.ApplyDefaults(&cfg.JOSE)
 	age := 120 * time.Second
 	cfg.JOSE.JWKS.CacheMaxAge = &age
-	return NewHTTPServer(deps.Deps{Config: cfg, Logger: *slog.New(slog.DiscardHandler), JOSE: svc})
+	return NewHTTPServer(&deps.Deps{Config: cfg, Logger: slog.New(slog.DiscardHandler), JOSE: svc})
 }
 
 func TestJWKSEndpoint(t *testing.T) {
@@ -435,7 +435,7 @@ func TestJWKSETagChangesWithKeys(t *testing.T) {
 	}
 	cfg := config.Config{JOSE: jcfg}
 	jose.ApplyDefaults(&cfg.JOSE)
-	s := NewHTTPServer(deps.Deps{Config: cfg, Logger: *slog.New(slog.DiscardHandler), JOSE: svc})
+	s := NewHTTPServer(&deps.Deps{Config: cfg, Logger: slog.New(slog.DiscardHandler), JOSE: svc})
 	etag := func() string {
 		rec := httptest.NewRecorder()
 		s.Srv.Handler.ServeHTTP(rec, httptest.NewRequest("GET", "/.well-known/jwks.json", nil))
@@ -462,7 +462,7 @@ func TestJWKSPathCollision(t *testing.T) {
 			t.Fatalf("expected a collision panic, got %v", r)
 		}
 	}()
-	NewHTTPServer(deps.Deps{Config: cfg, Logger: *slog.New(slog.DiscardHandler), JOSE: sharedJOSE()})
+	NewHTTPServer(&deps.Deps{Config: cfg, Logger: slog.New(slog.DiscardHandler), JOSE: sharedJOSE()})
 }
 
 func TestReadinessWithJOSE(t *testing.T) {
