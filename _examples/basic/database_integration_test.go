@@ -23,7 +23,7 @@ func TestDatabaseRoutes(t *testing.T) {
 		t.Skip("NFORGE_TEST_DATABASE_URL not set")
 	}
 	env := filepath.Join(t.TempDir(), "test.env")
-	content := "DATABASE_DSN=" + dsn + "\nLOGGING_OUTPUT_TERMINAL_ENABLED=false\nHTTP_SERVER_HEADER=false\n"
+	content := "DATABASE_DSN=" + dsn + "\nLOGGING_OUTPUT_TERMINAL_ENABLED=false\nLOGGING_OUTPUT_OTEL_ENABLED=false\nHTTP_SERVER_HEADER=false\n"
 	if err := os.WriteFile(env, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -20,7 +20,7 @@ import (
 func newTestServer(t *testing.T) *nhttp.ServerHttp {
 	t.Helper()
 	env := filepath.Join(t.TempDir(), "test.env")
-	if err := os.WriteFile(env, []byte("DATABASE_ENABLED=false\nLOGGING_OUTPUT_TERMINAL_ENABLED=false\nHTTP_SERVER_HEADER=false\n"), 0o600); err != nil {
+	if err := os.WriteFile(env, []byte("DATABASE_ENABLED=false\nLOGGING_OUTPUT_TERMINAL_ENABLED=false\nLOGGING_OUTPUT_OTEL_ENABLED=false\nHTTP_SERVER_HEADER=false\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := config.LoadFlags("config.yaml", env)
