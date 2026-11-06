@@ -153,7 +153,7 @@ func TestNewCertReloaderFailsOnABadPair(t *testing.T) {
 }
 
 // End to end: SIGHUP makes the running server serve a rotated certificate on
-// new connections, over HTTPS and HTTP/3, without a restart (G-08).
+// new connections, over HTTPS and HTTP/3, without a restart.
 func TestSIGHUPReloadsTheCertificate(t *testing.T) {
 	// Register for SIGHUP first so a signal can never hit the default action
 	// (terminating the test process) even before the server's handler is up.

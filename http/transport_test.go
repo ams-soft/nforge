@@ -574,7 +574,7 @@ func newReq(t *testing.T, target string) *stdhttp.Request {
 }
 
 // Settings the application put on the exported Srv before Start apply to every
-// transport, not only to the plain HTTP listener (G-10).
+// transport, not only to the plain HTTP listener.
 func TestSrvCustomisationReachesEveryTransport(t *testing.T) {
 	var states atomic.Int32
 	h := newHarness(t, func(c *config.ServerConfig) { c.HTTP3.Enabled, c.TLS.Enabled = true, true })

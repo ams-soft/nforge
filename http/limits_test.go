@@ -29,7 +29,7 @@ func limitsServer(t *testing.T, mutate func(*config.Config)) *ServerHttp {
 }
 
 // Every request context has a deadline, so a handler that honors ctx (and the
-// queries it starts) stops instead of outliving the connection (G-35).
+// queries it starts) stops instead of outliving the connection.
 func TestRequestContextHasADeadline(t *testing.T) {
 	for name, tc := range map[string]struct {
 		set  time.Duration
@@ -72,7 +72,7 @@ func TestRequestContextIsCanceledAtTheDeadline(t *testing.T) {
 	}
 }
 
-// A raw route that reads r.Body itself is bounded too (G-12).
+// A raw route that reads r.Body itself is bounded too.
 func TestRawRouteBodyIsBounded(t *testing.T) {
 	read := func(s *ServerHttp, body string) (int, error) {
 		var n int
@@ -154,7 +154,7 @@ func TestTypedRouteAnswers413AtEitherLimit(t *testing.T) {
 }
 
 // Private responses must not be stored by shared caches, and the envelope
-// must not be MIME-sniffed (G-39).
+// must not be MIME-sniffed.
 func TestPrivateResponsesAreNoStoreAndNosniff(t *testing.T) {
 	s := newSecurityServer(t, func(c *config.Config) {})
 	rec := serveReq(s, httptest.NewRequest("POST", "/private", nil))
@@ -182,7 +182,7 @@ type item struct {
 	Name string `json:"name"`
 }
 
-// tracing.otel.trust_incoming wires through to the middleware (G-17).
+// tracing.otel.trust_incoming wires through to the middleware.
 func TestTracingTrustIncomingFollowsTheConfig(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithIDGenerator(telemetry.IDGenerator()))
 	prev := otel.GetTracerProvider()
@@ -207,7 +207,7 @@ func TestTracingTrustIncomingFollowsTheConfig(t *testing.T) {
 }
 
 // The spec endpoints are public: rendering walks every route type, so it is
-// done once per route set and conditional requests are answered with 304 (G-11).
+// done once per route set and conditional requests are answered with 304.
 func TestSpecIsCachedAndConditional(t *testing.T) {
 	s := newSecurityServer(t, func(c *config.Config) {})
 	get := func(path, etag string) *httptest.ResponseRecorder {

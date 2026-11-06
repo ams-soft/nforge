@@ -25,7 +25,7 @@ func hasWarning(warnings []string, part string) bool {
 	return false
 }
 
-// HSTS includeSubDomains pins HTTPS on every subdomain for a year: opt-in (G-24).
+// HSTS includeSubDomains pins HTTPS on every subdomain for a year: opt-in.
 func TestHSTSIncludeSubdomainsIsOptIn(t *testing.T) {
 	cfg, err := LoadFlags(writeConfig(t, baseYAML+"http: {security: {enabled: true}}\n"), "")
 	if err != nil {
@@ -84,7 +84,7 @@ func TestPlaintextCredentialWarnings(t *testing.T) {
 }
 
 // Outside prd, a TLS private key that others can read is reported, not
-// refused: many orchestrators mount secrets 0644 (G-09).
+// refused: many orchestrators mount secrets 0644.
 func TestTLSKeyPermissionWarning(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX permission bits")

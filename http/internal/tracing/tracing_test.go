@@ -100,7 +100,7 @@ func TestTrustedRequestIDBecomesTheTraceID(t *testing.T) {
 	}
 }
 
-// On a public edge the caller's trace context must not be honored (G-17): it
+// On a public edge the caller's trace context must not be honored: it
 // would let a client force sampling, join another request's trace and inject
 // baggage into every downstream call.
 func TestUntrustedIncomingContextIsIgnored(t *testing.T) {

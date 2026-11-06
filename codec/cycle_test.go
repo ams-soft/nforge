@@ -31,7 +31,7 @@ func selfRef() *cycNode {
 }
 
 // A cyclic value must be an EncodeError for every format; the CBOR library and
-// the XML encoder used to overflow the stack, which kills the process (G-27).
+// the XML encoder used to overflow the stack, which kills the process.
 func TestEncodeRejectsCycles(t *testing.T) {
 	r, err := New(Config{Formats: []string{"json", "cbor", "xml"}})
 	if err != nil {
@@ -123,7 +123,7 @@ func TestMayCycle(t *testing.T) {
 	}
 }
 
-// With no required field and no interface there is nothing to check (G-28):
+// With no required field and no interface there is nothing to check:
 // a large response must not be walked.
 func TestCheckRequiredSkipsTypesWithoutRequiredFields(t *testing.T) {
 	type line struct {

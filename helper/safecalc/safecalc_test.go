@@ -109,7 +109,7 @@ func TestRound(t *testing.T) {
 	}
 }
 
-// Round must never turn a finite number into NaN or Inf (G-38): too many
+// Round must never turn a finite number into NaN or Inf: too many
 // places, or a value too large to scale, leave it as it is.
 func TestRoundNeverProducesNonFiniteValues(t *testing.T) {
 	cases := []struct {
@@ -141,7 +141,7 @@ func TestRoundNeverProducesNonFiniteValues(t *testing.T) {
 	}
 }
 
-// Currencies with 0 or 3 minor digits (G-38).
+// Currencies with 0 or 3 minor digits.
 func TestFormatDecimals(t *testing.T) {
 	jpy := MoneyOpt{Prefix: "¥", DecimalSep: ".", ThousandsSep: ",", Decimals: Places(0)}
 	kwd := MoneyOpt{Prefix: "KD", DecimalSep: ".", ThousandsSep: ",", Decimals: Places(3)}

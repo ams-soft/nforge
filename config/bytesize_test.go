@@ -40,7 +40,7 @@ func TestByteSizeYAML(t *testing.T) {
 }
 
 // Out-of-range sizes used to convert a float64 to int64 and silently become
-// math.MinInt64 (G-36); whole numbers lost bytes above 2^53.
+// math.MinInt64; whole numbers lost bytes above 2^53.
 func TestParseByteSizeOverflowAndPrecision(t *testing.T) {
 	for _, in := range []string{
 		"9999999999gb", "8589934592gb", "9223372036854775808", "9223372036854775807kb",

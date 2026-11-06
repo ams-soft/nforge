@@ -24,7 +24,7 @@ func badDatabaseConfig() config.Config {
 	return cfg
 }
 
-// NewDepsE returns the startup error instead of exiting (G-03).
+// NewDepsE returns the startup error instead of exiting.
 func TestNewDepsEReturnsTheStartupError(t *testing.T) {
 	_, err := NewDepsE(badDatabaseConfig())
 	if err == nil || !strings.Contains(err.Error(), "unable to setup database") {
@@ -92,7 +92,7 @@ func TestNewDepsPrintsTheFatalReasonToStderr(t *testing.T) {
 
 // Shutdown is reachable from StartContext and from an application's own
 // signal handler: a closer must never run twice, and the race detector must
-// stay quiet (G-40).
+// stay quiet.
 func TestShutdownIsSafeToCallConcurrently(t *testing.T) {
 	var runs atomic.Int32
 	d := Deps{Aux: &Aux{ShutdownFuncs: []func(context.Context) error{

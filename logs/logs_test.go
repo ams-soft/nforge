@@ -28,7 +28,7 @@ func captureStdout(t *testing.T, fn func()) string {
 }
 
 // The source file and line go in every record only while developing: in
-// stg/prd they publish build paths to the log backend for no benefit (G-18).
+// stg/prd they publish build paths to the log backend for no benefit.
 func TestSourceIsOnlyAddedInDebugEnvironments(t *testing.T) {
 	cases := map[string]bool{"local": true, "dev": false, "stg": false, "prd": false}
 	for env, wantSource := range cases {

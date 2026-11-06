@@ -46,7 +46,7 @@ func TestWireType(t *testing.T) {
 }
 
 // A decode error reaches the client verbatim, so it must not name Go packages
-// or types (G-06): "expects nhttp.wireAddr" became "expects object".
+// or types: "expects nhttp.wireAddr" became "expects object".
 func TestTypeErrorMessagesDoNotNameGoTypes(t *testing.T) {
 	r, err := New(Config{Formats: []string{"json", "cbor", "xml"}})
 	if err != nil {

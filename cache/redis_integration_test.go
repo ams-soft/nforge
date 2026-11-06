@@ -367,7 +367,7 @@ func BenchmarkIntegrationRedis(b *testing.B) {
 
 // The Lua script of IncrementWithTTL against a real server: the TTL is set
 // only by the call that creates the counter, errors change nothing, and
-// concurrent callers never see a counter without a TTL (G-33).
+// concurrent callers never see a counter without a TTL.
 func TestIntegrationIncrementWithTTL(t *testing.T) {
 	c, _, _ := integrationCache(t, nil)
 	ctx := context.Background()

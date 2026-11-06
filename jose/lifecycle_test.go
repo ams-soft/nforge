@@ -165,7 +165,7 @@ func TestIndependentInstances(t *testing.T) {
 }
 
 // A snapshot replaced by Reload is wiped once the operations admitted before
-// the swap have finished, not before and not never (G-19).
+// the swap have finished, not before and not never.
 func TestReloadWipesTheReplacedSnapshotAfterItsLastUser(t *testing.T) {
 	cfg := testConfig(t)
 	m := testMaterial(t)

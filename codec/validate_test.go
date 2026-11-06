@@ -63,7 +63,7 @@ func validatingRegistry(t *testing.T) *Registry {
 }
 
 // Validate used to run on the root value only: a Validate method on a nested
-// type, on slice elements or on map values was silently never called (G-29).
+// type, on slice elements or on map values was silently never called.
 func TestValidateRunsOnNestedValues(t *testing.T) {
 	r := validatingRegistry(t)
 	good := `{"name":"n","ship":{"zip":"12345"},"bill":{"zip":"54321"},"tags":[{"label":"a"}],"by_code":{"x":{"zip":"11111"}}}`

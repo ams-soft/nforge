@@ -352,8 +352,8 @@ func TestConcurrentOperationsAndShutdown(t *testing.T) {
 	wg.Wait()
 }
 
-// A counter that must expire is created with its TTL in the same atomic step
-// (G-33): there is no window in which it exists without one.
+// A counter that must expire is created with its TTL in the same atomic step:
+// there is no window in which it exists without one.
 func TestIncrementWithTTL(t *testing.T) {
 	c, clock := openMemory(t, nil)
 

@@ -278,7 +278,7 @@ func TestHS256DefaultsAndInlineSecret(t *testing.T) {
 }
 
 // Tokens are stateless (no revocation), so the lifetime is the only
-// revocation window and must have a ceiling (G-31).
+// revocation window and must have a ceiling.
 func TestTokenLifetimeHasACeiling(t *testing.T) {
 	build := func(ttl time.Duration, limit time.Duration) Config {
 		cfg := testConfig(t)

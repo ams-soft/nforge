@@ -418,7 +418,7 @@ func TestRedisPoolTimeoutIsUnsent(t *testing.T) {
 }
 
 // IncrementWithTTL is one EVALSHA (EVAL only after NOSCRIPT, which means the
-// script did not run) and is never replayed after a lost reply (G-33).
+// script did not run) and is never replayed after a lost reply.
 func TestRedisIncrementWithTTLUsesOneScriptCall(t *testing.T) {
 	var args []string
 	noscript := true

@@ -215,7 +215,7 @@ func TestParseStatus(t *testing.T) {
 
 // A body without a Content-Type is refused: a cross-site page can send one
 // without a CORS preflight (fetch with an untyped Blob), so accepting it would
-// let any website make this API act on attacker-chosen JSON (G-23).
+// let any website make this API act on attacker-chosen JSON.
 func TestBodyWithoutContentTypeIsRefused(t *testing.T) {
 	for _, format := range []string{codec.JSON, codec.XML, codec.CBOR} {
 		err := checkContentType("", format, true)

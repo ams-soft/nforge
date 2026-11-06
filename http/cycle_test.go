@@ -17,7 +17,7 @@ type cycleResponse struct {
 
 // A handler that returns a value containing itself used to crash the whole
 // process on CBOR and XML routes (stack overflow, not recoverable). It must be
-// a 500 on every codec (G-27).
+// a 500 on every codec.
 func TestTypedRouteWithCyclicResponseIsA500(t *testing.T) {
 	var cfg config.Config
 	cfg.App = config.AppConfig{Name: "t", Version: "1.0.0"}

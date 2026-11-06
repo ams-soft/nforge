@@ -19,7 +19,7 @@ type listQuery struct {
 }
 
 // A type error reaches the client in the 400 detail: it must describe the
-// parameter in payload terms, not with a Go type name (G-06).
+// parameter in payload terms, not with a Go type name.
 func TestTypeErrorsDoNotNameGoTypes(t *testing.T) {
 	cases := map[string]string{
 		"page=abc":   "expects integer",

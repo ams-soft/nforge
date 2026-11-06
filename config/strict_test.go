@@ -19,7 +19,7 @@ func writeEnv(t *testing.T, text string) string {
 	return path
 }
 
-// A typo in any section must fail the load (G-02): http.cors.origns used to
+// A typo in any section must fail the load: http.cors.origns used to
 // leave origins empty, which means "any origin".
 func TestUnknownYAMLKeysAreRejected(t *testing.T) {
 	cases := map[string]string{
@@ -88,7 +88,7 @@ func TestUnknownEnvFileKeysAreRejected(t *testing.T) {
 	}
 }
 
-// env decides the overlay and the log level, so a misspelling must not pass (G-16).
+// env decides the overlay and the log level, so a misspelling must not pass.
 func TestEnvIsValidatedAndNormalized(t *testing.T) {
 	for _, bad := range []string{"production", "prod", "development", "test", "stage"} {
 		_, err := LoadFlags(writeConfig(t, "env: "+`"`+bad+`"`+"\n"+baseYAML), "")
@@ -111,7 +111,7 @@ func TestEnvIsValidatedAndNormalized(t *testing.T) {
 	}
 }
 
-// A missing overlay is skipped; an unreadable one is an error (G-25).
+// A missing overlay is skipped; an unreadable one is an error.
 func TestOverlayErrors(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
@@ -143,7 +143,7 @@ func TestOverlayErrors(t *testing.T) {
 }
 
 // -config naming a file that does not exist is an error; the default
-// ./config.yaml may be absent (G-13).
+// ./config.yaml may be absent.
 func TestExplicitConfigMustExist(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
@@ -159,7 +159,7 @@ func TestExplicitConfigMustExist(t *testing.T) {
 }
 
 // An unset ${VAR} is an error naming every missing variable, unless it carries
-// a default (G-13).
+// a default.
 func TestUnsetEnvVariablesAreAnError(t *testing.T) {
 	t.Setenv("NF_TEST_SET", "x")
 	t.Setenv("NF_TEST_EMPTY", "")
@@ -181,7 +181,7 @@ func TestUnsetEnvVariablesAreAnError(t *testing.T) {
 
 // "$" is an ordinary character in env-file values: godotenv used to expand
 // $NAME from earlier keys of the file (an unknown name became empty), so
-// "pa$SWORD" lost a piece of the password (G-21).
+// "pa$SWORD" lost a piece of the password.
 func TestEnvFileValuesAreLiteral(t *testing.T) {
 	env := writeEnv(t, strings.Join([]string{
 		"DATABASE_PASSWORD=pa$SWORD$HOME",

@@ -86,7 +86,7 @@ func TestNewPoolConfigErrorsDoNotLeakSecrets(t *testing.T) {
 }
 
 // A statement that runs forever keeps its pooled connection after the client
-// is gone; the server must cancel it (G-35).
+// is gone; the server must cancel it.
 func TestNewPoolConfigSetsStatementTimeout(t *testing.T) {
 	timeout := func(cfg Config) string {
 		t.Helper()

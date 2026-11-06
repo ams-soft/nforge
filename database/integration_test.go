@@ -248,7 +248,7 @@ func TestIntegrationShutdown(t *testing.T) {
 }
 
 // The server cancels a runaway statement at statement_timeout, so it cannot
-// hold a pooled connection forever (G-35). Proven against a real server.
+// hold a pooled connection forever. Proven against a real server.
 func TestIntegrationStatementTimeoutCancelsRunawayStatements(t *testing.T) {
 	url := os.Getenv("NFORGE_TEST_DATABASE_URL")
 	if url == "" {

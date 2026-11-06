@@ -169,7 +169,7 @@ func TestCORS(t *testing.T) {
 
 // The docs page loads Swagger UI from a CDN: the version must be exact and
 // both files need a Subresource Integrity hash, otherwise whatever the CDN
-// serves for "@5" runs in the API's origin (G-04).
+// serves for "@5" runs in the API's origin.
 func TestDocsPageAssetsArePinnedWithIntegrity(t *testing.T) {
 	s := newSecurityServer(t, func(cfg *config.Config) {})
 	body := serveReq(s, httptest.NewRequest("GET", "/docs", nil)).Body.String()
@@ -194,7 +194,7 @@ func TestDocsPageAssetsArePinnedWithIntegrity(t *testing.T) {
 	}
 }
 
-// Security headers are sent unless explicitly turned off (G-39).
+// Security headers are sent unless explicitly turned off.
 func TestSecurityHeadersAreOnByDefault(t *testing.T) {
 	s := newSecurityServer(t, func(c *config.Config) { c.HTTP.Security = config.SecurityConfig{} })
 	h := serveReq(s, httptest.NewRequest("GET", "/health", nil)).Header()

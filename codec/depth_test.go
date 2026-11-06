@@ -26,7 +26,7 @@ func allocated(fn func()) uint64 {
 }
 
 // A nested document must be rejected at a fixed depth, not decoded at a cost
-// that grows with the square of its depth (G-01: 683 KB used 10 GB).
+// that grows with the square of its depth (683 KB used 10 GB).
 func TestXMLNestingIsBounded(t *testing.T) {
 	r, err := New(Config{Formats: []string{"xml"}, Default: "xml"})
 	if err != nil {
@@ -81,7 +81,7 @@ func TestXMLUnknownDeepContentIsSkippedCheaply(t *testing.T) {
 }
 
 // The JSON presence fallback (a duplicate member forces the tree walk) must
-// not build a path string per level (G-05: 131 KB used 337 MB).
+// not build a path string per level (131 KB used 337 MB).
 func TestJSONPresenceFallbackIsNotQuadratic(t *testing.T) {
 	r, _ := New(Config{Formats: []string{"json"}, StrictUnknownFields: true})
 	const depth = 9000

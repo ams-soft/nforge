@@ -444,7 +444,7 @@ type staleV2 struct {
 }
 
 // An entry that no longer decodes is a miss, not a permanent failure: the
-// loader runs once, the entry is overwritten and the next call hits (G-15).
+// loader runs once, the entry is overwritten and the next call hits.
 func TestGetOrLoadReloadsAnUndecodableEntry(t *testing.T) {
 	var logs bytes.Buffer
 	c, _ := openMemory(t, nil, WithLogger(slog.New(slog.NewTextHandler(&logs, nil))))
