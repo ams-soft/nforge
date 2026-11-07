@@ -104,7 +104,7 @@ func TestIntegrationRollbackOnError(t *testing.T) {
 		}
 		return errDomain
 	})
-	if err != errDomain {
+	if err != errDomain { //nolint:errorlint // the contract is the same value, unwrapped: errors.Is would accept a wrapped one
 		t.Fatalf("callback error must be returned unwrapped, got %v", err)
 	}
 	if n := countItems(t, db); n != 0 {

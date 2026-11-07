@@ -313,7 +313,7 @@ func TestIntegrationIncrementNotDuplicatedAfterLostReply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Shutdown(context.Background())
+	defer func() { _ = c.Shutdown(context.Background()) }()
 
 	proxy.drop.Store(true)
 	_, err = c.Increment(context.Background(), "counter", 1)
@@ -341,9 +341,9 @@ func BenchmarkIntegrationRedis(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer c.Shutdown(context.Background())
+	defer func() { _ = c.Shutdown(context.Background()) }()
 	ctx := context.Background()
-	defer c.Delete(ctx, "raw", "obj")
+	defer func() { _, _ = c.Delete(ctx, "raw", "obj") }()
 	_ = c.SetBytes(ctx, "raw", make([]byte, 256), 0)
 	_ = c.Set(ctx, "obj", User{ID: 1, Name: "Ana"}, 0)
 	b.Run("get_bytes", func(b *testing.B) {
