@@ -6,6 +6,8 @@ All notable changes to nForge are documented here. The format follows
 
 ## [Unreleased]
 
+## [v0.4.0] - 2026-11-07
+
 nForge becomes a general application runtime. This release contains breaking
 changes; read **Upgrading** below.
 
@@ -531,6 +533,7 @@ tracing, the JSON/CBOR/XML codec, the HTTP server with typed routes and
 OpenAPI 3.1 docs, PostgreSQL with multi-tenancy, JOSE/JWT authentication,
 the Redis/memory cache, `ncrypto` and `safecalc`.
 
+[v0.4.0]: https://github.com/ams-soft/nforge/compare/v0.3.0...v0.4.0
 [v0.3.0]: https://github.com/ams-soft/nforge/compare/v0.2.0...v0.3.0
 [v0.2.0]: https://github.com/ams-soft/nforge/compare/v0.1.2...v0.2.0
 [v0.1.2]: https://github.com/ams-soft/nforge/compare/v0.1.1...v0.1.2
