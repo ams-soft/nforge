@@ -11,9 +11,17 @@ disagrees with the code, the code wins — fix this file in the same change.
 ## 1. What nForge is
 
 nForge (module `github.com/ams-soft/nforge`, by AMS Software e Consultoria
-LTDA) is a small, opinionated **Go framework for building HTTP APIs**. An
-application gets, from one `config.yaml`:
+LTDA) is a small, opinionated **Go application runtime**, built first for
+HTTP APIs: an application is a set of explicitly registered modules (HTTP is
+one of them and optional, so HTTP-only, worker-only and mixed applications
+share one lifecycle), wired by a typed capability graph and orchestrated by
+package `app`. An application gets, from one `config.yaml`:
 
+- **An application lifecycle** (`app`, `module`): explicit registration,
+  configuration validated before any I/O, a deterministic dependency graph,
+  every Init before any Start, ingress started last and drained first,
+  aggregated readiness, runtime failure handling, signal-driven `Run` and an
+  idempotent graceful shutdown under one deadline (§3).
 - **Layered configuration** (YAML + `${ENV}` expansion + `.env` overrides +
   per-environment overlays + defaults + validation).
 - **Structured logging** with `log/slog` — pretty terminal output (`tint`)
@@ -39,13 +47,13 @@ application gets, from one `config.yaml`:
   explicitly configured profiles, plus **bearer authentication** in `nhttp`
   (`Authenticate`, scopes, `Principal`, enforced `IsPrivate` typed routes)
   and a public **JWKS** endpoint.
-- **Cache** (`cache/`): one non-generic `*cache.Cache` (`deps.Cache`) on
+- **Cache** (`cache/`): one non-generic `*cache.Cache` (`cache.Capability`) on
   Redis (go-redis) or a bounded in-process LRU, chosen by config: codec
   objects, raw bytes, counters, TTLs, NX, cache-aside `GetOrLoad`, tenant
   namespacing through the framework tenant context, readiness and LIFO
   shutdown.
 - **Crypto** (`crypto/`, package `ncrypto`): standalone primitives with no
-  config or `Deps` wiring: AEAD encryption (XChaCha20-Poly1305, AES-256-GCM),
+  config or module wiring: AEAD encryption (XChaCha20-Poly1305, AES-256-GCM),
   HMAC-SHA256, password hashing (bcrypt, Argon2id), data hashing (BLAKE3,
   SHA-256) and secure random values (bytes, keys, ranges, strings, ULIDs).
 - **Transports** (`http.server.tls`, `http.server.http3`): plain HTTP by default
@@ -82,23 +90,29 @@ generics, `errors.Join`, `math/rand/v2`, `maps`/`slices` iterators.
 ├── .golangci.yml       # golangci-lint v2 configuration (§15)
 ├── .github/workflows/  # CI (§15)
 ├── docs_test.go        # versions cited in the docs must match go.mod and config.yaml
-├── config/             # app configuration: types, loading, env file, defaults, validation, ByteSize
-├── module/             # neutral module core: Resolve (graph, no I/O), Plan.Start, Runtime (status, shutdown), Scope; stdlib only
-├── deps/               # dependency container (Deps), Bootstrap/NewDeps, built-in module descriptors (modules.go)
-├── logs/               # slog setup: terminal (tint) + OTel handlers, multi/leveled/context handlers
-├── telemetry/          # OTel resource, TracerProvider setup, custom trace-id generator
-├── codec/              # multi-format encode/decode (JSON, CBOR, XML) + Registry
-├── database/           # PostgreSQL: Config, pool, DB (Executor + Squirrel), transactions, tenancy (RLS/column)
+├── docs_config_test.go # every configuration key of every module is documented in §4.2
+├── imports_test.go     # the import rules below, signals owned by app only, deps stays removed
+├── app/                # the application orchestrator: New, Start, Run (signals), Shutdown, Status, Reload
+├── module/             # the capability/DI graph: Descriptor, Definition, Build, Runtime, Scope; stdlib only
+├── config/             # the configuration loader: Document (raw sections), Binding, env file, overlays
+├── logs/               # slog setup (terminal tint + OTel) and the logger module (section logging)
+├── telemetry/          # OTel resource, TracerProvider, trace-id generator, the tracing module (section tracing)
+├── codec/              # multi-format encode/decode (JSON, CBOR, XML), Registry, ByteSize, the codec module
+├── database/           # PostgreSQL: Config, pool, DB (Executor + Squirrel), transactions, tenancy, the database module
 │   └── internal/rlsexec/   # tenant-scoped Executor of rls mode (set_config batches) + SetTenantSQL
-├── jose/               # standalone JOSE: config, keys/JWK/JWKS, compact JWS/JWE, JWT, Service lifecycle
+├── jose/               # JOSE: config, keys/JWK/JWKS, compact JWS/JWE, JWT, Service lifecycle, the jose module
 │   └── internal/strictjson/  # strict protocol JSON: UTF-8, depth, duplicate members, trailing data
-├── cache/              # standalone cache: Config, Open, Redis + memory drivers, keyspace/tenant, GetOrLoad flights
+├── cache/              # cache: Config, Open, Redis + memory drivers, keyspace/tenant, GetOrLoad flights, the cache module
 ├── crypto/             # package ncrypto: AEAD (XChaCha20, AES-GCM), HMAC, password/data hashes, secure random
 ├── helper/
 │   └── safecalc/       # money in integer cents: New, NewFromFloat (half-even), Format, BRL
+├── internal/apptest/   # test support: applications from inline YAML (Load, New, Start, Quiet)
 ├── http/               # package nhttp: only the public surface at the root
-│   ├── server.go       # ServerHttp, NewHTTPServer, middleware loading, Start
-│   ├── transport.go    # StartContext: HTTP/HTTPS/HTTP3 listeners, redirect-only handler, Alt-Svc, shutdown
+│   ├── module.go       # Module (section http, ingress), Capability, cross-module Check
+│   ├── config*.go      # Config of the http section: types, defaults, validation, transports, security, graph path, warnings
+│   ├── server.go       # Server, New, Dependencies, Use, standard middleware chain
+│   ├── transport.go    # Start/Stop/Reload: HTTP/HTTPS/HTTP3 listeners, redirect-only handler, Alt-Svc
+│   ├── certs.go        # certReloader: certificate rotation on file change and on Reload
 │   ├── routes.go       # built-in routes: health/readiness, docs + OpenAPI spec, JWKS (collision check)
 │   ├── graph.go        # module graph page and its Mermaid script (build tag nforge_graph; graph_off.go without it)
 │   ├── response.go     # Send*/Parse*/ParseStatus, Envelope, ErrorTitle, SuccessResponse/ErrorResponse (aliases)
@@ -148,27 +162,26 @@ Notes:
 ### Package dependency graph (imports)
 
 ```
-nforge (root) ───────────────────────────────┐
-module    (no internal deps; stdlib only)    │
-database  (no internal deps)                 │
-codec     (no internal deps)                 │
-jose      (no internal deps; go-jose/v4 behind unexported adapters)
-cache ──► codec (go-redis/v9 behind unexported adapters)
-ncrypto   (no internal deps; x/crypto, blake3, ulid)
-helper/*  (no internal deps; stdlib only)
-config ──► database, jose, cache (their Config types are embedded in config.Config)
-telemetry ──► config
-logs ──► config, telemetry, go-ams-router/middleware (GetRequestID)
-deps ──► nforge, module, config, codec, database, jose, cache, logs, telemetry
-nhttp ──► config, database, deps, module, codec, jose, cache (tests), telemetry, go-ams-router, quic-go (http3)
+module    (stdlib only)
+config    (no internal deps; yaml.v3 + godotenv)
+app ──► module, config
+codec ──► module
+database ──► module
+jose ──► module (go-jose/v4 behind unexported adapters)
+cache ──► module, codec, database (tenant context only; go-redis/v9 behind unexported adapters)
+telemetry ──► module
+logs ──► module, telemetry
+ncrypto, helper/*   (no internal deps)
+nhttp ──► nforge (Version), module, codec, database, jose, cache, telemetry, go-ams-router, quic-go (http3)
+internal/apptest ──► app, config, module (tests only)
 ```
 
-Keep it acyclic. `module`, `database`, `codec`, `jose`, `ncrypto` and `helper/*` must stay free of internal
-imports (they are reusable standalone); `cache` may only import `codec`.
-`config` may only depend on `database`, `jose` and `cache` (for their
-standalone config types). A package may import its own `internal/`
-subpackages, which follow the parent's rules. `jose/imports_test.go`
-enforces these rules (internal subpackages included).
+Keep it acyclic. `module` and `config` know no concrete module; `app` knows
+only `module` and `config`, so it orchestrates any set of modules without
+importing them. The infrastructure packages import `module` (to describe
+themselves) and nothing above them. Only `app` imports `os/signal`.
+`imports_test.go` enforces these rules (internal subpackages included), and
+fails for a package without a rule.
 
 ---
 
@@ -177,141 +190,183 @@ enforces these rules (internal subpackages included).
 Canonical `main` (see `_examples/basic/main.go`):
 
 ```go
-cfg, err := config.Load()                 // 1. flags -config / -envfile, layered load
-dps := deps.NewDeps(*cfg)                 // 2. logger → tracing → banner → codec → database → jose
-server := nhttp.NewHTTPServer(dps)        // 3. router + essential middlewares + docs + jwks + health
-server.AddGlobalMiddleware(mw)            // 4. optional app middlewares...
-server.LoadGlobalMiddleware()             //    ...applied with r.Use
-server.Typed().Route("/api/v1", func(api *nhttp.TypedRouter) { ... }) // 5. routes
-server.Router().Get("/raw", handler)      //    plain routes also allowed
-if err := server.Start(); err != nil {    // 6. blocks until SIGINT/SIGTERM
-    server.Shutdown(); os.Exit(1)
+cfg, err := config.Load()                 // 1. flags -config / -envfile; one logical YAML, read once
+if err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(1) }
+a, err := app.New(cfg, app.Modules(       // 2. explicit registration; configure + resolve + check, no I/O
+    logs.Module(), telemetry.Module(), codec.Module(),
+    database.Module(), jose.Module(), cache.Module(),
+    nhttp.Module(), apiModule(),          //    HTTP is optional: a worker-only app omits it
+))
+if err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(1) }
+if err := a.Run(context.Background()); err != nil { // 3. Start, block on SIGINT/SIGTERM/fatal, Shutdown
+    fmt.Fprintln(os.Stderr, err); os.Exit(1)        //    only main chooses the exit code
 }
 ```
 
-### 3.1 `deps.NewDeps(cfg)` — the module graph
+An application module declares what it uses and registers its routes (or
+consumers) during `Init`, before any listener opens:
 
-`deps` is an orchestrator: it holds no `switch` per resource. Each module is a
-`module.Module[config.Config]` descriptor (`deps/modules.go`) with an `ID`,
-`Provides`, `Enabled(cfg)`, `Requires(cfg)`, `Optional(cfg)` and `Init`, which
-returns `module.Hooks{Ready, Shutdown}`. `NewDeps`/`NewDepsE` call
-`deps.Bootstrap(ctx, cfg, extra...)`:
+```go
+func apiModule() module.Descriptor {
+    return module.New("api", module.Definition{
+        Requires: []module.Handle{nhttp.Capability, database.Capability},
+        Optional: []module.Handle{module.Logger},
+        Init: func(ctx context.Context, s *module.Scope) (module.Hooks, error) {
+            server, db := module.Require(s, nhttp.Capability), module.Require(s, database.Capability)
+            nhttp.Get(server.Typed(), "/users", listUsers(db))
+            return module.Hooks{}, nil
+        },
+    })
+}
+```
 
-1. `module.Resolve` validates the whole graph **before anything starts** and does
-   no I/O: duplicate IDs, two enabled providers of a capability, a required
-   capability that is missing or whose provider is disabled, cycles. Failure is
-   `unable to resolve modules: ...` with `errors.Is` on `module.ErrDuplicateModule`,
-   `ErrAmbiguousProvider`, `ErrMissingDependency`, `ErrDisabledDependency`,
-   `ErrCycle` or `ErrInvalidModule`. A module is **never enabled implicitly**.
-2. The start order is topological; ties go by registration order, so one config
-   gives one plan. `builtinModules` is ordered to keep the sequence below. The
-   plan is immutable, resolved once per bootstrap, whether or not `/graph` is on.
-3. `Plan.Start` runs each `Init`. On failure it cancels the start context, calls
-   `OnFailure` (the fatal log, while the logger still works), shuts down what had
-   started in reverse order with its own 5 s timeout and returns the
-   `*module.InitError` joined with the rollback errors; `Bootstrap` returns the
-   zero `Deps`. `Init` must release what it created before returning an error.
-4. `Bootstrap` copies the published values into the `Deps` fields and registers
-   the one closer `Runtime.Shutdown` with `Deps.AddShutdown`. An application adds
-   its own closers the same way: they run first, while the modules still work.
+### 3.1 Registration, configuration and the graph (`app.New`, `module.Build`)
 
-Rules for descriptors: `Init` reads only what the module declared
-(`module.Require`/`module.Lookup`; anything else panics, so the graph stays true)
-and must publish everything in `Provides` (`module.Provide`; `ErrNotProvided`
-otherwise). A consumer shares the provider's resource and never closes it.
-Applications may pass their own modules with `deps.Bootstrap(ctx, cfg,
-deps.WithModules(...))`, name the exported capabilities (`deps.CapDatabase`,
-`CapCache`, ...) and read their own with `deps.Value`. `Bootstrap`'s ctx only
-bounds the start; `Deps.Shutdown` stops.
+A module is a `module.Descriptor{ID, Section, Configure}`. `app.New` binds the
+configuration (§4) and calls `module.Build`, which runs three pure steps with
+**no I/O** and fails before anything opens:
 
-**Process globals.** By default the bootstrap installs `codec.SetDefault`,
-`slog.SetDefault` and the OTel provider, propagator and error handler.
-`deps.WithoutGlobals()` installs none of them, so several `Deps` can coexist in one
-process: `Deps.Isolated()` is true, the server puts `Deps.Codec` in every request
-context (`codec.WithRegistry`; `Send*`/`Parse*` read `codec.FromContext`) and spans
-go to `Deps.TracerProvider`. The default path pays no extra middleware. What is
-still process-wide there: a raw `Authenticate` logs through `slog.Default`, and OTel
-failures go to OTel's default handler.
+1. **Configure** every descriptor: it decodes its own section strictly
+   (`Source.Decode`: base YAML, env file, overlay), applies its defaults,
+   validates it and returns a `module.Definition`: `Disabled`, `Provides`,
+   `Requires`, `Optional` (typed `module.Handle`s), `Ingress`, `NonCritical`,
+   `Config` (the validated typed section), `Check` and `Init`. Errors of
+   independent modules are **aggregated** (`*module.ConfigError`, text
+   `module <id>: ...`), and so are the sections no registered module owns and
+   the env file keys nothing consumed (`config.Binding.Finish`). A panicking
+   Configure is an error, not a crash.
+2. **Resolve** the graph: duplicate IDs or section owners
+   (`ErrDuplicateModule`), invalid IDs or definitions (`ErrInvalidModule`),
+   two enabled providers of one capability (`ErrAmbiguousProvider`), a
+   required capability nobody provides (`ErrMissingDependency`) or whose
+   provider is disabled (`ErrDisabledDependency`; never enabled for you), two
+   declarations of one capability ID with different Go types
+   (`ErrTypeMismatch`), cycles (`ErrCycle`). Optional edges exist only when
+   the provider is enabled. The order is topological with ties by
+   registration order: one configuration gives one plan. The plan is frozen.
+3. **Check** each enabled module against the resolved graph. `View` gives the
+   validated `Config` of the providers it declared
+   (`module.ConfigOf[C](v, handle)`, also for a registered but disabled
+   provider; an undeclared one is `ErrUndeclared`) and `Warn`. This is where
+   cross-section rules live: `cache.codec` must be in `codec.formats.enabled`,
+   `http.auth.default_profile` must be a consuming jwt profile of the jose
+   module, the JWKS path must not collide with a built-in route, HTTPS in
+   front of a database or Redis without TLS warns.
 
-`crypto` and `helper/*` have no lifecycle and are not modules. The `http` node is
-**passive** (no `Init`): `ServerHttp` owns the listeners and calls `Deps.Shutdown`
-once, so there is a single sequencer. It requires logger and codec, plus jose when
-`http.auth.default_profile` is set, and optionally uses the rest.
+`Source.Warn(exception, msg)` / `View.Warn` record valid settings that weaken
+the deployment: outside `prd` they are `Application.Warnings()` (logged at
+WARN, at ERROR in `prd`, once the modules are initialized); with `env: prd`
+each one is an error of `app.New` unless `prd_exceptions.<exception>` is true.
 
-The sequence, one step per module (`logger`, `tracing`, `startup-report`,
-`codec`, `database`, `jose`, `cache`, `http`):
+Capabilities are `module.Capability[T]` handles; the Go type is part of the
+identity. `module.Logger` (`*slog.Logger`, ID `logger`) is defined in
+`module` so every module can declare it without importing `logs`. Each
+infrastructure package exports its own: `codec.Capability`,
+`database.Capability`, `jose.Capability`, `cache.Capability`,
+`telemetry.Capability` (`*telemetry.Tracing`), `nhttp.Capability`
+(`*nhttp.Server`). Capabilities are singletons **per application**: two
+applications in one process share nothing.
 
-1. **Logger** (`initLogger`): `logs.Setup` when terminal or OTel logging is
-   enabled, otherwise a **no-op logger** (`slog.DiscardHandler`). **Tracing**
-   (`initTracing`, enabled by `cfg.IsTracingEnabled()`): `telemetry.SetupTracing`
-   registers the global TracerProvider. Failure of either → startup error
-   (see below).
-2. **Startup report**: if `http.server.header: true`, logs
-   `***** AMS SOFT nForge v<ver>: <APP> v<appver> *****`, then the config warnings.
-3. **Codec** (`initCodec`): builds a `codec.Registry` from `cfg.Codec` and
-   installs it as the process default with `codec.SetDefault` (the HTTP
-   helpers always use `codec.Default()`). Failure → startup error.
-4. **Database** (`initDatabase`): only if `database.enabled: true`. Opens the
-   pool with a 15 s startup timeout and a ping; failure → startup error (the app
-   never starts without its database). With `database.tenancy.enabled` the
-   startup also runs `CheckTenancy` (§9.1), whose failure is fatal too.
-5. **JOSE** (`initJOSE`): only if `jose.enabled: true`. `jose.New` with a
-   15 s startup timeout reads and validates every key source; failure →
-   `unable to setup jose` startup error (the error is already
-   sanitized: no key paths or material). Logs `[JOSEModule] JOSE setup
-   completed` with `Config.LogValue` (counts and profile names only).
-6. **Cache** (`initCache`): only if `cache.enabled: true`. `cache.Open`
-   with a 15 s startup timeout, `WithCodecRegistry(d.Codec)`,
-   `WithNamespace(cfg.Env, cfg.App.Name)`, `WithLogger` and, when
-   `database.tenancy.enabled`, `WithTenantResolver` bound to
-   `database.TenantFromContext` (§11.4). The startup ping must pass (Redis
-   down → `unable to setup cache` startup error; `Open` has
-   already released its resources). Logs `[CacheModule] Cache setup
-   completed` with `cache.Config.LogValue`. The database is an optional
-   dependency, which only orders the two: the cache closes first.
+### 3.2 Start (`Application.Start`, `module.Runtime.Start`)
 
-`NewDeps`, `NewDepsE` and `Bootstrap` return `*Deps`, nil on failure. It is shared
-by the server and the application and must not be copied. Fields: `Context`
-(background), `Config` (value copy), `Logger` (`*slog.Logger`, never nil from
-`Bootstrap`), `Codec`, `DB` (**nil when the
-database is disabled**), `JOSE` (**nil when jose is disabled**), `Cache`
-(**nil when the cache is disabled**).
-`Deps.Graph()` returns the resolved structure and `Deps.ModuleStatus(ctx)` probes
-the modules (`ok` false / nil for a `Deps` not built by `Bootstrap`).
-`Deps.CheckJOSE(ctx)` returns `deps.ErrJOSEDisabled` when nil, else
-`Service.Check` (no I/O, no crypto). `Deps.PingCache(ctx)` returns
-`deps.ErrCacheDisabled` when nil, else `Cache.Ping`.
+1. **Init every module** in dependency order. `Init(ctx, scope)` may allocate
+   resources (pool, keys, router) and publishes its capabilities with
+   `module.Provide`; it must **not** accept external work, and it must release
+   what it created before returning an error. Every declared capability must
+   be published with its declared type (`ErrNotProvided` otherwise). The
+   scope rejects undeclared reads and wrong handle types (a panic, which the
+   runtime turns into an Init error with rollback). `Scope.Context()` lives
+   until the shutdown ends, for background work the module owns.
+2. `OnInitialized`: the configuration warnings are logged with the
+   configured logger.
+3. **Start**, only after every Init succeeded: first the ordinary modules in
+   dependency order, then the **ingress** modules (`Definition.Ingress`: the
+   HTTP listeners, queue consumers). `Start` returns once the service is
+   active (listeners bound) and never blocks on a serve loop; the module owns
+   its goroutines and reports their unexpected end with
+   `Scope.ReportFailure`. So no request or job can reach a handler that is not
+   registered yet.
 
-### 3.2 Shutdown
+Any failure (an Init or Start error, a canceled ctx, a failure reported
+during the start, a concurrent `Shutdown`) logs `[Fatal ERROR] ...` with the
+logger that exists, stops everything that was initialized (with
+`RollbackTimeout`, 5 s, independent of the start ctx) and returns a
+`*module.LifecycleError{Module, Phase, Err}` joined with the rollback errors.
+The application is then `failed` and cannot be started again.
 
-- `ServerHttp.Start()` is `StartContext` with a context canceled by
-  SIGINT/SIGTERM (`signal.NotifyContext`, so the subscription is released).
-  Startup is transactional (§7.12): certificates are loaded and **every**
-  TCP/UDP listener is bound before the first request; any failure closes
-  what was bound and returns the error. On a signal or a runtime listener
-  error every transport is shut down in parallel with a 10 s timeout (then
-  forcibly closed), and `Deps.Shutdown` runs exactly once — also when
-  startup failed, and always after the listeners are released.
-- `Deps.Shutdown` runs registered functions **LIFO** (like `defer`): the
-  cache closes first, then JOSE, then the database, then tracing, then logs
-  (so they can still log). All run even
-  if one fails; errors are joined. Logs emitted after this point may be lost.
-  A hook that starts after the context ended gets its own 1 s (`shutdownGrace`),
-  so a consumer hanging until the deadline does not cost the telemetry flush;
-  `Shutdown` can therefore outlast its ctx by 1 s per remaining hook.
-- `ServerHttp.ShutdownFunc` / `AddShutdownFunc` / `Shutdown()` are a separate,
-  app-level list of `func()` that the **application** calls itself (the
-  example calls it only when `Start` returns an error). `Start` does not call
-  them.
+### 3.3 Running, readiness and failures
 
-### 3.3 Middleware chain (fixed order, set in `setStandardHandler`)
+- `Application.Status(ctx)` returns a `module.Report{Phase, Ready, Modules}`,
+  independent of any transport. Phases: `validated`, `initializing`,
+  `starting`, `started`, `stopping`, `stopped`, `failed`. Module states:
+  `disabled`, `pending`, `initialized`, `started`, `stopping`, `stopped`,
+  `failed`; availability `ready`, `not_ready`, `disabled`.
+- `Ready` is true only while the application is started, no module failed
+  and every **critical** enabled module is ready (`NonCritical` modules show
+  their state without counting). Probes (`Hooks.Ready`) are concurrency-safe,
+  context-aware, run with their own 2 s bound and are **shared**: a sample is
+  reused for 1 s and concurrent callers wait for the probe in progress, so
+  readiness traffic cannot flood PostgreSQL or Redis
+  (`app.WithProbeInterval`). Liveness (`/health`) never probes.
+- A recoverable outage makes `Ready` return an error (`not_ready`) until it
+  ends: the module's own reconnection policy applies (pgx and go-redis
+  reconnect). A **fatal** runtime failure (`Scope.ReportFailure`: a listener
+  that died) marks the module `failed`, drops readiness at once and closes
+  `Application.Failed()`; `Run` then shuts down and returns it.
+- `Application.Reload(ctx)` runs the `Hooks.Reload` of the started modules in
+  order (TLS certificates, JOSE key files); a failure keeps the previous
+  credentials. `Run` calls it on **SIGHUP**.
 
-1. `Tracing()` — only if `IsTracingEnabled()`. Must be first.
-2. `Logger(deps.Logger)` — only if any logging output is enabled.
-3. `middleware.Recoverer` (from go-ams-router) — always. A `WithoutGlobals` server
-   then adds its `Registry` to the request context.
+### 3.4 Shutdown (`Application.Shutdown`, `Run`)
+
+`Shutdown(ctx)` is idempotent and safe for concurrent use: every call waits
+for the first and returns its aggregated result. ctx is the **global
+deadline** (`Run` uses `app.WithShutdownTimeout`, 15 s, on a context
+independent of the one that ended).
+
+1. A start in progress is canceled and waited for.
+2. **Quiesce**: the ingress modules stop first. `nhttp` stops accepting,
+   drains the requests in flight (at most 10 s within the deadline), closes
+   its listeners and waits for its serve loops; a consumer stops fetching
+   and finishes its jobs.
+3. **Barrier**: only when every ingress module finished do the others stop,
+   each one after every module that depends on it (independent modules
+   concurrently). A resource is therefore never closed while a handler or a
+   consumer may still use it; the logger stops last.
+4. Every hook runs even if another fails; errors are joined
+   (`*module.LifecycleError` with `PhaseStop`). Once ctx has ended, the hooks
+   still running or not yet started share **one** extra window
+   (`Options.StopGrace`, 1 s), so the overrun is bounded. A Stop hook that
+   has not returned by then is abandoned with `ErrStopTimeout`, and the
+   modules it depends on are **left open** (reported, not closed under it).
+5. `Scope.Context()` ends; the phase is `stopped`.
+
+`Run(ctx)` = `Start` + wait for ctx, SIGINT/SIGTERM or `Failed()` + SIGHUP
+reloads + `Shutdown`. It returns nil after a clean signal-driven stop and the
+runtime failure (joined with any shutdown error) otherwise. It works with zero
+HTTP modules. `Start`/`Shutdown` are the library API for tests and
+embedding: no signals, no `os.Exit`.
+
+**Process globals.** By default nothing global is touched: no
+`slog.SetDefault`, `codec.SetDefault` or OTel globals, so several
+applications run in one process. `app.WithProcessGlobals()` lets the logging,
+codec and tracing modules install them (for code that reads `slog.Default` or
+`codec.Default`). `nhttp` always puts the application's `Registry` in the
+request context when it is not the process default, so `Send*`/`Parse*` use
+it; spans always go to the application's provider. A raw `Authenticate`
+still logs through `slog.Default`.
+
+`crypto` and `helper/*` have no lifecycle and are not modules.
+
+### 3.5 Middleware chain (fixed order, set in `setStandardHandler`)
+
+1. `Tracing()` — only with the tracing module enabled. Must be first.
+2. `Logger(logger)` — only when the logger has an output (it is enabled for errors).
+3. `middleware.Recoverer` (from go-ams-router) — always, then the
+   application's `Registry` in the request context when it is not the process
+   default.
 4. Body limit — always: `http.MaxBytesReader` at `http.server.max_body_bytes`
-   (default: `codec.max_payload_bytes`) + 1 byte, so raw routes that read
+   (default: the Registry's payload limit) + 1 byte, so raw routes that read
    `r.Body` are bounded and typed routes still get their 413 from the codec
    first (`ParseStatus` also maps `*http.MaxBytesError` to 413).
 5. Handler timeout — always: the request context gets a deadline of
@@ -319,18 +374,19 @@ the modules (`ok` false / nil for a `Deps` not built by `Bootstrap`).
    loaders that honor `ctx` stop (the write timeout only closes the connection).
 6. `middleware.Security` (go-ams-router) — unless `http.security.enabled: false` (§7.11).
 7. `middleware.CORS` (go-ams-router) — only if `http.cors.enabled` (§7.11).
-8. App global middlewares — whatever `LoadGlobalMiddleware` adds.
+8. App global middlewares — whatever `Server.Use` adds (application modules call it in Init).
 
 go-ams-router builds its middleware chain lazily on the first request, so
-`Use` (and `LoadGlobalMiddleware`) is valid any time **before the server
-serves its first request**, even after routes were registered. Calling `Use`
-**or registering a route** after serving starts panics. For inline routers (`With`/`Group`), middlewares
-must be added before routes on that inline router.
+`Use` is valid any time **before the server serves its first request**, even
+after routes were registered. Calling `Use` **or registering a route** after
+serving starts panics; the module lifecycle makes that impossible for module
+code (every Init runs before HTTP starts). For inline routers (`With`/`Group`),
+middlewares must be added before routes on that inline router.
 
-Built-in routes registered by `NewHTTPServer`:
+Built-in routes registered by `nhttp.New` (and so by the module's Init):
 - Docs (`http.docs.enabled`): `GET {path}`, `{path}/swagger.json`,
   `{path}/swagger.yaml`.
-- JWKS (`jose.enabled` and `jose.jwks.enabled`): `GET`/`HEAD`
+- JWKS (jose module enabled and `jose.jwks.enabled`): `GET`/`HEAD`
   `{jose.jwks.path}`; see §7.9.
 - Module graph (`http.routes.graph.enabled`): `GET {path}`,
   `GET {path}/mermaid.min.js`; see §7.13.
@@ -342,18 +398,28 @@ Built-in routes registered by `NewHTTPServer`:
 
 ### 4.1 Loading pipeline (`LoadFlags(configPath, envFilePath)`)
 
+`config` reads the configuration **once** and knows no module schema: it
+returns an immutable `*config.Document` of raw sections. Only the reserved
+application sections are typed there: `env`, `app` (`Document.App()`:
+`name`, `version`, `internal_use`) and `prd_exceptions`. Every other
+top-level key is the section of the module that owns it
+(`module.Descriptor.Section`), which decodes it strictly, applies its
+defaults and validates it (§3.1). YAML cannot activate a module: a section
+no registered module owns is an error of `app.New`, and so is an env file key
+nothing consumed (`config.Binding.Finish`); registration is authoritative.
+
 `config.Load()` parses the flags `-config` and `-envfile` (it calls
 `flag.Parse()` — define your own flags before calling it) and delegates to
-`LoadFlags`. Order of precedence, **later wins**:
+`LoadFlags`. Per section, order of precedence, **later wins**:
 
-1. Start with `Config{Env: "local"}`.
-2. **Base YAML**: `-config` path, or `./config.yaml` in the **current working
-   directory**. A `-config` path that does not exist is an error; only the
-   default `./config.yaml` may be absent (it just yields empty config, which
-   then fails validation on `app.name`). **Unknown keys are errors** in every
-   section (`KnownFields`): a typo such as `http.cors.origns` would otherwise
-   leave `origins` empty, which means "any origin". Top-level keys starting
-   with `x-` are ignored (room for application data in the same file).
+1. **Base YAML**: `-config` path, or `./config.yaml` in the **current working
+   directory** (at most 8 MiB). A `-config` path that does not exist is an
+   error; only the default `./config.yaml` may be absent (then `app.name`
+   must come from the env file). **Unknown keys are errors** in every section
+   (the owner decodes with `KnownFields`): a typo such as `http.cors.origns`
+   would otherwise leave `origins` empty, which means "any origin". A section
+   that appears twice is an error. Top-level keys starting with `x-` are
+   ignored (room for application data in the same file).
    - `${VAR}` references in any YAML scalar are expanded from the **process
      environment** (an **unset** variable is a load error naming every missing one;
      `${VAR:-default}` supplies a value when VAR is unset or empty, and
@@ -361,46 +427,53 @@ Built-in routes registered by `NewHTTPServer`:
      on raw text, so values with YAML special characters are safe. For
      unquoted scalars the tag is reset so `port: ${DB_PORT}` still decodes as
      an int; quoted scalars stay strings.
-3. **Env file** (`-envfile`, parsed with godotenv but with every value taken
-   literally: `$` is an ordinary character, nothing is expanded, so a
-   password like `pa$SWORD` is kept intact): each leaf field is set from a
-   key made of its YAML path, upper-cased, joined by `_`:
-   `http.server.port` → `HTTP_SERVER_PORT`, `database.pool.max_conns` →
-   `DATABASE_POOL_MAX_CONNS`, `codec.max_payload_bytes` →
-   `CODEC_MAX_PAYLOAD_BYTES`. Supported: string, ints, uints (overflow
+2. **Env file** (`-envfile`, at most 8 MiB, parsed with godotenv but with
+   every value taken literally: `$` is an ordinary character, nothing is
+   expanded, so a password like `pa$SWORD` is kept intact): each leaf field of
+   the owner's schema is set from a key made of its YAML path, upper-cased,
+   joined by `_`: `http.server.port` → `HTTP_SERVER_PORT`,
+   `database.pool.max_conns` → `DATABASE_POOL_MAX_CONNS`,
+   `codec.max_payload_bytes` → `CODEC_MAX_PAYLOAD_BYTES`, `env` → `ENV`,
+   `app.name` → `APP_NAME`. Supported: string, ints, uints (overflow
    checked), bool, floats, `time.Duration` (`"5s"`), pointers, `[]string`
-   (comma-separated), and any `encoding.TextUnmarshaler` (e.g. `ByteSize`).
-   Note: only the env **file** is read this way — real process env vars are
-   only used via `${VAR}` in YAML. A key that matches no field is an error
-   (`unknown keys ...`), as are lower-case keys; `Warnings` and `OnlineSince`
-   are load-time values and cannot be set. Sequences of structs (`jose.keys`,
-   `jose.profiles`) are YAML-only: they are skipped, and an env key naming
-   one (e.g. `JOSE_KEYS`) is an explicit error; use `${VAR}` inside the YAML
-   entries instead. Scalar JOSE leaves work (`JOSE_LIMITS_MAX_TOKEN_BYTES`,
-   `JOSE_JWKS_CACHE_MAX_AGE`, `HTTP_AUTH_REALM`).
-4. **Overlay**: based on the (possibly overridden) `env`, which must be one of
+   (comma-separated), and any `encoding.TextUnmarshaler` (e.g.
+   `codec.ByteSize`). A section only the env file sets is decoded too. Note:
+   only the env **file** is read this way — real process env vars are only
+   used via `${VAR}` in YAML. A key that matches no field of a registered
+   module is an error (`unknown keys ...`), as are lower-case keys. Sequences
+   of structs (`jose.keys`, `jose.profiles`) and maps are YAML-only: an env
+   key naming one (e.g. `JOSE_KEYS`) is an explicit error; use `${VAR}`
+   inside the YAML entries instead. Scalar JOSE leaves work
+   (`JOSE_LIMITS_MAX_TOKEN_BYTES`, `JOSE_JWKS_CACHE_MAX_AGE`,
+   `HTTP_AUTH_REALM`).
+3. **Overlay**: based on the (possibly overridden) `env`, which must be one of
    `local`, `dev`, `stg`, `prd` (case-insensitive; stored lower-case; anything
    else is a load error): `prd` → `config.prd.yaml`, `stg` →
    `config.stg.yaml`, `dev` → `config.dev.yaml`; `local` has none. Path is
    relative to the **CWD**, not to the base config's directory. A missing file
    is skipped; any other `Stat` or read error is a load error. It overrides
-   the env file too.
-5. **Defaults** (`feedDefaults`).
-6. **Validation** (`validateRequiredConfig`), then `transportWarnings`
-   (`config/warnings.go`) checks: a TLS private key readable by group or
-   others, Redis credentials without TLS to a non-local host, a PostgreSQL
+   the env file too, and may set `env` (validated again).
+4. `app.name` and `app.version` are required (load error).
+5. **Defaults and validation** belong to each module's `Configure` (§3.1);
+   cross-section rules to its `Check`. The weakening settings
+   (`Source.Warn`) are: a TLS private key readable by group or others (http),
+   Redis credentials without TLS to a non-local host (cache), a PostgreSQL
    password with `sslmode` disable/allow/prefer (the pgx default) to a
-   non-local host, HTTPS or HTTP/3 served while `cache.redis` or the database
-   does not use TLS (a Unix socket is exempt). Outside `prd` they are
-   `Config.Warnings`; with `env: prd` each one is a **load error** unless its
-   `prd_exceptions` key is true (`tls_key_permissions`, `redis_plaintext`,
-   `database_plaintext`), in which case it stays a warning. In `prd`,
-   `http.docs`, `http.routes.health`, `http.routes.readiness` or
-   `http.routes.graph` enabled is only a warning (unauthenticated endpoints),
-   silenced by `app.internal_use: true`. `deps` logs config warnings at ERROR level in
-   `prd`, because that environment filters the log below ERROR.
-   `codec.max_payload_bytes` must be at
-   most 256 MiB.
+   non-local host (database), HTTPS or HTTP/3 served while the cache's Redis
+   or the database does not use TLS (http `Check`; a Unix socket is exempt).
+   Outside `prd` they are `Application.Warnings()`; with `env: prd` each one
+   is an **error of `app.New`** unless its `prd_exceptions` key is true
+   (`tls_key_permissions`, `redis_plaintext`, `database_plaintext`), in which
+   case it stays a warning. In `prd`, `http.docs`, `http.routes.health`,
+   `http.routes.readiness` or `http.routes.graph` enabled is only a warning
+   (unauthenticated endpoints), silenced by `app.internal_use: true`. The app
+   logs the warnings at ERROR level in `prd`, because that environment filters
+   the log below ERROR. `codec.max_payload_bytes` must be at most 256 MiB.
+
+One `Document` may serve several applications: `Document.Bind()` gives each
+its own bookkeeping of consumed sections and keys. The document is
+immutable during runtime; there is no hot reload of YAML (credential files
+reload through `Application.Reload`, §3.3).
 
 ### 4.2 Full schema, defaults and validation
 
@@ -411,7 +484,7 @@ app:
   name: my-app                # REQUIRED
   version: 1.0.0              # REQUIRED
   internal_use: false         # true = not reachable from the internet; silences the prd warning about docs/health/readiness
-  # OnlineSince is set at load time (RFC 3339), not configurable
+  # Document.OnlineSince() is the load time, not configurable
 
 http:
   server:
@@ -440,7 +513,7 @@ http:
     read_header_timeout: 10s  # http.Server timeouts: 0 = default, never "none"
     read_timeout: 30s         #   (Slowloris); negative → error;
     write_timeout: 30s        #   read_header_timeout <= read_timeout
-    idle_timeout: 120s        #   (config/server.go, also applied by NewHTTPServer)
+    idle_timeout: 120s        #   (http/config_server.go, also applied by nhttp.New)
     handler_timeout: 30s      # deadline of every request context (handlers, queries, loaders)
     max_body_bytes: <codec.max_payload_bytes>   # bounds every request body, raw routes too; at most 1gb
   docs:
@@ -501,7 +574,7 @@ database:                     # database.Config — see §9
 logging:
   output:
     otel:
-      enabled: false          # MASTER SWITCH for all OTel (logs AND traces)
+      enabled: false          # OTel log export (the logger module); traces are the tracing module
       endpoint: ""            # "host:port" or URL; "" = OTel default localhost:4317
       insecure: false
     terminal:
@@ -509,7 +582,7 @@ logging:
 
 tracing:
   otel:
-    enabled: <true>           # *bool; nil = true. Only effective if logging.output.otel.enabled
+    enabled: <true>           # *bool; nil = true. Registering telemetry.Module is the opt-in; false disables the module
     endpoint: ""
     insecure: false
     sample_ratio: <1>         # *float64, 0..1; nil = 1 (every request); ParentBased(TraceIDRatioBased)
@@ -523,7 +596,7 @@ codec:
   xml: { disallow_dtd: true }       # *bool; nil = true
 
 jose:                         # jose.Config — see §10 (unknown keys inside jose are rejected)
-  enabled: false              # false: nothing is read, deps.JOSE is nil
+  enabled: false              # false: nothing is read, the jose module publishes nothing
   limits: { max_token_bytes: 16384, max_header_bytes: 2048, max_payload_bytes: 8192,
             max_json_depth: 16, max_key_file_bytes: 65536, max_profiles: 32, max_keys: 64,
             max_token_lifetime: 720h (≤ 8760h; caps every jwt ttl/max_ttl) }
@@ -540,7 +613,7 @@ prd_exceptions:               # insecure settings env prd accepts on purpose (de
   database_plaintext: false   # PostgreSQL sslmode that can fall back to clear text
 
 cache:                        # cache.Config — see §11; validated only when enabled, and only the selected driver
-  enabled: false              # false: nothing is opened, deps.Cache is nil
+  enabled: false              # false: nothing is opened, the cache module publishes nothing
   driver: redis               # redis | memory
   codec: json                 # json | cbor; must also be in codec.formats.enabled
   prefix: ""                  # "" → nforge:<env>:[<tenant>:]<app.name>: ; custom → <prefix>:[<tenant>:]
@@ -560,17 +633,26 @@ cache:                        # cache.Config — see §11; validated only when e
   memory: { max_entries: 10000, max_bytes: 64mb, cleanup_interval: 30s }  # max_bytes ≥ max_key + max_value
 ```
 
-`jose` defaults and structural validation are delegated to
-`jose.ApplyDefaults` / `jose.ValidateConfig` (applied only when enabled);
-key files are read later, by `jose.New` in `deps`. `validateAuth` checks
-`http.auth` (realm syntax; `default_profile` must be a consuming jwt
-profile and requires `jose.enabled`). `cache` defaults come from
-`cache.ApplyDefaults` (always applied; zero caps/timeouts take the default,
-`read_retries` is a `*int` so an explicit `0` disables retries) and
-`validateCache` runs `cache.ValidateConfig` plus the `codec.formats.enabled`
-check when enabled. Sizes use `cache.ByteSize` (same syntax as
-`config.ByteSize`; `cache` cannot import `config`). The CA file is read only
-by `cache.Open`, and only for an enabled Redis TLS.
+Owners of the sections: `logging` → `logs.Module` (ID `logger`), `tracing` →
+`telemetry.Module`, `codec` → `codec.Module`, `database` →
+`database.Module`, `jose` → `jose.Module`, `cache` → `cache.Module`, `http`
+→ `nhttp.Module`; `env`, `app` and `prd_exceptions` are reserved (package
+`config`). A section of a module the application did not register is an
+error, not ignored.
+
+`jose` defaults and structural validation are `jose.ApplyDefaults` /
+`jose.ValidateConfig` (applied only when enabled); key files are read later,
+by `jose.New` in the module's Init. The http module's `Check` validates
+`http.auth.default_profile` (a consuming jwt profile; it makes the jose module
+a required dependency, so jose disabled is `ErrDisabledDependency`). `cache`
+defaults come from `cache.ApplyDefaults` (always applied; zero caps/timeouts
+take the default, `read_retries` is a `*int` so an explicit `0` disables
+retries); `cache.ValidateConfig` runs when enabled, and the cache module's
+`Check` requires `cache.codec` in `codec.formats.enabled` and
+`max_value_bytes` ≤ `codec.max_payload_bytes`. The database module validates
+the connection fields, the pool values and `database.tenancy` when enabled,
+before any dial (`database.Config.Validate`). The CA file is read only by
+`cache.Open`, and only for an enabled Redis TLS.
 
 Booleans have **no implicit `true` defaults** except the `*bool` fields
 (`tracing.otel.enabled`, `http.security.enabled`, `codec.xml.disallow_dtd`,
@@ -580,37 +662,46 @@ error). In particular
 `http.routes.health.enabled`, `readiness.enabled`, `http.server.header` and
 `http.docs.enabled` are `false` unless set.
 
-Helpers:
-- `cfg.IsLoggingEnabled()` — terminal or OTel output on.
-- `cfg.IsTracingEnabled()` — `logging.output.otel.enabled && tracing.otel.enabled != false`.
+Helpers: `logs.Settings.Enabled()` (terminal or OTel output on),
+`telemetry.OtelSettings.IsEnabled()` (`tracing.otel.enabled != false`).
 
 ### 4.3 `ByteSize`
 
-`config.ByteSize` (int64) parses `"5mb"`, `"512kb"`, `"1.5gb"`, `"100b"`,
+`codec.ByteSize` (int64) parses `"5mb"`, `"512kb"`, `"1.5gb"`, `"100b"`,
 `"1048576"`, `"5 MiB"`; base 1024, case-insensitive. Implements
-`UnmarshalText` and `UnmarshalYAML`. Constants `B, KB, MB, GB`. The parser is
-`cache.ParseByteSize` (the only implementation; `config` imports `cache`):
-whole numbers are exact (no float64 rounding above 2^53) and a value over
+`UnmarshalText` and `UnmarshalYAML`. Constants `B, KB, MB, GB`. It is the
+only implementation (`codec.ParseByteSize`); `cache.ByteSize` is an alias.
+Whole numbers are exact (no float64 rounding above 2^53) and a value over
 `math.MaxInt64` is an error, never a negative number.
 
 ### 4.4 Adding a config field — checklist
 
-1. Add the field to the right struct in `config/types.go` with a `yaml:"snake_case"`
-   tag and a trailing comment stating values and default.
-2. If it needs a default, add it to `feedDefaults` (or a `feedXDefaults`
-   helper). Use a pointer (`*bool`) when "unset" must differ from the zero value.
-3. Validate in `validateRequiredConfig` if invalid values must stop startup.
+1. Add the field to the owning module's section type (`nhttp.Config`,
+   `database.Config`, `cache.Config`, `jose.Config`, `codec.Settings`,
+   `logs.Settings`, `telemetry.Settings`) with a `yaml:"snake_case"` tag and
+   a trailing comment stating values and default.
+2. If it needs a default, add it to the module's defaults (`ApplyDefaults`).
+   Use a pointer (`*bool`) when "unset" must differ from the zero value.
+3. Validate in the module's `Configure` (its section alone) or `Check` (it
+   involves another module) if invalid values must stop startup. No I/O there.
 4. The env-file key is derived automatically from the YAML path; make sure the
    type is supported by `setFieldValue` (or implement `TextUnmarshaler`).
-5. Add tests in `config/*_test.go` and update the `config.yaml` of the
-   example that covers the module (§14).
+5. Add tests next to the module (through `internal/apptest`), document the key
+   in §4.2 (`docs_config_test.go` fails otherwise) and update the
+   `config.yaml` of the example that covers the module (§14).
 
 ---
 
 ## 5. Logging (`logs/`)
 
-`logs.Setup(ctx, cfg)` returns `(*slog.Logger, shutdown, error)` and calls
-`slog.SetDefault`.
+`logs.Module()` (ID `logger`, section `logging`) publishes the application
+logger under `module.Logger`, which every other module declares as optional.
+With no output enabled it publishes a discarding logger (and no request log
+middleware runs). It is a dependency of nearly everything, so it stops last
+and flushes the OTel exporter. `logs.Setup(ctx, settings, app, opts...)`
+returns `(*slog.Logger, flush, error)`; only with `logs.WithProcessGlobals()`
+(the module passes it under `app.WithProcessGlobals`) does it call
+`slog.SetDefault` and route the OTel error handler.
 
 Handler stack:
 ```
@@ -630,8 +721,9 @@ contextHandler            // adds request_id from go-ams-router middleware.GetRe
 - OTel: OTLP/gRPC exporter with a batch processor and the shared resource
   (§6). Endpoint containing `://` → `WithEndpointURL` (http:// implies
   insecure), else `WithEndpoint`.
-- OTel internal errors are routed via `otel.SetErrorHandler` to the
-  **terminal only**, as WARN, to avoid feeding a failing exporter.
+- With process globals, OTel internal errors are routed via
+  `otel.SetErrorHandler` to the **terminal only**, as WARN, to avoid feeding a
+  failing exporter; without them they go to OTel's default handler.
 - `leveledHandler.WithAttrs/WithGroup` re-wrap the handler — keep this when
   editing, or `logger.With(...)` loses its level filter. Same for
   `contextHandler` and `multiHandler`.
@@ -640,8 +732,9 @@ contextHandler            // adds request_id from go-ams-router middleware.GetRe
 Always log with the context-aware methods (`InfoContext`, `ErrorContext`,
 `LogAttrs(ctx, ...)`) inside requests so `request_id` and trace correlation
 are attached. Module log messages use a bracketed prefix:
-`[LoggerModule]`, `[CodecModule]`, `[DatabaseModule]`, `[HTTPModule]`;
-fatal startup errors use `[Fatal ERROR] ...`.
+`[LoggerModule]`, `[TracingModule]`, `[CodecModule]`, `[DatabaseModule]`,
+`[JOSEModule]`, `[CacheModule]`, `[HTTPModule]`, `[App]`, `[Config]`; fatal
+startup and runtime errors use `[Fatal ERROR] ...`.
 
 ---
 
@@ -652,10 +745,15 @@ fatal startup errors use `[Fatal ERROR] ...`.
   host name, process pid/executable/runtime, plus `OTEL_RESOURCE_ATTRIBUTES`.
   **`WithProcess()` is deliberately not used**: it includes command-line
   args, which may leak secrets passed via flags. Do not add it.
-- `SetupTracing` — always sets the W3C propagator (traceparent + baggage). If
-  tracing is enabled, registers a `TracerProvider` with OTLP/gRPC batch
-  exporter, the shared resource and the custom `idGenerator`. If disabled, OTel
-  stays on its no-op provider (instrumented code still works).
+- `telemetry.Module()` (ID `tracing`, section `tracing`) builds a
+  `TracerProvider` (`NewTracerProvider`: OTLP/gRPC batch exporter, the shared
+  resource, the custom `idGenerator`, the configured sampler) and publishes
+  `*telemetry.Tracing{Provider, TrustIncoming}` under `telemetry.Capability`;
+  nhttp's tracing middleware uses that provider. Registering it is the opt-in;
+  `tracing.otel.enabled: false` disables it (no middleware, no request_id).
+  With process globals it also installs the provider and the W3C propagator
+  (`Propagator()`: traceparent + baggage) as the OTel globals. Its Stop
+  flushes and shuts the provider down.
 - `idGenerator` — for root spans it uses the trace ID stored in the context by
   `ContextWithTraceID` (falls back to random). `ParseTraceID` accepts 32 hex
   chars or a UUID (hyphens stripped); all-zero is rejected.
@@ -698,32 +796,41 @@ With tracing disabled there is no `request_id` in the context/logs and no
 
 ## 7. HTTP (`http/`, package `nhttp`)
 
-### 7.1 `ServerHttp`
+### 7.1 `Server` and `Module`
+
+`nhttp.Module()` owns the `http` section and is an **ingress** module: its
+Init builds the `Server` (router, chain, built-in routes, the banner with
+`http.server.header`) and publishes it under `nhttp.Capability`; its Start
+binds and serves after every other module started; its Stop drains and
+closes first (§3.4); its Reload re-reads the TLS certificates. It requires
+the codec module (and jose with `http.auth.default_profile`); logger,
+tracing, jose, database and cache are optional (the last two only for the TLS
+posture checks of `Check`). It never handles signals.
 
 ```go
-type ServerHttp struct {
-    Deps         *deps.Deps
-    Srv          *http.Server         // Srv.Handler is the go-ams-router Router
-    ShutdownFunc []func()
-    TypedRoutes  []TypedRoute         // source of the OpenAPI spec
+type Server struct {
+    Srv         *http.Server  // Srv.Handler is the go-ams-router Router shared by every transport
+    TypedRoutes []TypedRoute  // source of the OpenAPI spec
+    // unexported: cfg, app, logger, codec, jose, tracing, status, failed, listeners
 }
 ```
-Methods: `NewHTTPServer(deps)`, `Router()`, `Typed()`,
-`AddGlobalMiddleware`, `LoadGlobalMiddleware`, `AddDocRoute`,
-`TenantMiddleware(opts...)` (§7.10), `AddShutdownFunc`, `Shutdown`, `Start`,
-`StartContext(ctx)` (what `Start` calls; tests and embedders cancel the ctx).
-`Srv` stays the application's plain HTTP `*http.Server` (never started when
-`disable_insecure_http` or `redirect_http` replaces it; its `Handler` is the
-one router shared by every transport, so `Router()`/`Typed()` keep working).
+Methods: `Router()`, `Typed()`, `Use(mw...)` (global middlewares),
+`AddDocRoute`, `TenantMiddleware(opts...)` (§7.10), `Config()` (the effective
+section), and the lifecycle the module calls: `Start(ctx)` (binds every
+transport and returns once they are bound), `Stop(ctx)` (drain, close, wait;
+once), `Reload(ctx)`. `nhttp.New(cfg, nhttp.Dependencies{App, Logger,
+AccessLog, Codec, JOSE, Tracing, Status, Failed})` builds a server outside an
+application (tests, embedding). `Srv` stays the application's plain HTTP
+`*http.Server` (never started when `disable_insecure_http` or
+`redirect_http` replaces it).
 
-`NewHTTPServer` sets `Srv.ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout`
-and `IdleTimeout` from `http.server` (defaults 10s/30s/30s/120s). It applies
-`config.ApplyServerDefaults` to a copy of the section, so a `Config` built
-by hand (tests, embedding) also gets them while `Deps.Config` is unchanged.
-A handler that streams or runs longer than `write_timeout` extends its own
-deadline with `http.NewResponseController(w).SetWriteDeadline(...)`;
-`Srv` stays exported for anything else, as long as it is changed before
-`Start`.
+`New` sets `Srv.ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout` and
+`IdleTimeout` from `http.server` (defaults 10s/30s/30s/120s). It applies the
+defaults (`Config.ApplyDefaults`, `ApplyServerDefaults`) to a copy of the
+section, so a `Config` built by hand also gets them. A handler that streams
+or runs longer than `write_timeout` extends its own deadline with
+`http.NewResponseController(w).SetWriteDeadline(...)`; `Srv` stays exported
+for anything else, as long as it is changed before `Start`.
 
 ### 7.2 Response envelope
 
@@ -818,7 +925,7 @@ with bearer security + 400/401), `AuthProfile` (jose jwt profile; default
   `default` tags (`query.Check`);
 - body/response types must have consistent codec tags (`mustValidTags`);
 - private routes (`routeAuth`): `AuthProfile`/`RequiredScopes` without
-  `IsPrivate`, nil `deps.JOSE`, no resolvable profile, unknown / non-JWT /
+  `IsPrivate`, no jose service (jose module absent or disabled), no resolvable profile, unknown / non-JWT /
   non-consuming profile, invalid scopes, or `http.docs.enabled` with
   `http.docs.auth: none` all panic.
 
@@ -898,21 +1005,21 @@ func (q *ListUsers) Validate() error { ... }         // → 422 on failure
 
 ### 7.6 Built-in health and readiness
 
-`NewHTTPServer` registers each one only when enabled (typed routes, tag
+`New` registers each one only when enabled (typed routes, tag
 `maintenance`):
-- `GET {health.path}` → 200 `{"status":"ok"}` (liveness: never touches dependencies).
-- `GET {readiness.path}`:
-  - database disabled (`deps.DB == nil`) → 200
-    `{"status":"ok","online_since":"<RFC3339>"}` (no `database` key);
-  - database enabled and the ping (request ctx + 2 s `readinessTimeout`, via
-    `Deps.PingDatabase`) succeeds → 200 with `"database":{"health":true}`;
-  - jose enabled → `"jose":{"health":<Deps.CheckJOSE ok>}` (no key I/O);
-    omitted when disabled;
-  - cache enabled → `"cache":{"health":<Deps.PingCache ok>}` (request ctx +
-    the same 2 s budget; Redis PING, memory: open), omitted when disabled.
-    It is pinged on every probe, so a recovered Redis is healthy at once;
-  - any dependency fails → **503**, the same body as `error.detail` with
-    `"status":"unavailable"` and the failing `health:false`, logged as WARN.
+- `GET {health.path}` → 200 `{"status":"ok"}` (liveness: never probes anything).
+- `GET {readiness.path}` → the application's readiness (§3.3), from
+  `Dependencies.Status` (the module's `Scope.Introspect()`), within the
+  request ctx + 2 s (`readinessTimeout`):
+  - ready → 200 `{"status":"ok","online_since":"<RFC3339>","modules":{"<id>":"ready",...}}`
+    with every enabled module (disabled ones are omitted);
+  - not started yet, stopping, a failed module or a critical module not ready
+    → **503**, the same body as `error.detail` with `"status":"unavailable"`
+    and the `not_ready` modules, each logged as WARN with its ID only.
+  - The probes are shared and reused for 1 s (`app.WithProbeInterval`), so a
+    recovered Redis or PostgreSQL is ready again within a second, and a flood
+    of probes costs one ping per dependency.
+  - A server built with `New` without `Status` answers 200 with no `modules`.
 
 ### 7.7 Middlewares provided
 
@@ -930,7 +1037,7 @@ func (q *ListUsers) Validate() error { ... }         // → 422 on failure
 
 ### 7.8 OpenAPI / docs (`routes.go`, `internal/openapi`)
 
-- Spec is built from `ServerHttp.TypedRoutes` and **cached per route count**
+- Spec is built from `Server.TypedRoutes` and **cached per route count**
   (`speccache.go`): routes registered after server creation are included
   (the count changes), a repeat request costs a map lookup, and the response
   carries an `ETag` and answers `If-None-Match` with 304. The docs page, the
@@ -1028,7 +1135,7 @@ p.HasScopes("a", "b")                             // every scope, exact and case
 
 The tenant lives in the request context under the `database` package key
 (`database.WithTenant` / `database.TenantFromContext`), so handlers call
-`deps.DB.ForContext(r.Context())` directly. JWT validation itself is
+`db.ForContext(r.Context())` directly. JWT validation itself is
 `Authenticate` (§7.9); the tenant middlewares only read its `Principal`.
 
 ```go
@@ -1061,11 +1168,11 @@ id, ok := nhttp.TenantID(r); r, err = nhttp.WithTenantID(r, id)
 ### 7.11 Security headers and CORS (`security.go`)
 
 Both are go-ams-router middlewares configured from `http.security` /
-`http.cors` and mounted by `setStandardHandler` after the Recoverer (§3.3);
+`http.cors` and mounted by `setStandardHandler` after the Recoverer (§3.5);
 `config` validates them at load with the router's own rules, so building
 them never panics. Apps that need dynamic options (a CSP nonce for their
 own pages, `CORSDelegate`, `OriginFunc`) leave the section disabled and
-add the router middleware with `AddGlobalMiddleware`.
+add the router middleware with `Server.Use`.
 
 - **Security** (helmet defaults): CSP `default-src 'self'; …`, HSTS
   `max-age=31536000` (`includeSubDomains` only with
@@ -1087,8 +1194,8 @@ Ports are independent and **optional**: `port` 8080 (tcp), `tls.port` 8443
 (tcp), `http3.port` 8443 (udp). Omitted or `0` takes the default (an explicit
 `0` is never an ephemeral bind); negative or > 65535 fails. Changing
 `tls.port` does not move `http3.port`. TCP and UDP 8443 do not collide.
-`config.ApplyServerDefaults` fills them on a copy in `config.Load`, in
-`NewHTTPServer` and in `Start`, so a `Config` built by hand behaves the same.
+`ApplyServerDefaults` fills them on a copy in the module's Configure, in
+`New` and in `Start`, so a `Config` built by hand behaves the same.
 
 | tls | http3 | disable_insecure_http | redirect_http | Result |
 |---|---|---|---|---|
@@ -1115,7 +1222,7 @@ material); `same_keycert_tls: true` with `http3.cert_file/key_file` set;
 unquoted `1.3`, but `1.30` or `1.1` fail.
 
 - **One handler.** HTTP (normal mode), HTTPS and QUIC serve `Srv.Handler`; the
-  chain (§3.3) and routes exist once. HTTPS uses `ServeTLS` with only
+  chain (§3.5) and routes exist once. HTTPS uses `ServeTLS` with only
   `Certificates`/`MinVersion` set, so `net/http` negotiates `h2` itself.
   HTTP/3 uses `quic-go/http3` (v0.64.1) with TLS 1.3 and ALPN `h3` forced,
   `quic.Config{MaxIdleTimeout, Allow0RTT: false}` and `IdleTimeout` from
@@ -1140,20 +1247,23 @@ unquoted `1.3`, but `1.30` or `1.1` fail.
   stream; a long handler extends it with `http.NewResponseController`.
 - **0-RTT** is reserved: early data is replayable and nForge has no replay
   policy, so `true` fails validation.
-- **Startup/shutdown.** `prepare` loads certificates, then binds UDP, HTTPS,
-  HTTP in that order, closing everything on any error. `StartContext` serves
-  each in a goroutine; the first non-closed error or ctx cancel stops all
-  transports (parallel `Shutdown`, 10 s, then `Close`), waits for the serve
-  goroutines, then runs `Deps.Shutdown` once. net/http can leave a just-
-  accepted HTTP/2 connection undrained: the result is the drain deadline
-  (`context.DeadlineExceeded` in the joined error) followed by a forced close,
-  never a leak.
+- **Startup/shutdown.** `Start` (`prepare`) loads certificates, then binds UDP,
+  HTTPS, HTTP in that order, closing everything on any error, and returns once
+  every listener is bound; each is served in a goroutine the server owns. A
+  serve error after that goes to `Dependencies.Failed` (the module's
+  `Scope.ReportFailure`, so the application shuts down). `Stop` shuts every
+  transport down in parallel (`Shutdown`, at most 10 s within the ctx, then
+  `Close`) and waits for the serve goroutines, before any other module stops.
+  net/http can leave a just-accepted HTTP/2 connection undrained: the result
+  is the drain deadline (`context.DeadlineExceeded` in the joined error)
+  followed by a forced close, never a leak.
 - **Credential reload (`certs.go`).** The certificate is served through
   `tls.Config.GetCertificate` from a `certReloader`: a handshake looks at the
   cert and key files' modification times at most every 30 s and re-reads a
-  changed pair, and **SIGHUP** reloads every certificate and, with jose
-  enabled, the JOSE keys (`Deps.ReloadJOSE`), so ACME/cert-manager rotation
-  needs no restart and drops no connection. A pair that fails to load or does
+  changed pair, and `Server.Reload` (the module's Reload hook: **SIGHUP**
+  through `app.Run`, which also reloads the JOSE keys through the jose module)
+  re-reads every certificate, so ACME/cert-manager rotation needs no restart
+  and drops no connection. A pair that fails to load or does
   not match keeps the previous certificate (WARN, no path or key material);
   HTTP/3 shares the reloader when it uses the same pair.
 - **`Srv` customisation.** `newTCPServer` carries `MaxHeaderBytes`,
@@ -1174,12 +1284,12 @@ unquoted `1.3`, but `1.30` or `1.1` fail.
 
 Off twice. The page and its Mermaid bundle are compiled only with
 `-tags nforge_graph`, so an ordinary binary does not carry them; enabling the route
-in a binary built without the tag panics at `NewHTTPServer`, because a route that
+in a binary built without the tag panics at `nhttp.New`, because a route that
 silently answers 404 would hide the mistake. With the tag,
 `http.routes.graph.enabled: false` registers nothing and does not even parse the
 template, but the bundle is linked (about 2.2 MB). The structural graph exists in
-every case, because the orchestrator needs it: `Deps.Graph` and
-`Deps.ModuleStatus` work without the tag.
+every case, because the orchestrator needs it: `Application.Graph` and
+`Application.Status` work without the tag.
 
 ```yaml
 # go build -tags nforge_graph ./...
@@ -1196,13 +1306,15 @@ Mermaid source is derived from it. Layout (`schema_version` 1): `generated_at`,
 `modules[]` (`id`, `enabled`, `provides`, `dependencies`,
 `optional_dependencies`, `startup_order`, 0 when disabled), `edges[]` (`from`,
 `to`, `capability`, `required`), `operational_status[]` (`id`, `initialization`:
-`pending|started|failed|stopped|disabled`, `status`: `ready|not_ready|disabled`).
+the module state `pending|initialized|started|stopping|stopped|failed|disabled`,
+`status`: `ready|not_ready|disabled`).
 An arrow points from a consumer to its dependency; dotted means optional.
 
-- A graph that does not resolve stops the bootstrap, so the page never shows an
+- A graph that does not resolve fails `app.New`, so the page never shows an
   invalid graph as a healthy application.
-- The state is sampled at most every 5 s (`graphStatusTTL`) with a 2 s budget and
-  one probe at a time, so a burst of requests costs one probe per dependency. A
+- The state is sampled at most every 5 s (`graphStatusTTL`) with a 2 s budget,
+  through the application's shared probes, so a burst of requests costs one
+  probe per dependency. A
   module with a `Ready` hook is probed (database and cache really ping); a
   failure is shown as `not_ready` and logged as WARN with the module ID only.
 - Mermaid (`graph.MermaidVersion`, MIT) is embedded gzipped and served from
@@ -1220,7 +1332,7 @@ An arrow points from a consumer to its dependency; dotted means optional.
 - `{path}/mermaid.min.js` is 1.5 MB per uncached response: a public page is also a
   cheap way to spend the server's bandwidth, one more reason to restrict the path.
 - **Exposure**: the page is public and shows the topology. `env: prd` logs one
-  warning per bootstrap (at ERROR, like every config warning there, because prd
+  warning per application (at ERROR, like every config warning there, because prd
   filters below it) unless `app.internal_use: true`, and does not stop the
   startup. **The warning is not access control**: restrict the path at the
   gateway or by network, or wrap it with a global middleware of your own.
@@ -1234,7 +1346,7 @@ An arrow points from a consumer to its dependency; dotted means optional.
 
 Business code **never imports `encoding/json`, `encoding/xml` or the CBOR
 library directly** — it goes through a `*codec.Registry` (normally
-`codec.Default()`, or `deps.Codec`).
+the application's Registry (`codec.Capability`; `codec.FromContext` in a request), or `codec.Default()`).
 
 ### 8.1 One struct, three formats
 
@@ -1303,6 +1415,12 @@ r, err := codec.New(codec.Config{
 }, extraCodecs...)
 ```
 
+`codec.Module(codec.WithCodecs(...), codec.WithValidator(fn))` owns the
+`codec` section (`codec.Settings`), builds the Registry at configuration time
+(so an unknown or disabled default format fails `app.New`) and publishes it
+under `codec.Capability`; `Registry.MaxPayloadBytes()` and
+`StrictUnknownFields()` expose its limits to the transports.
+
 - Every enabled format must have a codec; the default must be enabled.
 - Format names: short (`json`), full (`application/json`), with params
   (`application/json; charset=utf-8`), `text/xml` → XML; unknown short names
@@ -1337,7 +1455,8 @@ r, err := codec.New(codec.Config{
   changes `time.Duration`, nil slices, key case, `any` numbers and has no
   required fields).
 - Process default: initialized in `init()` with json+cbor+xml, permissive,
-  5 MiB; replaced once by `deps.NewDeps` via `SetDefault`.
+  5 MiB; replaced only by the codec module of an application built with
+  `app.WithProcessGlobals` (`SetDefault`). Otherwise each application uses its own.
 
 ### 8.4 Errors
 
@@ -1413,18 +1532,22 @@ Config rules (`database.Config`):
   error.
 - **Secrets**: `database.Config` redacts its password and DSN (userinfo
   password plus `password`/`sslpassword` query parameters) in `LogValue` and
-  in every `fmt` verb (`Format`), and `config.Config` prints a redacted copy
-  (`Config.Redacted()`: database, Redis, JOSE keys and key paths, TLS key
-  paths, OTel endpoint userinfo) through `String`, `GoString`, `LogValue`,
-  `MarshalJSON` and `MarshalYAML`, so a whole `Deps.Config` can be logged with
-  any handler. `ConnectionString()` output must never be logged.
-  `TestConfigNeverPrintsSecrets` plants a secret in every such field: extend
-  it when you add one.
+  in every `fmt` verb (`Format`). Every module section redacts itself the
+  same way: `cache.Config` (URL, password, CA path), `jose.Config` (secrets,
+  key paths), `nhttp.Config` (TLS key paths), `logs.Settings` and
+  `telemetry.Settings` (endpoint userinfo and query), through `String`,
+  `GoString`, `LogValue` and `MarshalJSON` where applicable, so the modules
+  log their section with any handler. `ConnectionString()` output must never
+  be logged. Each package has a test that plants a secret in every such
+  field: extend it when you add one.
 
-Health: `deps.PingDatabase(ctx)` returns `deps.ErrDatabaseDisabled` when the
-DB is off; `db.Ping` always pings the pool (even from a tx-scoped DB).
-`db.Shutdown` blocks until all connections are released — call it after the
-HTTP server stops (`Deps.Shutdown` already does, LIFO).
+Module: `database.Module()` (section `database`, capability
+`database.Capability`) opens the pool at Init when `database.enabled` (15 s
+startup bound, ping, `CheckTenancy`; a failure is fatal), its readiness is
+`db.Ping` (always pings the pool, even from a tx-scoped DB) and its Stop is
+`db.Shutdown`, which blocks until all connections are released: it runs
+after HTTP drained and after every module that depends on the database
+stopped (§3.4). Disabled, it publishes nothing.
 
 Error idiom: `pgx.ErrNoRows` → 404; `DELETE` with `RowsAffected() == 0` is
 not an error in pgx — check it; other DB errors → log + generic 500 (never
@@ -1467,7 +1590,7 @@ a.Query.Insert("users").Columns(a.TenantColumn(), "name").Values(a.TenantID(), n
   (AND-ed: they only narrow).
 - The root (unscoped) DB keeps working: in rls mode it simply sees **no**
   tenant rows. Cross-tenant work (jobs, admin) uses a **second DB outside
-  `Deps`** opened by the app with another role that has `BYPASSRLS` and
+  the database module** opened by the app with another role that has `BYPASSRLS` and
   tenancy disabled: `database.Open(ctx, adminCfg)` (the app owns its
   `Shutdown`).
 - `ForTenant` on a transaction-scoped DB → `ErrTenantInTransaction` (scope
@@ -1497,7 +1620,7 @@ CREATE POLICY tenant_isolation ON users
 
 ## 10. JOSE (`jose/`)
 
-Standalone package (no internal imports, no globals; several `*jose.Service`
+Package with no internal imports but `module` (its descriptor `jose.Module()`, section `jose`, capability `jose.Capability`), no globals; several `*jose.Service`
 can coexist). Crypto is delegated to `github.com/go-jose/go-jose/v4`
 (pinned in `go.mod`, `govulncheck` clean at adoption) behind unexported adapters:
 **no go-jose type appears in the public API**. Protocol JSON (headers,
@@ -1600,9 +1723,10 @@ and slog.
 - `Reload(ctx)` rereads the key files of the **same** config and swaps the
   snapshot atomically only if all keys validate (failure keeps the old one;
   identical material is a no-op). It never reloads YAML or profiles, starts
-  no watcher and is never triggered by tokens. `nhttp` triggers it on
-  **SIGHUP** (`Deps.ReloadJOSE`, together with the TLS certificates); an
-  application with another trigger calls `Deps.ReloadJOSE(ctx)` itself. The
+  no watcher and is never triggered by tokens. The jose module's Reload hook
+  calls it: `app.Run` triggers it on **SIGHUP** (together with the TLS
+  certificates of nhttp); an application with another trigger calls
+  `Application.Reload(ctx)` (or `Service.Reload`) itself. The
   replaced snapshot is wiped (best effort) as soon as the operations admitted
   before the swap have finished; each snapshot counts its users.
 - Rotation: deploy config with old **and** new kids, switch the producer
@@ -1617,8 +1741,9 @@ and slog.
 
 ## 11. Cache (`cache/`)
 
-Standalone package (imports only `codec`; no `config`, `deps`, `nhttp`,
-`database`, `logs` or `telemetry`). One **non-generic** `*cache.Cache` per
+Package with few imports: `codec`, `module` (its descriptor) and `database`
+(only the tenant context of the module's tenant isolation); no `config`,
+`app`, `nhttp`, `logs` or `telemetry`. One **non-generic** `*cache.Cache` per
 instance, one driver per instance, no globals (several can coexist). Redis
 goes through `github.com/redis/go-redis/v9` (pinned in `go.mod`) behind
 unexported adapters: no go-redis type appears in the public API. The
@@ -1641,7 +1766,7 @@ cache/
 
 ```go
 c, err := cache.Open(ctx, cfg, cache.WithNamespace(env, app), cache.WithCodecRegistry(reg),
-    cache.WithTenantResolver(fn), cache.WithLogger(logger))   // deps does this for you
+    cache.WithTenantResolver(fn), cache.WithLogger(logger))   // cache.Module() does this for you
 c.Get(ctx, key, &target) / c.Set(ctx, key, value, ttl) / c.SetIfAbsent(ctx, key, value, ttl) (bool, error)
 c.GetBytes(ctx, key) ([]byte, error) / c.SetBytes(ctx, key, b, ttl) / c.SetBytesIfAbsent(ctx, key, b, ttl) (bool, error)
 c.Delete(ctx, keys...) (int64, error) / c.Exists(ctx, key) (bool, error)
@@ -1656,7 +1781,7 @@ cache.ApplyDefaults(&cfg); cache.ValidateConfig(cfg)
 - `Open` deep-copies cfg, applies defaults, validates, checks the codec is
   in the registry (`ErrUnsupportedCodec`), builds the driver and **pings**
   with ctx; on failure it closes what it created. Disabled cfg →
-  `ErrDisabled`. It never panics or exits (deps decides that it is fatal).
+  `ErrDisabled`. It never panics or exits (the module makes it a fatal Init error).
 - Without `WithCodecRegistry`, `codec.Default()` is captured **once**.
   Without `WithLogger`, a discarding logger. Nil options and conflicting
   duplicates are `ErrInvalidConfig`. `WithNamespace` is required unless
@@ -1811,10 +1936,13 @@ custom,  multitenant:   <prefix>:<tenant>:<key>
 env, app and tenant are escaped with an injective percent-encoding of `%`,
 `:` and control bytes (UUIDs and ordinary names are unchanged); the prefix
 is a trusted literal (no control characters); the key is appended verbatim.
-Tenant isolation is on when a resolver is given; `deps` gives one exactly
-when **`database.tenancy.enabled`** (regardless of `database.enabled`),
-bound to **`database.TenantFromContext`** (`deps.tenantFromContext`
-returns `database.ErrNoTenant` when absent). That context value is set by
+Tenant isolation is on when a resolver is given; the cache module gives one
+exactly when the registered database module has
+**`database.tenancy.enabled`** (regardless of `database.enabled`; read in its
+`Check` through `module.ConfigOf`), bound to **`database.TenantFromContext`**
+(`cache.tenantFromContext` returns `database.ErrNoTenant` when absent). An
+application that registers the cache without the database module has no
+tenant isolation in the cache. That context value is set by
 the existing `nhttp.Tenant()` / `nhttp.SetTenant` / `Opts.Tenant` (or
 `database.WithTenant`). It is resolved once per operation, **before** any
 backend access, flight or loader; missing → `ErrTenantRequired`, never a
@@ -1850,7 +1978,7 @@ HTTP; readiness owns its 503 (§7.6) and the cache example maps the rest
 ## 12. Crypto (`crypto/`, package `ncrypto`)
 
 Standalone toolbox (no internal imports, no globals, no config section, not
-in `Deps`): the application builds what it needs from its own keys. The
+a module): the application builds what it needs from its own keys. The
 only consumer today is the `basic` example's `crypto.go` demo, which
 `main.go` leaves disabled and `crypto_test.go` runs. Dependencies:
 `golang.org/x/crypto` (chacha20poly1305, argon2, bcrypt),
@@ -1941,7 +2069,7 @@ millisecond is random, so it is an identifier, not a secret.
 
 Small, standalone utilities that do not justify a module: each lives in
 `helper/<name>/`, imports no nForge package (stdlib only unless there is a
-strong reason) and has no config or `Deps` wiring.
+strong reason) and has no config or module wiring.
 
 ### 13.1 `safecalc` (money)
 
@@ -1982,14 +2110,17 @@ safecalc.Round(0.125, 2)                             // 0.12 (float display help
 Four independent `package main` applications, each focused on one part of
 the framework, each with its own `config.yaml` (only the keys it uses,
 commented), `README.md` and tests. They share one pattern: `main` loads the
-config, builds `deps` and calls a `newServer(dps)` that the tests reuse with
-`config.LoadFlags` and an env file, so tests drive the real middleware chain
-through `Srv.Handler` without a port. All listen on `127.0.0.1:8080`; app
+config, calls a `newApp(cfg, opts...)` that registers the built-in modules it
+needs plus one application module (routes registered in its Init) and runs
+it with `Application.Run`; the tests reuse `newApp` with `config.LoadFlags`
+and an env file (a free port), `Start` it, take the server with
+`app.Value(a, nhttp.Capability)` and drive the real middleware chain through
+`Srv.Handler`. All listen on `127.0.0.1:8080`; app
 names are `<name>-example`.
 
 | Example | Modules | Files | Tests |
 |---|---|---|---|
-| `basic` | HTTPS + HTTP/3 opt-in (`config.https-http3.yaml`, `certs/`), jose (one HS256 `access` profile, demo secret inline in its config.yaml), cache (memory driver), database (PostgreSQL on; `standalone.env` turns it off, no Docker); `http.security` + `http.cors` on | `main.go` (bootstrap, `clacksOverhead` global middleware), `auth.go` (demo login `admin@admin.com`/`admin123` → `IssueJWT`, private typed `/auth/me`), `cache.go` (`/cache/{key}` Set/Get/Delete), `config.yaml` has OTel on, for the local collector (`standalone.env` turns it off), `database.go` (`/db/notes` CRUD on table `basic_notes`, not registered when `deps.DB` is nil), `https_http3_test.go` (starts the example on free ports with the committed certificate and talks real HTTPS, HTTP/3 and the 308), `certs/` (**local-development-only, intentionally public** ECDSA pair, SAN localhost/127.0.0.1/::1; never reused by anything else, regenerate with `certs/generate.sh`), `plain.go` (`ParseJSON/XML/CBOR` + `Send*` echo routes, `AddDocRoute`), `users.go` (typed CRUD over an in-memory store, `ListQuery` typed query with default/required/`Validate`, an XML-codec route), `crypto.go` (`runCrypto` ncrypto demo: XChaCha20, HMAC, bcrypt/Argon2id, BLAKE3, random; disabled in `main.go`), `safecalc_test.go` (cents arithmetic + `Format`, `ExampleMoney_Format`) | formats, status mapping 400/415/422, typed CRUD + paging, docs/health/ready, security headers + docs CSP + CORS preflight, login 400/401 + `/auth/me` 401/200, cache hit/miss/delete, the crypto demo, safecalc; `/db/notes` CRUD + 404 (integration) |
+| `basic` | HTTPS + HTTP/3 opt-in (`config.https-http3.yaml`, `certs/`), jose (one HS256 `access` profile, demo secret inline in its config.yaml), cache (memory driver), database (PostgreSQL on; `standalone.env` turns it off, no Docker); `http.security` + `http.cors` on | `main.go` (`newApp`: explicit registration, the `api` application module, `clacksOverhead` through `Server.Use`), `auth.go` (demo login `admin@admin.com`/`admin123` → `IssueJWT`, private typed `/auth/me`), `cache.go` (`/cache/{key}` Set/Get/Delete), `config.yaml` has OTel on, for the local collector (`standalone.env` turns it off), `database.go` (`/db/notes` CRUD on table `basic_notes`, not registered when the database module is disabled), `https_http3_test.go` (starts the example on free ports with the committed certificate and talks real HTTPS, HTTP/3 and the 308), `certs/` (**local-development-only, intentionally public** ECDSA pair, SAN localhost/127.0.0.1/::1; never reused by anything else, regenerate with `certs/generate.sh`), `plain.go` (`ParseJSON/XML/CBOR` + `Send*` echo routes, `AddDocRoute`), `users.go` (typed CRUD over an in-memory store, `ListQuery` typed query with default/required/`Validate`, an XML-codec route), `crypto.go` (`runCrypto` ncrypto demo: XChaCha20, HMAC, bcrypt/Argon2id, BLAKE3, random; disabled in `main.go`), `safecalc_test.go` (cents arithmetic + `Format`, `ExampleMoney_Format`) | formats, status mapping 400/415/422, typed CRUD + paging, docs/health/ready, security headers + docs CSP + CORS preflight, login 400/401 + `/auth/me` 401/200, cache hit/miss/delete, the crypto demo, safecalc; `/db/notes` CRUD + 404 (integration) |
 | `jose` | jose | `auth.go` (demo login `admin`/`admin` with `profile` + `scope`, `/public`, typed `/me`, raw `/raw/wallets` + `/raw/wallets-slice` with variadic/slice `WithScopes`, typed `/api/v1/wallets`, nested-only `/api/v1/confidential`, `/api/v1/jose/demo` JWS/JWE round trip; `protectedCalls` counter), `cmd/keygen` (key files for the commented asymmetric setup; 0700/0600, `-force`) | 200/401/403 matrix, handlers not invoked on failure, nested vs access, missing secret fails at load |
 | `cache` | cache (redis; `standalone.env` → memory) | `routes.go` (`/api/v1/items/{key}` Set/Get/claim=SetIfAbsent/ttl/expire/Delete, `/api/v1/counters/{key}`, raw `/raw/{key}` bytes, `/api/v1/products/{id}` `GetOrLoad` over a slow `catalog`; `sendCacheError`) | shared scenarios run on memory (`main_test.go`) and on Redis (`redis_integration_test.go`, unique prefix, deletes its keys); CBOR; readiness |
 | `database` | database (+ tenancy column, `http.tenant.source: header`) | `users.go` (Squirrel/pgx CRUD, filters, batch in `Transaction`, `sendDBError`), `notes.go` (typed `Opts{Tenant}` routes and raw `server.TenantMiddleware()`, `ForContext`/`TenantEq`/tenant `Transaction`; `ensureNotesSchema` builds RLS when `mode: rls`), `rls.env` + `rls-setup.sql` (role `app_tenant`) | config + rls overlay load (unit); CRUD and tenant isolation 403/400/404 (integration) |
@@ -2025,7 +2156,7 @@ Then `http://localhost:8080/docs`; Grafana at `http://localhost:3000`.
 go build ./...
 go vet ./...
 go test -tags nforge_graph ./http/...   # the module graph page, compiled only with this tag
-go test ./...                    # unit tests (cache, codec, config, crypto, database, deps, helper, http, jose)
+go test ./...                    # unit tests (app, cache, codec, config, crypto, database, helper, http, jose, logs, module, telemetry, architecture)
 go test -race ./...
 
 # the examples (`./...` skips `_` directories, so name each one):
@@ -2058,9 +2189,9 @@ golangci-lint run ./... $EXAMPLES
 # tenancy tests create/drop a role, so the URL's user must be able to CREATE ROLE:
 NFORGE_TEST_DATABASE_URL='postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable' \
   go test -tags integration ./database/...
-# module lifecycle against the real services (rollback and shutdown are checked
-# from pg_stat_activity); needs both URLs below:
-NFORGE_TEST_DATABASE_URL=... NFORGE_TEST_REDIS_URL=... go test -race -tags integration ./deps/
+# application lifecycle against the real services (rollback, drain and shutdown
+# are checked from pg_stat_activity); needs both URLs below:
+NFORGE_TEST_DATABASE_URL=... NFORGE_TEST_REDIS_URL=... go test -race -tags integration ./app/
 
 # cache integration tests against a DISPOSABLE Redis (unique prefixes, only
 # their own keys are deleted, never FLUSHDB):
@@ -2120,10 +2251,13 @@ algorithm/kid/typ, boundaries), not only round trips.
   package prefix for library errors (`codec: …`, `database: …`, `nhttp: …`).
 - Programmer errors detected at startup/registration **panic** with a clear
   message (`nhttp: GET /x: …`); runtime/request errors are returned.
-- Startup failures of required modules are fatal: `deps.NewDepsE` returns the
-  error (after logging `[Fatal ERROR] …` and shutting down what had started,
-  so OTel batches are flushed) and `deps.NewDeps` prints it to **stderr**,
-  whatever the logging configuration, and exits with status 1.
+- Startup failures of enabled modules are fatal: `Application.Start` (and
+  `Run`) returns the error after logging `[Fatal ERROR] …` and stopping what
+  had been initialized (so OTel batches are flushed). Library code never
+  calls `os.Exit`: only the `main` package chooses the exit code (the
+  examples print to **stderr**, whatever the logging configuration, and exit
+  1). The bootstrap logger (`app.WithLogger`, default WARN to stderr) reports
+  what happens before or after the configured logger exists.
 - Keep the hot path allocation-conscious; cache reflection per type with
   `sync.Map`.
 - Inside `nhttp`, import `net/http` as `stdhttp`; the router as `router`.
@@ -2172,7 +2306,7 @@ algorithm/kid/typ, boundaries), not only round trips.
   changes only when a package or an example is added or removed.
 - Do not cite a dependency's version in prose: `go.mod` is the source, and
   `docs_test.go` fails on any `vX.Y.Z` that it does not list.
-  `config/docs_test.go` fails when a key of `config.Config` is missing from §4.2.
+  `docs_config_test.go` fails when a key of a module section is missing from §4.2.
 
 ---
 
@@ -2184,10 +2318,11 @@ algorithm/kid/typ, boundaries), not only round trips.
    file does not feed `${VAR}`.
 3. **`env` casing**: overlay selection is case-insensitive, log level is not
    (`PRD` → overlay applied but DEBUG log level). Use lowercase.
-4. **`deps.DB` is nil when `database.enabled: false`**: any code that touches
-   the database must check for nil (or use `Deps.PingDatabase`, which returns
-   `ErrDatabaseDisabled`). The built-in readiness route used to panic here;
-   it now omits the database check (regression tests in `http/routes_test.go`).
+4. **A disabled module publishes nothing**: with `database.enabled: false` a
+   module that `Requires` the database fails `app.New`
+   (`ErrDisabledDependency`); one that declares it `Optional` gets
+   `ok == false` from `module.Lookup` and must not use it. Readiness lists
+   only the enabled modules.
    If Docker/Postgres is down while the database is *enabled*, the app does
    not start at all (fatal startup ping).
 5. **No request_id without tracing** (§6.1).
@@ -2201,20 +2336,23 @@ algorithm/kid/typ, boundaries), not only round trips.
 9. **Middleware or routes after serving** panic in go-ams-router; register
    everything before `Start` (tests that need another route config need a
    new server).
-10. **`Deps` is used through a pointer**: `go vet` rejects a copy (it holds a
-    mutex). A `Deps` built by hand has a nil `Logger` until `NewHTTPServer` gives it
-    a discarding one.
-11. **Codec default registry** (without `deps.WithoutGlobals`) before `NewDeps` is json+cbor+xml permissive;
-    tests that rely on config-driven behavior must build their own Registry
-    (and restore the default with `SetDefault` afterwards).
-12. **Tracing needs both switches**: `logging.output.otel.enabled: true` *and*
-    `tracing.otel.enabled` not false. OTel logging off = no traces either.
+10. **`Application` and `Server` are used through a pointer** (they hold
+    mutexes); a `Server` built with `nhttp.New` without a Logger discards.
+11. **Codec default registry** is json+cbor+xml permissive and is replaced only
+    with `app.WithProcessGlobals`; code outside a request that needs the
+    application's formats and limits declares `codec.Capability`. Tests that
+    install a default restore it with `SetDefault` afterwards.
+12. **Tracing is its own module**: registering `telemetry.Module()` exports
+    spans unless `tracing.otel.enabled: false` (default true), whatever
+    `logging.output.otel.enabled` says (that switch is the OTel *log* export
+    now). An app that runs without a collector disables both
+    (`standalone.env` in the basic example).
 13. **`IsPrivate` is enforced** on typed routes: registering one with jose
     disabled, without `AuthProfile`/`http.auth.default_profile`, or with
     `http.docs.auth: none` panics at startup. On `AddDocRoute` it is still
     documentation only — raw routes need `Authenticate` explicitly.
-14. **`deps.JOSE` is nil when `jose.enabled: false`**; `Authenticate(nil, …)`
-    panics. Unknown YAML keys fail at load time in every section.
+14. **No jose service when `jose.enabled: false`**: `Authenticate(nil, …)`
+    panics. Unknown YAML keys fail at `app.New` in every section.
 15. **JOSE defaults to HS256**: a key without `algorithm` is HS256 (so a
     `dir` key must say `algorithm: dir`, and an EdDSA/RSA file must declare
     its algorithm). A token whose `typ`, `kid` or `alg` does not match the
@@ -2225,14 +2363,13 @@ algorithm/kid/typ, boundaries), not only round trips.
 17. **Realm differs between raw and typed auth**: typed routes use
     `http.auth.realm`; raw `Authenticate` uses `nforge-api` unless
     `WithRealm` is passed.
-18. **RLS app sees no rows**: in rls mode the unscoped `deps.DB` sees nothing
+18. **RLS app sees no rows**: in rls mode the unscoped `*database.DB` sees nothing
     in tenant tables — use `ForTenant`/`ForContext`. If *everything* is
     visible instead, the role is superuser/BYPASSRLS or owns the table
     without `FORCE` (list the table in `tenancy.tables` so startup catches it).
 19. **`COPY FROM` fails on RLS tables** (`0A000`): a PostgreSQL limitation,
     not a framework bug.
-20. **`deps.Cache` is nil when `cache.enabled: false`**; check before use or
-    call `Deps.PingCache` (`ErrCacheDisabled`). With the cache enabled and
+20. **No cache when `cache.enabled: false`** (see 4). With the cache enabled and
     Redis down **at startup**, the app does not start (like the database);
     later outages return errors and readiness 503 until Redis is back.
 21. **Cache needs a tenant when `database.tenancy.enabled`** (even with
@@ -2268,17 +2405,23 @@ algorithm/kid/typ, boundaries), not only round trips.
 30. **The example certificate is public**: `_examples/basic/certs/localhost.key`
     is committed on purpose. Never deploy or trust it; the framework has no
     default certificate.
-31. **A module that needs a disabled one fails the bootstrap** with
-    `module.ErrDisabledDependency`; it is never switched on for you. A hand-built
-    `Config` with `http.auth.default_profile` and jose off fails the same way
-    (`config.Load` already refused it).
-32. **`module.Lookup` panics on an undeclared capability**: add it to `Requires`
-    or `Optional`, or the graph would not show the dependency.
-33. **`/graph` needs `-tags nforge_graph` and a `Deps` from `Bootstrap`/`NewDeps`**: without the tag, enabling the route panics at `NewHTTPServer`: a `Deps` built by hand
-    (tests) with the route enabled panics at `NewHTTPServer`.
-34. **`codec`'s default is global**: every bootstrap replaces it, so a test that
-    calls `Bootstrap` in a package that relies on the permissive default must
-    restore it (`http/graph_test.go` `keepDefaultCodec`).
+31. **A module that needs a disabled one fails `app.New`** with
+    `module.ErrDisabledDependency`; it is never switched on for you.
+    `http.auth.default_profile` with jose off fails the same way. A section of
+    a module the application did not register fails too: YAML never activates
+    a module.
+32. **`module.Lookup` panics on an undeclared capability** (and on a handle of
+    another type): add it to `Requires` or `Optional`, or the graph would not
+    show the dependency. In Init the runtime turns the panic into a start
+    error with rollback.
+33. **`/graph` needs `-tags nforge_graph` and an application**: without the
+    tag, enabling the route panics at `nhttp.New`; a server built with
+    `nhttp.New` without `Dependencies.Status` panics too.
+34. **Init must not accept work, Start must not block**: a module that starts
+    consuming in Init could run a job before a handler it needs is registered;
+    a Start that serves inline never returns and the start never completes.
+    Serve in a goroutine the module owns and report its end with
+    `Scope.ReportFailure`.
 35. **`codec` needs the `jsonv2` Go experiment**: it imports
     `encoding/json/jsontext` (the presence walker). Go 1.27 enables it by
     default; `GOEXPERIMENT=nojsonv2` makes `go build ./codec` fail with

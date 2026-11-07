@@ -11,7 +11,7 @@ import (
 // Config is the standalone JOSE configuration (the `jose` YAML section).
 // It holds no key material: keys are read from their sources by New.
 type Config struct {
-	Enabled  bool            `yaml:"enabled"`  // default: false; when false nothing is loaded and deps.JOSE is nil
+	Enabled  bool            `yaml:"enabled"`  // default: false; when false nothing is loaded and the jose module publishes nothing
 	Limits   LimitsConfig    `yaml:"limits"`   // resource bounds; see LimitsConfig for the defaults
 	Keys     []KeyConfig     `yaml:"keys"`     // at least one when enabled; kids are globally unique
 	Profiles []ProfileConfig `yaml:"profiles"` // at least one when enabled; names are unique

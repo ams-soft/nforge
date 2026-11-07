@@ -34,7 +34,7 @@ logging:
       enabled: true
 
 database:
-  enabled: true # default: false (deps.DB is nil). Unreachable at startup = the app does not start.
+  enabled: true # default: false (the database module publishes nothing). Unreachable at startup = the app does not start.
   # dsn: ${DATABASE_URL} # optional; when set, host/port/name/user/password/ssl are ignored
   host: localhost
   port: 5432

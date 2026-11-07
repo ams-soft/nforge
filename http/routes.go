@@ -12,7 +12,7 @@ import (
 	"github.com/ams-soft/nforge/module"
 )
 
-// Built-in routes registered by NewHTTPServer: health/readiness, the
+// Built-in routes registered by New: health/readiness, the
 // documentation (page + OpenAPI spec) and the JWKS endpoint.
 
 type HealthResponse struct {

@@ -1,6 +1,6 @@
 # cache
 
-`deps.Cache` with the same code on both drivers (`cache.driver: redis |
+The cache module with the same code on both drivers (`cache.driver: redis |
 memory`) and both object codecs (`cache.codec: json | cbor`).
 
 ```bash
@@ -70,7 +70,7 @@ go run ./_examples/cache -config _examples/cache/config.yaml -envfile <(echo CAC
 
 ```bash
 docker stop redis
-curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/ready         # 503, "cache":{"health":false}
+curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/ready         # 503, "modules":{"cache":"not_ready",...}
 curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/api/v1/products/1   # 503, the loader is not called
 docker start redis
 curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/ready         # 200 again, same process

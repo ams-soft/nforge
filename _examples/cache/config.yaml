@@ -1,4 +1,4 @@
-# Cache example: deps.Cache on Redis (docker compose) or in process memory.
+# Cache example: the cache module on Redis (docker compose) or in process memory.
 # No database, no JOSE.
 #
 #   docker compose -f _examples/docker-compose.yml up -d redis
@@ -35,8 +35,8 @@ logging:
     terminal:
       enabled: true
 
-cache: # deps.Cache; objects use the codec registry above, bytes and counters are stored as is
-  enabled: true # default: false (deps.Cache is nil)
+cache: # the cache module; objects use the codec registry above, bytes and counters are stored as is
+  enabled: true # default: false (the cache module publishes nothing)
   driver: redis # redis (default) | memory (in-process, see standalone.env)
   codec: json # optional, default: json | cbor. Values carry no format marker:
               # after changing it, let old entries expire or change the prefix.

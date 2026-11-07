@@ -1,6 +1,6 @@
 # database
 
-`deps.DB` on PostgreSQL: repositories that build SQL with Squirrel
+The database module on PostgreSQL: repositories that build SQL with Squirrel
 (`db.Query`) and run it with pgx (`db.Executor`), transactions, error
 mapping and multi-tenancy.
 
@@ -72,7 +72,7 @@ go run ./_examples/database -config _examples/database/config.yaml -envfile _exa
 framework sets that value transaction-locally for each statement. The same
 commands give the same results, now enforced by PostgreSQL even for a query
 that forgets `TenantEq`. Cross-tenant jobs use a second `database.Open`
-with a `BYPASSRLS` role, outside `Deps`.
+with a `BYPASSRLS` role, outside the database module.
 
 ```bash
 go test -race ./_examples/database/...

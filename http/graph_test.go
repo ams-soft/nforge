@@ -282,10 +282,10 @@ func TestGraphPanicsOnMisuse(t *testing.T) {
 	}
 	var cfg testConfig
 	cfg.HTTP.Routes.Graph.Enabled = true
-	mustPanic("no application", "nhttp.Module", func() { NewHTTPServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler)}) })
+	mustPanic("no application", "nhttp.Module", func() { buildServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler)}) })
 	cfg.HTTP.Routes.Health.Enabled, cfg.HTTP.Routes.Health.Path = true, "/graph"
 	mustPanic("collision", "collides", func() {
-		NewHTTPServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler), Status: &fakeStatus{}})
+		buildServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler), Status: &fakeStatus{}})
 	})
 	// in an application the collision is a configuration error, before anything starts
 	if _, err := graphServerE(t, "app: {name: g, version: '1'}\nhttp: {routes: {graph: {enabled: true}, health: {enabled: true, path: /graph}}}\n"); err == nil || !strings.Contains(err.Error(), "collides") {

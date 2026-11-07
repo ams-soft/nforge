@@ -1,15 +1,16 @@
 # nForge
 
-> nForge (Nano Forge, module `github.com/ams-soft/nforge`, by AMS Software e Consultoria LTDA, MIT) is a small, opinionated Go 1.27+ framework for building HTTP APIs. One `config.yaml` drives layered configuration, `log/slog` logging (terminal and OpenTelemetry), OpenTelemetry tracing with `request_id == trace_id`, a JSON/CBOR/XML codec driven by one struct, an HTTP server on `github.com/ams-soft/go-ams-router` with a standard response envelope, typed routes validated before and after the handler and generated OpenAPI 3.1 docs, PostgreSQL (pgx + Squirrel) with multi-tenancy, JOSE/JWT bearer authentication, and a Redis or in-memory cache. Standalone packages add cryptographic primitives (`ncrypto`) and a money helper (`safecalc`).
+> nForge (Nano Forge, module `github.com/ams-soft/nforge`, by AMS Software e Consultoria LTDA, MIT) is a small, opinionated Go 1.27+ application runtime, built first for HTTP APIs: explicitly registered modules wired by typed capabilities and orchestrated by package `app` (HTTP is optional; worker-only and mixed applications share one lifecycle). One `config.yaml` drives layered configuration, `log/slog` logging (terminal and OpenTelemetry), OpenTelemetry tracing with `request_id == trace_id`, a JSON/CBOR/XML codec driven by one struct, an HTTP server on `github.com/ams-soft/go-ams-router` with a standard response envelope, typed routes validated before and after the handler and generated OpenAPI 3.1 docs, PostgreSQL (pgx + Squirrel) with multi-tenancy, JOSE/JWT bearer authentication, and a Redis or in-memory cache. Standalone packages add cryptographic primitives (`ncrypto`) and a money helper (`safecalc`).
 
 Important notes for code generation:
 
 - Import the HTTP package as `nhttp "github.com/ams-soft/nforge/http"` and the crypto package as `ncrypto "github.com/ams-soft/nforge/crypto"`. Inside nForge, `net/http` is imported as `stdhttp`.
-- Business code never imports `encoding/json`, `encoding/xml` or a CBOR library: it goes through `codec.Default()` / `deps.Codec`. The `jose` package is the only deliberate exception (protocol JSON).
-- `deps.DB`, `deps.JOSE` and `deps.Cache` are **nil** when their module is disabled in the config. Check before use.
-- `deps.NewDeps` returns `*deps.Deps` and `Deps.Logger` is a `*slog.Logger`; register your own closers with `Deps.AddShutdown`.
-- Register every route and middleware **before** the server serves its first request; go-ams-router panics afterwards.
-- Programmer errors detected at startup or route registration panic; request-time errors are returned. Startup failures of enabled modules are fatal (`os.Exit(1)`).
+- Business code never imports `encoding/json`, `encoding/xml` or a CBOR library: it goes through the application's Registry (`codec.Capability`, or `nhttp.Send*`/`Parse*` in a request). The `jose` package is the only deliberate exception (protocol JSON).
+- Build an application with `app.New(cfg, app.Modules(logs.Module(), codec.Module(), database.Module(), nhttp.Module(), myModule))` and `a.Run(ctx)`. Registration is explicit: a YAML section of an unregistered module is an error, and `enabled: false` only disables a registered one.
+- Application code is a module: `module.New("api", module.Definition{Requires: []module.Handle{nhttp.Capability, database.Capability}, Init: ...})`; read declared capabilities with `module.Require`/`module.Lookup` (undeclared access panics). A disabled module publishes nothing: `Lookup` returns `ok == false`, `Requires` fails `app.New`.
+- `Init` allocates and registers (routes, handlers) but never accepts work; `Start` returns once active. Stop hooks release only the module's own resources; HTTP and consumers are ingress modules: started last, drained first.
+- Register every route and middleware (`Server.Use`) in an Init, **before** the server serves its first request; go-ams-router panics afterwards.
+- Programmer errors detected at startup or route registration panic; request-time errors are returned. Startup failures of enabled modules are returned by `Start`/`Run` after a full rollback; only `main` calls `os.Exit`.
 - Prefer the generic route functions: `nhttp.Post(api, "/users", func(r *http.Request, u User) (User, error) {...})`, returning `nhttp.Error(404, "...")` for client errors. `TGet`/`TPost` remain for handlers that write the response themselves.
 - Everything in the codebase (comments, logs, errors, API texts, tests) is English.
 - Build with Go 1.27.2+ (the repository pins `toolchain go1.27.3`); lint with golangci-lint v2.15.0+ (older releases cannot read go1.27.2 export data) and the repo's `.golangci.yml`.
@@ -24,16 +25,16 @@ Important notes for code generation:
 ## Packages
 
 - [version.go](version.go): package `nforge`; `Version` read from the embedded root `config.yaml` (framework metadata, not an app config).
-- [config/](config): layered configuration: `Load`, `LoadFlags`, `Config` and its sections, `ByteSize`, defaults and validation.
-- [module/](module): neutral module core: `Resolve` (validated, deterministic graph, no I/O), `Plan.Start`, `Runtime`, typed `Capability`, `Scope`.
-- [deps/](deps): dependency container `Deps`, `Bootstrap`/`NewDeps`, built-in module descriptors, capabilities, readiness helpers, reverse `Shutdown`.
-- [logs/](logs): `log/slog` setup (tint terminal + OTel), context handler injecting `request_id`.
-- [telemetry/](telemetry): OTel resource, TracerProvider, trace-ID generator for `request_id == trace_id`.
-- [codec/](codec): JSON/CBOR/XML `Registry`, struct tags, strict mode, required fields, limits, typed errors.
-- [http/](http): package `nhttp`: `ServerHttp`, response envelope, typed routes, query strings, OpenAPI docs, auth, tenancy, security headers, CORS, health/readiness, JWKS.
-- [database/](database): PostgreSQL `DB` (pgx pool + Squirrel), transactions, multi-tenancy (RLS or column).
-- [jose/](jose): standalone JWS/JWE/JWT `Service` with configured profiles, keys, JWKS, reload/rotation.
-- [cache/](cache): standalone `*cache.Cache` on Redis or a bounded memory LRU, `GetOrLoad`, tenant namespaces.
+- [app/](app): the orchestrator: `New`, `Modules`, `Start`, `Run` (signals), `Shutdown`, `Status`, `Reload`, `Value`, `WithProcessGlobals`.
+- [module/](module): the capability/DI graph: `Descriptor`, `Definition`, typed `Capability`, `Build` (configure, resolve, check; no I/O), `Runtime` (Init/Start, readiness, shutdown), `Scope`, `View`.
+- [config/](config): the loader: `Load`, `LoadFlags`, `Document` (raw sections; reserved `env`, `app`, `prd_exceptions`), `Binding`.
+- [logs/](logs): `log/slog` setup (tint terminal + OTel), context handler injecting `request_id`, the logger module.
+- [telemetry/](telemetry): OTel resource, TracerProvider, trace-ID generator for `request_id == trace_id`, the tracing module.
+- [codec/](codec): JSON/CBOR/XML `Registry`, struct tags, strict mode, required fields, limits, typed errors, `ByteSize`, the codec module.
+- [http/](http): package `nhttp`: the HTTP module and `Server`, response envelope, typed routes, query strings, OpenAPI docs, auth, tenancy, security headers, CORS, health/readiness, JWKS.
+- [database/](database): PostgreSQL `DB` (pgx pool + Squirrel), transactions, multi-tenancy (RLS or column), the database module.
+- [jose/](jose): JWS/JWE/JWT `Service` with configured profiles, keys, JWKS, reload/rotation, the jose module.
+- [cache/](cache): `*cache.Cache` on Redis or a bounded memory LRU, `GetOrLoad`, tenant namespaces, the cache module.
 - [crypto/](crypto): package `ncrypto`: XChaCha20-Poly1305, AES-256-GCM, HMAC-SHA256, bcrypt/Argon2id, BLAKE3/SHA-256, secure random, ULID.
 - [helper/safecalc/](helper/safecalc): money as integer cents with exact formatting.
 
@@ -41,7 +42,7 @@ Important notes for code generation:
 
 - [_examples/basic](_examples/basic): opt-in HTTPS + HTTP/3 + 308 redirect (`config.https-http3.yaml`, local-only certificate), bootstrap, plain and typed routes in three formats, typed query strings, docs, health/readiness, a global middleware, a minimal JWT login, memory cache, PostgreSQL notes, an `ncrypto` demo and a `safecalc` test.
 - [_examples/jose](_examples/jose): JWT login, bearer authentication, scopes, `Principal`, nested tokens, JWS/JWE, JWKS, key files (`cmd/keygen`).
-- [_examples/cache](_examples/cache): `deps.Cache` on Redis or memory: objects, TTL, NX, counters, raw bytes, `GetOrLoad`, CBOR, outages.
+- [_examples/cache](_examples/cache): the cache module on Redis or memory: objects, TTL, NX, counters, raw bytes, `GetOrLoad`, CBOR, outages.
 - [_examples/database](_examples/database): Squirrel + pgx repositories, transactions, error mapping, tenancy in column or RLS mode.
 - [_examples/docker-compose.yml](_examples/docker-compose.yml): PostgreSQL 18, Redis 8, OTel Collector, Tempo, Loki, Grafana.
 

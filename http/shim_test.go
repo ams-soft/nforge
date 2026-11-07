@@ -36,10 +36,10 @@ type testDeps struct {
 	Status module.Introspection
 }
 
-// NewHTTPServer builds a server from a hand-made configuration, as the module
+// buildServer builds a server from a hand-made configuration, as the module
 // would from its sections: request logging only with a logging output, tracing
 // only with OTel on, through the global provider.
-func NewHTTPServer(d *testDeps) *Server {
+func buildServer(d *testDeps) *Server {
 	app := module.App{Name: d.Config.App.Name, Version: d.Config.App.Version, Env: d.Config.Env,
 		InternalUse: d.Config.App.InternalUse, OnlineSince: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)}
 	deps := Dependencies{App: app, Logger: d.Logger, AccessLog: d.Config.Logging.Enabled(), Codec: d.Codec, JOSE: d.JOSE, Status: d.Status}

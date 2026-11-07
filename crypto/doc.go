@@ -3,7 +3,7 @@
 // (bcrypt, Argon2id), unkeyed data hashing (BLAKE3, SHA-256) and
 // cryptographically secure random values.
 //
-// It has no configuration and is not part of deps.Deps: callers build each
+// It has no configuration and is not a module: callers build each
 // primitive from their own keys. The directory is crypto/, but the package is
 // named ncrypto to avoid clashing with the standard library.
 //

@@ -21,7 +21,7 @@ func newSecurityServer(t *testing.T, mutate func(*testConfig)) *Server {
 	}
 	cfg.HTTP.Auth.DefaultProfile = "access"
 	mutate(&cfg)
-	s := NewHTTPServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler), JOSE: sharedJOSE()})
+	s := buildServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler), JOSE: sharedJOSE()})
 	s.Typed().TPost("/private", nil, nil, func(stdhttp.ResponseWriter, *stdhttp.Request) {
 		t.Error("private handler must not run on a preflight")
 	}, Opts{IsPrivate: true})

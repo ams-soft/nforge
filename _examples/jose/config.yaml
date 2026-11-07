@@ -37,7 +37,7 @@ logging:
       enabled: true
 
 jose:
-  enabled: true # default: false (deps.JOSE is nil and nothing is loaded)
+  enabled: true # default: false (nothing is loaded and the jose module publishes nothing)
 #  limits: # optional; defaults shown
 #    max_token_bytes: 16384
 #    max_header_bytes: 2048

@@ -30,7 +30,7 @@ func (i *handlerItem) Validate() error {
 
 func handlerServer(t *testing.T, logs *bytes.Buffer) *Server {
 	t.Helper()
-	s := NewHTTPServer(&testDeps{Logger: slog.New(slog.NewTextHandler(logs, nil))})
+	s := buildServer(&testDeps{Logger: slog.New(slog.NewTextHandler(logs, nil))})
 	api := s.Typed()
 	Get(api, "/items", func(_ *stdhttp.Request, q handlerQuery) ([]handlerItem, error) {
 		return make([]handlerItem, q.Limit), nil
@@ -125,6 +125,6 @@ func TestGenericHandlerRejectsANonSuccessStatus(t *testing.T) {
 			t.Fatalf("panic = %q", r)
 		}
 	}()
-	s := NewHTTPServer(&testDeps{})
+	s := buildServer(&testDeps{})
 	Post(s.Typed(), "/x", func(*stdhttp.Request, Empty) (Empty, error) { return Empty{}, nil }, Opts{Status: 404})
 }

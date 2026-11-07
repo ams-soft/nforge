@@ -16,9 +16,9 @@ go run ./_examples/basic -config _examples/basic/config.yaml -envfile _examples/
 
 | File | What it shows |
 |---|---|
-| `main.go` | the bootstrap: `config.Load` → `deps.NewDeps` → `nhttp.NewHTTPServer` → global middleware → routes → `Start` (graceful shutdown on Ctrl+C) |
+| `main.go` | the bootstrap: `config.Load` → `app.New` with every module registered explicitly, plus the `api` module that adds the global middleware (`Server.Use`) and registers the routes in its Init → `Run` (graceful shutdown on Ctrl+C, reload on SIGHUP) |
 | `auth.go` | a minimal JWT login: `POST /auth/login` with `admin@admin.com` / `admin123` issues a token (`jose.IssueJWT`), and the private typed route `GET /auth/me` (`IsPrivate`) only runs with it. Scopes, nested tokens and JWKS are in the [jose example](../jose) |
-| `cache.go` | `PUT`/`GET`/`DELETE /cache/{key}` over `deps.Cache` on the memory driver (`cache.Set/Get/Delete`, optional TTL). Redis, counters, NX and `GetOrLoad` are in the [cache example](../cache) |
+| `cache.go` | `PUT`/`GET`/`DELETE /cache/{key}` over the cache module on the memory driver (`cache.Set/Get/Delete`, optional TTL). Redis, counters, NX and `GetOrLoad` are in the [cache example](../cache) |
 | `crypto.go` | `runCrypto`, a startup demo of the standalone `ncrypto` package: XChaCha20-Poly1305 with associated data, HMAC-SHA256 with its own key, bcrypt and Argon2id hashes, BLAKE3, a random token and a ULID. It is off by default (uncomment `runCrypto(dps.Logger)` in `main.go`; password hashing is slow on purpose); `crypto_test.go` runs it |
 | `safecalc_test.go` | the `helper/safecalc` money helper: amounts kept as integer cents, a float accepted only at the edge (`NewFromFloat`, rounded half to even), `Format` in BRL and US formats, plus a runnable `ExampleMoney_Format` |
 | `database.go` | `/db/notes` create/list/get/delete with Squirrel + pgx, not registered when the database is off (`standalone.env`). Filters, transactions and tenancy are in the [database example](../database) |

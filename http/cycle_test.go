@@ -19,7 +19,7 @@ func TestTypedRouteWithCyclicResponseIsA500(t *testing.T) {
 	var cfg testConfig
 	cfg.App.Name, cfg.App.Version = "t", "1.0.0"
 	cfg.Codec.Formats.Enabled = []string{"json", "cbor", "xml"}
-	s := NewHTTPServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler)})
+	s := buildServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler)})
 	for _, format := range []string{"json", "cbor", "xml"} {
 		s.Typed().TGet("/cycle-"+format, nil, cycleResponse{}, func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 			a := &cycleResponse{Name: "a"}

@@ -57,12 +57,11 @@ const (
 	defaultCleanupInterval = 30 * time.Second
 )
 
-// Config is the `cache:` section. It is standalone (no framework imports):
-// config.Config embeds it and deps opens it; other programs can call Open
-// directly. Zero values of caps and timeouts take the defaults below; see
+// Config is the `cache:` section: the cache module decodes it and opens it;
+// other programs can call Open directly. Zero values of caps and timeouts take the defaults below; see
 // ApplyDefaults.
 type Config struct {
-	Enabled     bool          `yaml:"enabled"`      // default: false (deps.Cache is nil)
+	Enabled     bool          `yaml:"enabled"`      // default: false (the cache module publishes nothing)
 	Driver      string        `yaml:"driver"`       // redis (default) | memory
 	Codec       string        `yaml:"codec"`        // object codec: json (default) | cbor; must be enabled in the codec registry
 	Prefix      string        `yaml:"prefix"`       // optional; "" derives nforge:<env>:[<tenant>:]<app.name>:

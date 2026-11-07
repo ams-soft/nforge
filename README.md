@@ -1,33 +1,44 @@
 # AMS nForge
 
-**AMS nForge** (Nano Forge) is a small, opinionated Go framework for building
-HTTP APIs, by AMS Software e Consultoria LTDA. From one `config.yaml` an
-application gets configuration, structured logs, distributed tracing, a
-multi-format codec, an HTTP server with typed routes and generated OpenAPI
-docs, PostgreSQL access, JOSE/JWT authentication and a cache, all wired by
-one call and shut down in order, plus standalone cryptographic primitives.
+**AMS nForge** (Nano Forge) is a small, opinionated Go application runtime,
+built first for HTTP APIs, by AMS Software e Consultoria LTDA. An application
+is a set of explicitly registered modules: configuration, structured logs,
+distributed tracing, a multi-format codec, an HTTP server with typed routes
+and generated OpenAPI docs, PostgreSQL access, JOSE/JWT authentication, a
+cache, and your own. One orchestrator validates the whole configuration and
+the dependency graph before anything opens, initializes every module before
+any starts, opens the listeners last, drains them first on shutdown and
+closes the rest in reverse dependency order. HTTP is optional: worker-only
+applications get the same lifecycle. Standalone cryptographic primitives and
+a money helper complete it.
 
 ```go
-cfg, err := config.Load()          // YAML + ${ENV} + .env file + per-environment overlay + validation
+cfg, err := config.Load() // one YAML: ${ENV}, .env file, per-environment overlay
 if err != nil { /* ... */ }
-dps := deps.NewDeps(*cfg)          // logger, tracing, codec, database, jose, cache
-server := nhttp.NewHTTPServer(dps) // router, middlewares, docs, health/readiness
 
-server.Typed().Route("/api/v1", func(api *nhttp.TypedRouter) {
-    api.TPost("/users", User{}, User{}, func(w http.ResponseWriter, r *http.Request) {
-        u := nhttp.Body[User](r)   // already decoded and validated
-        _ = nhttp.SendJSON(w, r, http.StatusCreated, u)
-    }, nhttp.Opts{IsPrivate: true, RequiredScopes: []string{"users:write"}})
+api := module.New("api", module.Definition{
+    Requires: []module.Handle{nhttp.Capability},
+    Init: func(_ context.Context, s *module.Scope) (module.Hooks, error) {
+        server := module.Require(s, nhttp.Capability) // routes are registered before any listener opens
+        nhttp.Post(server.Typed(), "/users", func(r *http.Request, u User) (User, error) {
+            return u, nil // already decoded and validated; the response is validated too
+        }, nhttp.Opts{IsPrivate: true, RequiredScopes: []string{"users:write"}, Status: http.StatusCreated})
+        return module.Hooks{}, nil
+    },
 })
 
-_ = server.Start()                 // graceful shutdown on SIGINT/SIGTERM
+a, err := app.New(cfg, app.Modules( // explicit registration; every section validated, no I/O
+    logs.Module(), telemetry.Module(), codec.Module(), jose.Module(), nhttp.Module(), api))
+if err != nil { /* ... */ }
+err = a.Run(context.Background()) // start, serve, graceful shutdown on SIGINT/SIGTERM, reload on SIGHUP
 ```
 
 ## Features
 
 | Area | Package | What you get |
 |---|---|---|
-| Configuration | `config` | Layered YAML: `${VAR}` expansion, `.env` overrides, `config.<env>.yaml` overlays, defaults and validation at load time |
+| Application | `app`, `module` | Explicit module registration, typed capabilities checked at startup, a deterministic dependency graph resolved before any I/O, Init-then-Start, ingress last, readiness, runtime failures, `Run` with signals, one graceful shutdown under a deadline |
+| Configuration | `config` | One YAML read once: `${VAR}` expansion, `.env` overrides, `config.<env>.yaml` overlays; each module owns, defaults and validates its section, unknown keys and sections are errors |
 | Logging | `logs` | `log/slog` to the terminal (tint) and/or OpenTelemetry (OTLP), `request_id` on every record |
 | Tracing | `telemetry` | OpenTelemetry spans per request, with `request_id == trace_id` |
 | Codec | `codec` | JSON, CBOR and XML from **one struct**: required fields, strict mode, payload limits, XXE protection, `Validate()` |
@@ -37,7 +48,6 @@ _ = server.Start()                 // graceful shutdown on SIGINT/SIGTERM
 | Cache | `cache` | Redis or a bounded in-process LRU behind one API: objects, bytes, counters, TTLs, NX, cache-aside `GetOrLoad`, tenant namespaces |
 | Crypto | `crypto` (`ncrypto`) | Standalone primitives, no config: XChaCha20-Poly1305 and AES-256-GCM encryption, HMAC-SHA256, bcrypt/Argon2id password hashing, BLAKE3/SHA-256, secure random values and ULIDs |
 | Helpers | `helper/safecalc` | Money as integer cents: exact formatting (BRL by default, any separators), float input rounded half-to-even |
-| Bootstrap | `deps`, `module` | Resolves the module graph before anything starts (a required module that is disabled is an error, never switched on for you), starts it in order, rolls back on failure and shuts down in reverse |
 
 Security defaults stay on: HTTP server timeouts (no Slowloris), DTD/XXE
 blocked, payload limits, a restricted
@@ -67,7 +77,7 @@ README:
 |---|---|
 | [`basic`](_examples/basic) | opt-in HTTPS + HTTP/3 (`config.https-http3.yaml`), config, codec, plain and typed routes, docs, health, minimal JWT login, memory cache, PostgreSQL (`standalone.env`: no Docker), an `ncrypto` demo and a `safecalc` test |
 | [`jose`](_examples/jose) | JWT login, bearer authentication, scopes, nested tokens, JWS/JWE, JWKS |
-| [`cache`](_examples/cache) | `deps.Cache` on Redis or memory, `GetOrLoad`, outages |
+| [`cache`](_examples/cache) | the cache module on Redis or memory, `GetOrLoad`, outages |
 | [`database`](_examples/database) | repositories, transactions, multi-tenancy (column and RLS) |
 
 ```bash
@@ -103,7 +113,9 @@ behind the gateway or a private network. In `env: prd` it logs a warning, which
 protects nothing by itself.
 
 `http.server.port` is optional: omitted, the server listens on plain HTTP
-`:8080`. Modules such as `database`, `jose` and `cache` are off until enabled. The full
+`:8080`. A section configures a module the application registered (a section
+of an unregistered module is an error); `database`, `jose` and `cache` stay
+off until enabled. The full
 schema, with every default and validation rule, is in
 [AGENTS.md §4.2](AGENTS.md#42-full-schema-defaults-and-validation); the
 examples' `config.yaml` files are commented.

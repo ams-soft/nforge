@@ -6,6 +6,113 @@ All notable changes to nForge are documented here. The format follows
 
 ## [Unreleased]
 
+nForge becomes a general application runtime. This release contains breaking
+changes; read **Upgrading** below.
+
+### Added
+
+- Package `app`, the only application orchestrator: `app.New(cfg,
+  app.Modules(...))` registers modules explicitly, validates every section and
+  resolves the graph with no I/O (errors aggregated); `Start` initializes every
+  module before starting any and rolls back completely on failure; `Run` adds
+  SIGINT/SIGTERM handling and SIGHUP reloads and works with zero HTTP modules;
+  `Shutdown` is idempotent, concurrency-safe and bounded by one deadline;
+  `Status` reports the phase, aggregate readiness and every module's state;
+  `Failed`/`Err` expose runtime failures; `Reload` rotates credentials.
+  Library code returns errors and never calls `os.Exit`.
+- `module`: `Descriptor{ID, Section, Configure}`, `Definition` (typed
+  `Provides`/`Requires`/`Optional` handles, `Disabled`, `Ingress`,
+  `NonCritical`, `Config`, `Check`, `Init`), `Hooks{Start, Ready, Stop,
+  Reload}`, `Build`, `Runtime`, `View`/`ConfigOf` (cross-module validation
+  against the providers' validated configuration), `Scope.ReportFailure`,
+  `Scope.Context`, `Scope.Introspect`, `module.Logger`, `ErrTypeMismatch`,
+  `ErrUndeclared`, `ErrStopTimeout`, `ErrState`, `ConfigError`,
+  `LifecycleError`.
+- A `Module()` descriptor in `logs`, `telemetry`, `codec`, `database`,
+  `jose`, `cache` and `nhttp`, each owning its configuration section, with
+  its capability (`codec.Capability`, `database.Capability`, ...).
+- `nhttp.Server.Start`/`Stop`/`Reload`/`Use`/`Config`, `nhttp.New` with
+  `nhttp.Dependencies`, `codec.Settings`, `codec.ByteSize`,
+  `Registry.MaxPayloadBytes`/`StrictUnknownFields`, `jose.Service.JWKS`,
+  `database.Config.Validate`/`RequiresTLS`/`PlaintextRisk`,
+  `cache.Config.UsesTLS`, `logs.Settings`, `telemetry.Settings`,
+  `telemetry.Tracing`.
+- Tests: graph resolution and type identity, lifecycle ordering and rollback
+  in every phase, shutdown during start, concurrent and timed-out shutdown,
+  mixed HTTP + worker drain, worker-only and HTTP-only applications, runtime
+  failures, readiness recovery and probe sharing, several applications in one
+  process, the import rules (`imports_test.go`), and integration against
+  PostgreSQL and Redis at the application level.
+
+### Changed
+
+- Lifecycle: `Init` no longer starts anything; services start in `Start`, after
+  every `Init`. Ingress modules (HTTP listeners, consumers) start last and stop
+  first; then the rest stops in reverse dependency order, independent modules
+  concurrently. Once the shutdown deadline passes, the remaining stop hooks
+  share one bounded grace (1 s) instead of 1 s each; a hook that does not
+  return in time is abandoned and its dependencies are left open rather than
+  closed under it.
+- `config` reads one document of raw sections (`config.Document`) and no
+  longer imports any module: each module decodes, defaults and validates its
+  own section. Precedence (base, env file, overlay), strict keys, `${VAR}`
+  expansion, literal env file values, overlays and the prd refusals are
+  unchanged. New: a section that no registered module owns is an error, and
+  the configuration and env files are bounded to 8 MiB.
+- Process globals (`slog.Default`, `codec.Default`, OTel) are untouched unless
+  `app.WithProcessGlobals()`; nhttp always uses the application's Registry and
+  tracer provider.
+- Tracing is its own module: registering `telemetry.Module()` is the opt-in and
+  `tracing.otel.enabled` (default true) can disable it. `logging.output.otel.enabled`
+  now only controls the OTel log export (it used to be a master switch).
+- Readiness answers `{"status","online_since","modules":{"<id>":"ready|not_ready"}}`
+  for every enabled module, 503 until the application is started and while a
+  critical module is not ready; probes are shared and reused for 1 s.
+- The database module validates the connection fields and pool values at
+  configuration time, before any dial.
+- SIGHUP is handled by `app.Run` (TLS certificates and JOSE keys through the
+  modules' Reload hooks), no longer by nhttp.
+- The graph page's `initialization` may also be `initialized` or `stopping`.
+
+### Removed
+
+- Package `deps` (`Deps`, `NewDeps`, `NewDepsE`, `Bootstrap`, `WithModules`,
+  `WithoutGlobals`, `Cap*`, `PingDatabase`, `CheckJOSE`, `ReloadJOSE`,
+  `PingCache`, `AddShutdown`).
+- `config.Config` and every module section type in `config`
+  (`HTTPConfig`, `ServerConfig`, ...: now in `nhttp`), `config.ByteSize`
+  (`codec.ByteSize`), `Config.IsTracingEnabled`/`IsLoggingEnabled`.
+- `nhttp.ServerHttp` (now `nhttp.Server`), `NewHTTPServer`, `StartContext`,
+  `Start()` with signals, `AddGlobalMiddleware`/`LoadGlobalMiddleware`
+  (`Server.Use`), `ShutdownFunc`/`AddShutdownFunc`/`Shutdown()`, and the
+  `database`/`jose`/`cache` keys of the readiness body.
+- `module.Module[C]`, `module.Resolve`, `Plan.Start`, `StartOptions`,
+  `InitError`, `module.Hooks.Shutdown` (now `Stop`).
+- `logs.WithoutGlobals` (globals are opt-in: `logs.WithProcessGlobals`),
+  `telemetry.SetupTracing`.
+
+### Upgrading
+
+- Replace `deps.NewDeps(*cfg)` + `nhttp.NewHTTPServer(dps)` + `server.Start()`
+  with `app.New(cfg, app.Modules(...))` + `a.Run(ctx)`, registering the
+  modules you use: `logs.Module()`, `telemetry.Module()`, `codec.Module()`,
+  `database.Module()`, `jose.Module()`, `cache.Module()`, `nhttp.Module()`.
+- Move route registration into an application module (`module.New("api",
+  module.Definition{Requires: []module.Handle{nhttp.Capability, ...}, Init:
+  ...})`) and read resources with `module.Require`/`module.Lookup` instead of
+  `dps.DB`, `dps.Cache`, `dps.JOSE`, `dps.Logger`.
+- Own closers become modules with a `Stop` hook (they then stop in dependency
+  order, after the ingress drained).
+- A configuration with a section for a module you do not register now fails:
+  remove the section or register the module.
+- Without a collector, set `tracing.otel.enabled: false` (or do not register
+  the tracing module); `logging.output.otel.enabled: false` no longer disables
+  traces.
+- Code that relied on `codec.Default()`, `slog.Default()` or the OTel globals
+  being the application's passes `app.WithProcessGlobals()`.
+- Readiness clients read `modules.<id>` instead of `database.health`,
+  `jose.health` and `cache.health`.
+
 ## [v0.3.0] - 2026-11-06
 
 This release contains breaking changes; read the **Upgrading** notes below.

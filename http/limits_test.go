@@ -23,7 +23,7 @@ func limitsServer(t *testing.T, mutate func(*testConfig)) *Server {
 	if mutate != nil {
 		mutate(&cfg)
 	}
-	return NewHTTPServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler)})
+	return buildServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler)})
 }
 
 // Every request context has a deadline, so a handler that honors ctx (and the

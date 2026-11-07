@@ -59,8 +59,8 @@ func WithNamespace(env, appName string) Option {
 // WithTenantResolver enables tenant isolation: every operation resolves the
 // tenant from its context and inserts it into the key namespace; a missing
 // tenant fails with ErrTenantRequired before any I/O. It is an adapter to
-// the framework's existing tenant context (deps binds
-// database.TenantFromContext), not a separate tenant system. The resolver
+// the framework's existing tenant context (the cache module binds
+// database.TenantFromContext when database.tenancy is enabled), not a separate tenant system. The resolver
 // must return a trusted, already validated ID.
 func WithTenantResolver(resolve func(context.Context) (string, error)) Option {
 	return func(o *options) error {

@@ -85,9 +85,15 @@ logging:
     terminal:
       enabled: true
     otel:
-      enabled: false # true (with the local stack up) sends logs and traces to Grafana
+      enabled: false # true (with the local stack up) sends the logs to Grafana
       endpoint: localhost:4317 # the compose OTel Collector (OTLP gRPC)
       insecure: true # the local collector has no TLS
+
+tracing: # the tracing module is registered in main.go; spans need the local stack
+  otel:
+    enabled: false # default: true; true (with the local stack up) sends the traces to Grafana
+    endpoint: localhost:4317
+    insecure: true
 
 jose: # see the jose example for asymmetric keys, scopes, nested tokens and JWKS
   enabled: true # default: false
@@ -109,7 +115,7 @@ jose: # see the jose example for asymmetric keys, scopes, nested tokens and JWKS
         ttl: 15m # optional, default: 15m
 
 cache: # see the cache example for Redis, counters, NX and GetOrLoad
-  enabled: true # default: false (deps.Cache is nil)
+  enabled: true # default: false (the cache module publishes nothing)
   driver: memory # redis (default) | memory (in-process, lost on restart)
   codec: json # optional, default: json; must be in codec.formats.enabled
   memory: # optional; defaults shown. The budget counts key + value bytes, not Go overhead
@@ -117,7 +123,7 @@ cache: # see the cache example for Redis, counters, NX and GetOrLoad
     max_bytes: 64mb
 
 database: # see the database example for filters, transactions and multi-tenancy
-  enabled: true # default: false (deps.DB is nil and /db/notes is not registered; see standalone.env).
+  enabled: true # default: false (the database module publishes nothing and /db/notes is not registered; see standalone.env).
                 # Unreachable at startup = the app does not start.
   host: localhost # the docker compose PostgreSQL
   port: 5432

@@ -14,7 +14,7 @@ import (
 // It contains secrets: LogValue and Format redact the password and the DSN
 // for slog and for every fmt verb; encoding/json does not, so never marshal it.
 type Config struct {
-	Enabled bool `yaml:"enabled"` // default false: the database module is registered but disabled, and publishes nothing
+	Enabled bool `yaml:"enabled"` // default: false; the registered database module is then disabled and publishes nothing
 
 	Driver string `yaml:"driver"` // postgres | postgresql; empty = postgres
 
@@ -165,7 +165,7 @@ func (c Config) redacted() Config {
 }
 
 // RedactedCopy returns the configuration with its secrets masked, for code
-// (such as config.Config.Redacted) that prints larger structures.
+// that prints larger structures.
 func (c Config) RedactedCopy() Config { return c.redacted() }
 
 // Format redacts the password and the DSN for every fmt verb (%v, %+v, %#v,

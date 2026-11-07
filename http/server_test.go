@@ -6,12 +6,12 @@ import (
 	"time"
 )
 
-func TestNewHTTPServerTimeouts(t *testing.T) {
+func TestNewServerTimeouts(t *testing.T) {
 	// A Config built by hand (no Load) still gets the default timeouts.
 	var cfg testConfig
 	cfg.HTTP.Server.Port = 8080
 	cfg.HTTP.Server.WriteTimeout = 2 * time.Minute
-	s := NewHTTPServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler)})
+	s := buildServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler)})
 
 	if s.Srv.Addr != ":8080" {
 		t.Errorf("Addr = %q", s.Srv.Addr)

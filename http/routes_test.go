@@ -52,7 +52,7 @@ func newMaintenanceServer(t *testing.T, routes RoutesConfig, status module.Intro
 	t.Helper()
 	var cfg testConfig
 	cfg.HTTP.Routes = routes
-	return NewHTTPServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler), Status: status})
+	return buildServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler), Status: status})
 }
 
 func readinessOnly() RoutesConfig {
@@ -332,7 +332,7 @@ func jwksService(t *testing.T) *jose.Service {
 
 func newJWKSServer(t *testing.T, svc *jose.Service) *Server {
 	t.Helper()
-	return NewHTTPServer(&testDeps{Logger: slog.New(slog.DiscardHandler), JOSE: svc})
+	return buildServer(&testDeps{Logger: slog.New(slog.DiscardHandler), JOSE: svc})
 }
 
 func TestJWKSEndpoint(t *testing.T) {
@@ -408,7 +408,7 @@ func TestJWKSETagChangesWithKeys(t *testing.T) {
 	}
 	cfg := testConfig{JOSE: jcfg}
 	jose.ApplyDefaults(&cfg.JOSE)
-	s := NewHTTPServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler), JOSE: svc})
+	s := buildServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler), JOSE: svc})
 	etag := func() string {
 		rec := httptest.NewRecorder()
 		s.Srv.Handler.ServeHTTP(rec, httptest.NewRequest("GET", "/.well-known/jwks.json", nil))
@@ -438,5 +438,5 @@ func TestJWKSPathCollision(t *testing.T) {
 			t.Fatalf("expected a collision panic, got %v", r)
 		}
 	}()
-	NewHTTPServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler), JOSE: svc})
+	buildServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler), JOSE: svc})
 }

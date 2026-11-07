@@ -115,7 +115,7 @@ func newHarness(t *testing.T, mutate func(c *ServerConfig)) *harness {
 	cfg.HTTP.Server.TLS = ServerTLSConfig{Port: h.tls, CertFile: certFile, KeyFile: keyFile}
 	cfg.HTTP.Server.HTTP3 = ServerHTTP3Config{Port: h.h3}
 	mutate(&cfg.HTTP.Server)
-	h.s = NewHTTPServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler)})
+	h.s = buildServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler)})
 	h.s.Router().Get("/ping", func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		h.hits.Add(1)
 		_, _ = io.WriteString(w, r.Proto)
@@ -197,7 +197,7 @@ func refused(port int) bool {
 }
 
 func TestZeroConfigDefaultsTo8080(t *testing.T) {
-	s := NewHTTPServer(&testDeps{Logger: slog.New(slog.DiscardHandler)})
+	s := buildServer(&testDeps{Logger: slog.New(slog.DiscardHandler)})
 	if s.Srv.Addr != ":8080" {
 		t.Fatalf("Addr = %q, want :8080", s.Srv.Addr)
 	}
