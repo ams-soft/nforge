@@ -294,6 +294,10 @@ func (s *Service) Profile(name string) (ProfileInfo, bool) {
 	return ProfileInfo{Name: p.name, Kind: p.kind, Type: p.typ, CanProduce: p.canProduce(), CanConsume: p.canConsume()}, true
 }
 
+// JWKS returns the configuration of the public key set endpoint, for the
+// transport that serves it.
+func (s *Service) JWKS() JWKSConfig { return s.cfg.JWKS }
+
 // MaxTokenBytes is the configured limit on compact token size, so transport
 // adapters can reject oversized credentials before any processing.
 func (s *Service) MaxTokenBytes() int64 { return s.cfg.Limits.MaxTokenBytes }

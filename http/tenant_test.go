@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	router "github.com/ams-soft/go-ams-router"
-	"github.com/ams-soft/nforge/config"
 	"github.com/ams-soft/nforge/database"
 )
 
@@ -202,7 +201,7 @@ func TestTypedTenantRoutes(t *testing.T) {
 
 	// header source works on public routes and is documented
 	s, tr = newTypedServer()
-	s.Deps.Config.HTTP.Tenant = config.TenantConfig{Source: "header", Header: "X-Org"}
+	s.cfg.Tenant = TenantConfig{Source: "header", Header: "X-Org"}
 	tr.TGet("/header", nil, wallet{}, h, Opts{Tenant: true})
 	req = httptest.NewRequest("GET", "/header", nil)
 	req.Header.Set("X-Org", tenantTwo)
@@ -215,7 +214,7 @@ func TestTypedTenantRoutes(t *testing.T) {
 		t.Fatalf("route record = %+v", rt)
 	}
 
-	data, _ := buildOpenAPI(config.DocsConfig{Auth: "bearer", Title: "t", Version: "1"}, s.TypedRoutes).JSON()
+	data, _ := buildOpenAPI(DocsConfig{Auth: "bearer", Title: "t", Version: "1"}, s.TypedRoutes).JSON()
 	var spec map[string]any
 	_ = json.Unmarshal(data, &spec)
 	op := dig(spec, "paths", "/header", "get").(map[string]any)
@@ -241,7 +240,7 @@ func TestTypedTenantClaimRequiresPrivate(t *testing.T) {
 
 func TestServerTenantMiddlewareUsesConfig(t *testing.T) {
 	s, _ := newTypedServer()
-	s.Deps.Config.HTTP.Tenant = config.TenantConfig{Source: "header", Header: "X-Org"}
+	s.cfg.Tenant = TenantConfig{Source: "header", Header: "X-Org"}
 	var called bool
 	h := tenantHandler(&called, s.TenantMiddleware())
 	if rec := serve(h, "X-Org", tenantOne); rec.Code != 200 || tenantOf(t, rec) != tenantOne {

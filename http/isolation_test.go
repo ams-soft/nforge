@@ -2,15 +2,21 @@ package nhttp
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	stdhttp "net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ams-soft/nforge/app"
 	"github.com/ams-soft/nforge/codec"
 	"github.com/ams-soft/nforge/config"
-	"github.com/ams-soft/nforge/deps"
+	"github.com/ams-soft/nforge/internal/apptest"
+	"github.com/ams-soft/nforge/logs"
+	"github.com/ams-soft/nforge/module"
+	"github.com/ams-soft/nforge/telemetry"
 	"go.opentelemetry.io/otel"
 )
 
@@ -18,25 +24,36 @@ type isolatedBody struct {
 	Name string `json:"name"`
 }
 
-func isolatedServer(t *testing.T, name string, formats []string, limit config.ByteSize) *ServerHttp {
+func isolatedServer(t *testing.T, name string, formats []string, limit codec.ByteSize) *Server {
 	t.Helper()
-	var cfg config.Config
-	cfg.Env, cfg.App.Name, cfg.App.Version = "local", name, "1"
-	cfg.Codec.Formats.Enabled, cfg.Codec.Default, cfg.Codec.MaxPayloadBytes = formats, "json", limit
-	cfg.Logging.Output.Otel.Enabled = true
-	cfg.Logging.Output.Otel.Endpoint, cfg.Logging.Output.Otel.Insecure = "127.0.0.1:1", true
-	cfg.Tracing.Otel.Endpoint, cfg.Tracing.Otel.Insecure = "127.0.0.1:1", true
-	d, err := deps.Bootstrap(context.Background(), cfg, deps.WithoutGlobals())
+	yaml := fmt.Sprintf(`app: {name: %s, version: '1'}
+codec: {formats: {enabled: [%s]}, default: json, max_payload_bytes: %d}
+logging: {output: {otel: {enabled: true, endpoint: '127.0.0.1:1', insecure: true}}}
+tracing: {otel: {endpoint: '127.0.0.1:1', insecure: true}}
+http: {server: {host: 127.0.0.1, port: %d}}
+`, name, strings.Join(formats, ", "), int64(limit), freePort(t))
+	doc, err := config.LoadFlags(writeConfig(t, yaml), "")
 	if err != nil {
 		t.Fatal(err)
 	}
+	var s *Server
+	api := module.New("api", module.Definition{Requires: []module.Handle{Capability}, Init: func(_ context.Context, sc *module.Scope) (module.Hooks, error) {
+		s = module.Require(sc, Capability)
+		Post(s.Typed(), "/echo", func(_ *stdhttp.Request, in isolatedBody) (isolatedBody, error) { return in, nil })
+		return module.Hooks{}, nil
+	}})
+	a, err := app.New(doc, app.Modules(logs.Module(), telemetry.Module(), codec.Module(), Module(), api), apptest.Quiet())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 1)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 		defer cancel()
-		_ = d.Shutdown(ctx)
+		_ = a.Shutdown(ctx)
 	})
-	s := NewHTTPServer(d)
-	Post(s.Typed(), "/echo", func(_ *stdhttp.Request, in isolatedBody) (isolatedBody, error) { return in, nil })
 	return s
 }
 
@@ -49,12 +66,12 @@ func TestIsolatedServersCoexist(t *testing.T) {
 	large := isolatedServer(t, "large", []string{"json", "xml"}, 1<<20)
 
 	if codec.Default() != registry || slog.Default() != logger || otel.GetTracerProvider() != tracer {
-		t.Fatal("WithoutGlobals changed a process default")
+		t.Fatal("an application without app.WithProcessGlobals changed a process default")
 	}
-	if small.Deps.Codec == large.Deps.Codec || small.Deps.TracerProvider == large.Deps.TracerProvider {
+	if small.codec == large.codec || small.tracing.Provider == large.tracing.Provider {
 		t.Fatal("each server must own its resources")
 	}
-	call := func(s *ServerHttp, body string) *httptest.ResponseRecorder {
+	call := func(s *Server, body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequestWithContext(context.Background(), stdhttp.MethodPost, "/echo", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()

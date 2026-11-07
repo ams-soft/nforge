@@ -77,7 +77,7 @@ jobs:
           go-version-file: go.mod
       # -p 1: the packages share one database and create and drop the same role.
       - name: Integration tests
-        run: go test -race -p 1 -tags integration ./database/... ./cache/ ./deps/ $EXAMPLES
+        run: go test -race -p 1 -tags integration ./database/... ./cache/ ./app/ $EXAMPLES
 
   vulnerabilities:
     runs-on: ubuntu-latest

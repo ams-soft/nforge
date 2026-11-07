@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	stdhttp "net/http"
 	"os"
@@ -14,8 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ams-soft/nforge/app"
 	"github.com/ams-soft/nforge/config"
-	"github.com/ams-soft/nforge/deps"
 	"github.com/quic-go/quic-go/http3"
 )
 
@@ -46,7 +47,7 @@ func TestHTTPSHTTP3Live(t *testing.T) {
 	t.Chdir("../..") // the certificate paths in the YAML are relative to the repository root
 	httpPort, tlsPort := freePort(t), freePort(t)
 	env := filepath.Join(t.TempDir(), "live.env")
-	envText := fmt.Sprintf("DATABASE_ENABLED=false\nLOGGING_OUTPUT_TERMINAL_ENABLED=false\nHTTP_SERVER_HEADER=false\n"+
+	envText := fmt.Sprintf("DATABASE_ENABLED=false\nLOGGING_OUTPUT_TERMINAL_ENABLED=false\nTRACING_OTEL_ENABLED=false\nHTTP_SERVER_HEADER=false\n"+
 		"HTTP_SERVER_PORT=%d\nHTTP_SERVER_TLS_PORT=%d\nHTTP_SERVER_HTTP3_PORT=%d\n", httpPort, tlsPort, tlsPort)
 	if err := os.WriteFile(env, []byte(envText), 0o600); err != nil {
 		t.Fatal(err)
@@ -55,23 +56,18 @@ func TestHTTPSHTTP3Live(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dps := deps.NewDeps(*cfg)
-	server, err := newServer(dps)
+	a, err := newApp(cfg, app.WithLogger(slog.New(slog.DiscardHandler)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- server.StartContext(ctx) }()
+	if err := a.Start(context.Background()); err != nil { // returns once every listener is bound
+		t.Fatal(err)
+	}
 	defer func() {
-		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Errorf("shutdown: %v", err)
-			}
-		case <-time.After(15 * time.Second):
-			t.Error("the server did not stop")
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := a.Shutdown(ctx); err != nil {
+			t.Errorf("shutdown: %v", err)
 		}
 	}()
 
@@ -95,15 +91,15 @@ func TestHTTPSHTTP3Live(t *testing.T) {
 	do := func(c *stdhttp.Client, url string) *stdhttp.Response {
 		t.Helper()
 		var lastErr error
-		for range 100 { // the server starts in a goroutine
+		for range 20 { // the listeners are bound once Start returns; QUIC may need a retry
 			r, err := c.Get(url)
 			if err == nil {
 				return r
 			}
 			lastErr = err
 			select {
-			case err := <-done:
-				t.Fatalf("server stopped: %v", err)
+			case <-a.Failed():
+				t.Fatalf("server stopped: %v", a.Err())
 			case <-time.After(50 * time.Millisecond):
 			}
 		}

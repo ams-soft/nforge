@@ -22,12 +22,11 @@ type PutCacheEntry struct {
 	TTL string `json:"ttl,omitempty"` // Go duration ("30s"); empty = no expiration
 }
 
-// registerCacheRoutes registers Set/Get/Delete over deps.Cache (the memory
+// registerCacheRoutes registers Set/Get/Delete over the cache module (the memory
 // driver in config.yaml, so no Redis is needed). See the cache example for
 // counters, NX, TTL inspection, raw bytes, GetOrLoad and Redis.
-func registerCacheRoutes(server *nhttp.ServerHttp) {
-	c := server.Deps.Cache
-	logger := server.Deps.Logger
+func registerCacheRoutes(e env) {
+	server, c, logger := e.server, e.cache, e.logger
 	fail := func(w stdhttp.ResponseWriter, r *stdhttp.Request, err error) {
 		status, detail := stdhttp.StatusInternalServerError, "internal error"
 		switch {

@@ -8,6 +8,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"net"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -15,8 +17,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ams-soft/nforge/app"
 	"github.com/ams-soft/nforge/config"
-	"github.com/ams-soft/nforge/deps"
 	nhttp "github.com/ams-soft/nforge/http"
 )
 
@@ -24,14 +26,14 @@ import (
 //
 //	NFORGE_TEST_DATABASE_URL=postgres://app:app@localhost:5432/app?sslmode=disable \
 //	  go test -tags integration ./_examples/database
-func newTestServer(t *testing.T) *nhttp.ServerHttp {
+func newTestServer(t *testing.T) *nhttp.Server {
 	t.Helper()
 	dsn := os.Getenv("NFORGE_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("NFORGE_TEST_DATABASE_URL not set")
 	}
 	env := filepath.Join(t.TempDir(), "test.env")
-	content := "DATABASE_DSN=" + dsn + "\nLOGGING_OUTPUT_TERMINAL_ENABLED=false\nHTTP_SERVER_HEADER=false\n"
+	content := fmt.Sprintf("DATABASE_DSN=%s\nLOGGING_OUTPUT_TERMINAL_ENABLED=false\nHTTP_SERVER_HEADER=false\nHTTP_SERVER_PORT=%d\n", dsn, freePort(t))
 	if err := os.WriteFile(env, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -39,13 +41,27 @@ func newTestServer(t *testing.T) *nhttp.ServerHttp {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dps := deps.NewDeps(*cfg)
-	t.Cleanup(func() { _ = dps.Shutdown(context.Background()) })
-	server, err := newServer(dps)
+	a, err := newApp(cfg, app.WithLogger(slog.New(slog.DiscardHandler)))
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.Shutdown(context.Background()) })
+	server, _ := app.Value(a, nhttp.Capability)
 	return server
+}
+
+// freePort returns a TCP port that was free a moment ago.
+func freePort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	return ln.Addr().(*net.TCPAddr).Port
 }
 
 type result struct {
@@ -54,7 +70,7 @@ type result struct {
 	raw    string
 }
 
-func call(t *testing.T, s *nhttp.ServerHttp, method, path, tenant, body string) result {
+func call(t *testing.T, s *nhttp.Server, method, path, tenant, body string) result {
 	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	if body != "" {

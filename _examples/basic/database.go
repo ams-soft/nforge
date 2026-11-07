@@ -29,18 +29,17 @@ CREATE TABLE IF NOT EXISTS basic_notes (
 	text TEXT      NOT NULL
 )`
 
-// registerDatabaseRoutes registers a small CRUD over deps.DB: db.Query
+// registerDatabaseRoutes registers a small CRUD over the database module: db.Query
 // (Squirrel) builds the SQL and db.Executor (pgx) runs it. Nothing is
 // registered when the database is off (standalone.env). See the database
 // example for filters, transactions and multi-tenancy.
-func registerDatabaseRoutes(server *nhttp.ServerHttp) error {
-	db := server.Deps.DB
+func registerDatabaseRoutes(ctx context.Context, e env) error {
+	server, db, logger := e.server, e.db, e.logger
 	if db == nil { // database.enabled: false
 		return nil
 	}
-	logger := server.Deps.Logger
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if _, err := db.Executor.Exec(ctx, notesSchema); err != nil {
 		return fmt.Errorf("create basic_notes table: %w", err)

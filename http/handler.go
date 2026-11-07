@@ -77,7 +77,7 @@ func route[Req, Res any](tr *TypedRouter, method, pattern string, h Handler[Req,
 		panic(fmt.Sprintf("nhttp: %s %s: Opts.Status must be 2xx, got %d", method, pattern, o.Status))
 	}
 	request, response := sample[Req](), sample[Res]()
-	logger := tr.srv.Deps.Logger
+	logger := tr.srv.logger
 	tr.handle(method, pattern, request, response, func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		var req Req
 		if request != nil {

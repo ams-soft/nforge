@@ -3,40 +3,54 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/ams-soft/nforge/app"
 	"github.com/ams-soft/nforge/config"
-	"github.com/ams-soft/nforge/deps"
 	nhttp "github.com/ams-soft/nforge/http"
 )
 
-// newTestServer loads the real config.yaml (quiet, database off as in
-// standalone.env) and returns the server with every route, without
-// listening on a port. database_integration_test.go covers the database.
-func newTestServer(t *testing.T) *nhttp.ServerHttp {
+// startApp loads the real config.yaml with the env file overrides, on a free
+// port, starts the application and stops it when the test ends.
+func startApp(t *testing.T, overrides string) *app.Application {
 	t.Helper()
 	env := filepath.Join(t.TempDir(), "test.env")
-	if err := os.WriteFile(env, []byte("DATABASE_ENABLED=false\nLOGGING_OUTPUT_TERMINAL_ENABLED=false\nLOGGING_OUTPUT_OTEL_ENABLED=false\nHTTP_SERVER_HEADER=false\n"), 0o600); err != nil {
+	text := fmt.Sprintf("LOGGING_OUTPUT_TERMINAL_ENABLED=false\nLOGGING_OUTPUT_OTEL_ENABLED=false\nTRACING_OTEL_ENABLED=false\n"+
+		"HTTP_SERVER_HEADER=false\nHTTP_SERVER_PORT=%d\n%s", freePort(t), overrides)
+	if err := os.WriteFile(env, []byte(text), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := config.LoadFlags("config.yaml", env)
 	if err != nil {
 		t.Fatal(err)
 	}
-	dps := deps.NewDeps(*cfg)
-	t.Cleanup(func() { _ = dps.Shutdown(context.Background()) })
-	server, err := newServer(dps)
+	a, err := newApp(cfg, app.WithLogger(slog.New(slog.DiscardHandler)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return server
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.Shutdown(context.Background()) })
+	return a
 }
 
-func call(t *testing.T, s *nhttp.ServerHttp, method, path, contentType, body string) *httptest.ResponseRecorder {
+// newTestServer starts the example (quiet, database off as in standalone.env)
+// and returns its server; the tests drive Srv.Handler without the network.
+// database_integration_test.go covers the database.
+func newTestServer(t *testing.T) *nhttp.Server {
+	t.Helper()
+	s, _ := app.Value(startApp(t, "DATABASE_ENABLED=false\n"), nhttp.Capability)
+	return s
+}
+
+func call(t *testing.T, s *nhttp.Server, method, path, contentType, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	if contentType != "" {
@@ -254,10 +268,12 @@ func TestCacheRoutes(t *testing.T) {
 		t.Fatalf("after delete: %d", rec.Code)
 	}
 
-	// readiness reports the cache; the database is off, so it is omitted
-	ready := data(t, call(t, s, "GET", "/ready", "", "")).(map[string]any)
-	if ready["cache"].(map[string]any)["health"] != true || ready["database"] != nil {
-		t.Fatalf("ready: %v", ready)
+	// readiness reports every enabled module; the database is off, so it is omitted
+	rec = call(t, s, "GET", "/ready", "", "")
+	ready, _ := data(t, rec).(map[string]any)
+	modules, _ := ready["modules"].(map[string]any)
+	if rec.Code != 200 || modules["cache"] != "ready" || modules["jose"] != "ready" || modules["database"] != nil {
+		t.Fatalf("ready: %d %s", rec.Code, rec.Body)
 	}
 	if rec := call(t, s, "GET", "/db/notes", "", ""); rec.Code != 404 {
 		t.Fatalf("database routes registered while disabled: %d", rec.Code)

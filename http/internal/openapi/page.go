@@ -25,7 +25,7 @@ type Page struct {
 	YAMLURL string
 	Routes  int
 	// Accent is injected as CSS: it must have been validated as a hex color
-	// (config.validateRequiredConfig does it).
+	// (nhttp.Config.Validate does it).
 	Accent string
 	// Hosts are the documented servers ("Try it out" targets), allowed in
 	// the page's connect-src.
@@ -65,7 +65,7 @@ func RenderPage(p Page) (page []byte, csp string, err error) {
 		SpecURL:  p.SpecURL,
 		YAMLURL:  p.YAMLURL,
 		NumRoute: p.Routes,
-		Accent:   template.CSS(p.Accent), //nolint:gosec // validated as hex in config.validateRequiredConfig
+		Accent:   template.CSS(p.Accent), //nolint:gosec // validated as hex in nhttp.Config.Validate
 		Nonce:    nonce,
 	})
 	if err != nil {

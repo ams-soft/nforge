@@ -3,13 +3,13 @@ package main
 import (
 	"context"
 	"crypto/subtle"
+	"log/slog"
 	stdhttp "net/http"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
 
-	"github.com/ams-soft/nforge/deps"
 	nhttp "github.com/ams-soft/nforge/http"
 	"github.com/ams-soft/nforge/jose"
 )
@@ -105,9 +105,7 @@ func listWallets(w stdhttp.ResponseWriter, req *stdhttp.Request) {
 
 // registerRoutes registers the login, the protected demo routes and the
 // optional JWS/JWE demo.
-func registerRoutes(server *nhttp.ServerHttp) {
-	dps := server.Deps
-	logger := server.Deps.Logger
+func registerRoutes(server *nhttp.Server, svc *jose.Service, logger *slog.Logger, ttls map[string]time.Duration) {
 	r := server.Router()
 
 	// Public route: no authentication.
@@ -119,14 +117,14 @@ func registerRoutes(server *nhttp.ServerHttp) {
 	// Raw route protected by a single middleware that validates the token and
 	// requires BOTH scopes (403 when one is missing).
 	// curl localhost:8080/raw/wallets -H "Authorization: Bearer $TOKEN"
-	r.With(nhttp.Authenticate(dps.JOSE, "access",
+	r.With(nhttp.Authenticate(svc, "access",
 		nhttp.WithScopes("wallet:read", "wallet:write"),
 	)).Get("/raw/wallets", listWallets)
 
 	// The same requirement built from a slice: WithScopes(requiredScopes...)
 	// behaves exactly like the variadic form above.
 	requiredScopes := []string{"wallet:read", "wallet:write"}
-	r.With(nhttp.Authenticate(dps.JOSE, "access", nhttp.WithScopes(requiredScopes...))).Get("/raw/wallets-slice", listWallets)
+	r.With(nhttp.Authenticate(svc, "access", nhttp.WithScopes(requiredScopes...))).Get("/raw/wallets-slice", listWallets)
 
 	// AddDocRoute only documents raw routes: the protection above is what enforces it.
 	server.AddDocRoute(nhttp.TypedRoute{Method: "GET", Path: "/raw/wallets", Tag: "auth", IsPrivate: true,
@@ -176,7 +174,7 @@ func registerRoutes(server *nhttp.ServerHttp) {
 			}
 			scope := strings.Join(scopes, " ")
 
-			token, err := dps.JOSE.IssueJWT(req.Context(), profile,
+			token, err := svc.IssueJWT(req.Context(), profile,
 				jose.RegisteredClaims{Subject: "user-1"}, // the user id from the database
 				AccessClaims{TenantID: demoTenant, Roles: []string{"operator"}, Scope: scope})
 			if err != nil {
@@ -185,7 +183,7 @@ func registerRoutes(server *nhttp.ServerHttp) {
 				return
 			}
 			_ = nhttp.SendJSON(w, req, stdhttp.StatusOK, LoginResponse{
-				AccessToken: token, TokenType: "Bearer", ExpiresIn: tokenTTL(dps, profile), Scope: scope,
+				AccessToken: token, TokenType: "Bearer", ExpiresIn: int64(ttls[profile] / time.Second), Scope: scope,
 			})
 		}, nhttp.Opts{DocTag: "auth", Description: "Demo login (admin/admin): issues an access or confidential token"})
 
@@ -217,12 +215,12 @@ func registerRoutes(server *nhttp.ServerHttp) {
 
 		// Optional generic JWS/JWE round trip; only registered when the
 		// message-jws and message-jwe profiles exist in config.yaml.
-		_, hasJWS := dps.JOSE.Profile("message-jws")
-		_, hasJWE := dps.JOSE.Profile("message-jwe")
+		_, hasJWS := svc.Profile("message-jws")
+		_, hasJWE := svc.Profile("message-jwe")
 		if hasJWS && hasJWE {
 			// curl -X POST localhost:8080/api/v1/jose/demo -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data-binary '{"message":"hello"}'
 			api.TPost("/jose/demo", JOSEDemoRequest{}, JOSEDemoResponse{}, func(w stdhttp.ResponseWriter, req *stdhttp.Request) {
-				resp, err := joseRoundTrip(req.Context(), dps.JOSE, []byte(nhttp.Body[JOSEDemoRequest](req).Message))
+				resp, err := joseRoundTrip(req.Context(), svc, []byte(nhttp.Body[JOSEDemoRequest](req).Message))
 				if err != nil {
 					logger.ErrorContext(req.Context(), "jose demo failed", "error", err)
 					_ = nhttp.SendJSON(w, req, stdhttp.StatusInternalServerError, "internal error")
@@ -254,14 +252,4 @@ func joseRoundTrip(ctx context.Context, svc *jose.Service, msg []byte) (JOSEDemo
 		return JOSEDemoResponse{}, err
 	}
 	return JOSEDemoResponse{JWS: jws, JWE: jwe, Verified: string(verified.Payload), Decrypted: string(decrypted.Plaintext)}, nil
-}
-
-// tokenTTL reads the configured lifetime of a jwt profile, in seconds.
-func tokenTTL(dps *deps.Deps, profile string) int64 {
-	for _, p := range dps.Config.JOSE.Profiles {
-		if p.Name == profile {
-			return int64(p.JWT.TTL / time.Second)
-		}
-	}
-	return 0
 }

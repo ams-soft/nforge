@@ -28,11 +28,11 @@ func sample() Document {
 		Order: []module.ID{"logger", "cache", "my-mod", "my_mod"},
 	}
 	status := []module.Status{
-		{ID: "cache", Initialization: module.StateStarted, Availability: module.NotReady},
-		{ID: "database", Initialization: module.StateDisabled, Availability: module.Disabled},
-		{ID: "logger", Initialization: module.StateStarted, Availability: module.Ready},
-		{ID: "my-mod", Initialization: module.StateStarted, Availability: module.Ready},
-		{ID: "my_mod", Initialization: module.StateStarted, Availability: module.Ready},
+		{ID: "cache", State: module.StateStarted, Availability: module.NotReady},
+		{ID: "database", State: module.StateDisabled, Availability: module.Disabled},
+		{ID: "logger", State: module.StateStarted, Availability: module.Ready},
+		{ID: "my-mod", State: module.StateStarted, Availability: module.Ready},
+		{ID: "my_mod", State: module.StateStarted, Availability: module.Ready},
 	}
 	return NewDocument(snap, status, time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC))
 }

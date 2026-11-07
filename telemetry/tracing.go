@@ -4,37 +4,21 @@ import (
 	"context"
 	"strings"
 
-	config "github.com/ams-soft/nforge/config"
-	"go.opentelemetry.io/otel"
+	"github.com/ams-soft/nforge/module"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
-
-// SetupTracing registers the global TracerProvider and propagator (W3C
-// traceparent + baggage). The propagator is always set, so a disabled tracer
-// still forwards context. It returns the shutdown of the provider.
-func SetupTracing(ctx context.Context, config config.Config) (func(context.Context) error, error) {
-	otel.SetTextMapPropagator(Propagator())
-	if !config.IsTracingEnabled() {
-		return func(context.Context) error { return nil }, nil
-	}
-	provider, err := NewTracerProvider(ctx, config)
-	if err != nil {
-		return nil, err
-	}
-	otel.SetTracerProvider(provider)
-	return provider.Shutdown, nil
-}
 
 // Propagator returns the W3C propagators the framework uses.
 func Propagator() propagation.TextMapPropagator {
 	return propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})
 }
 
-// NewTracerProvider builds the provider of config and touches no global state.
-func NewTracerProvider(ctx context.Context, config config.Config) (*sdktrace.TracerProvider, error) {
-	cfg := config.Tracing.Otel
+// NewTracerProvider builds the provider of the tracing settings and touches no
+// global state.
+func NewTracerProvider(ctx context.Context, s Settings, app module.App) (*sdktrace.TracerProvider, error) {
+	cfg := s.Otel
 	var opts []otlptracegrpc.Option
 	// Same rule as the logs exporter: a full URL goes through WithEndpointURL, "host:port" through WithEndpoint.
 	if endpoint := cfg.Endpoint; strings.Contains(endpoint, "://") {
@@ -51,7 +35,7 @@ func NewTracerProvider(ctx context.Context, config config.Config) (*sdktrace.Tra
 		return nil, err
 	}
 
-	res, err := NewResource(ctx, config)
+	res, err := NewResource(ctx, app)
 	if err != nil {
 		return nil, err
 	}

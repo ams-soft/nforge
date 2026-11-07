@@ -5,20 +5,23 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/ams-soft/nforge/app"
 	"github.com/ams-soft/nforge/config"
-	"github.com/ams-soft/nforge/deps"
 	nhttp "github.com/ams-soft/nforge/http"
 )
 
 // newTestServer loads the real config.yaml with ephemeral secrets and
 // returns the server with every route.
-func newTestServer(t *testing.T) *nhttp.ServerHttp {
+func newTestServer(t *testing.T) *nhttp.Server {
 	t.Helper()
 	random := func(n int) string {
 		b := make([]byte, n)
@@ -29,16 +32,35 @@ func newTestServer(t *testing.T) *nhttp.ServerHttp {
 	t.Setenv("JWT_ENCRYPTION_SECRET", random(16)) // exactly 32 chars
 
 	env := filepath.Join(t.TempDir(), "test.env")
-	if err := os.WriteFile(env, []byte("LOGGING_OUTPUT_TERMINAL_ENABLED=false\nHTTP_SERVER_HEADER=false\n"), 0o600); err != nil {
+	text := fmt.Sprintf("LOGGING_OUTPUT_TERMINAL_ENABLED=false\nHTTP_SERVER_HEADER=false\nHTTP_SERVER_PORT=%d\n", freePort(t))
+	if err := os.WriteFile(env, []byte(text), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := config.LoadFlags("config.yaml", env)
 	if err != nil {
 		t.Fatal(err)
 	}
-	dps := deps.NewDeps(*cfg)
-	t.Cleanup(func() { _ = dps.Shutdown(context.Background()) })
-	return newServer(dps)
+	a, err := newApp(cfg, app.WithLogger(slog.New(slog.DiscardHandler)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.Shutdown(context.Background()) })
+	s, _ := app.Value(a, nhttp.Capability)
+	return s
+}
+
+// freePort returns a TCP port that was free a moment ago.
+func freePort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	return ln.Addr().(*net.TCPAddr).Port
 }
 
 type result struct {
@@ -47,7 +69,7 @@ type result struct {
 	header string
 }
 
-func call(t *testing.T, s *nhttp.ServerHttp, method, path, token, body string) result {
+func call(t *testing.T, s *nhttp.Server, method, path, token, body string) result {
 	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	if body != "" {
@@ -63,7 +85,7 @@ func call(t *testing.T, s *nhttp.ServerHttp, method, path, token, body string) r
 	return result{rec.Code, out, rec.Header().Get("WWW-Authenticate")}
 }
 
-func login(t *testing.T, s *nhttp.ServerHttp, body string) string {
+func login(t *testing.T, s *nhttp.Server, body string) string {
 	t.Helper()
 	r := call(t, s, "POST", "/auth/login", "", body)
 	if r.status != 200 {
@@ -156,7 +178,7 @@ func TestJOSEDemo(t *testing.T) {
 		t.Fatalf("jwks: %d", r.status)
 	}
 	ready := call(t, s, "GET", "/ready", "", "")
-	if j, _ := ready.body["data"].(map[string]any)["jose"].(map[string]any); ready.status != 200 || j["health"] != true {
+	if m, _ := ready.body["data"].(map[string]any)["modules"].(map[string]any); ready.status != 200 || m["jose"] != "ready" {
 		t.Fatalf("ready: %d %v", ready.status, ready.body)
 	}
 }
@@ -164,7 +186,11 @@ func TestJOSEDemo(t *testing.T) {
 func TestFailsWithoutSecret(t *testing.T) {
 	t.Setenv("JWT_SECRET", "")
 	t.Setenv("JWT_ENCRYPTION_SECRET", "0123456789abcdef0123456789abcdef")
-	if _, err := config.LoadFlags("config.yaml", ""); err == nil || !strings.Contains(err.Error(), "secret or source is required") {
+	cfg, err := config.LoadFlags("config.yaml", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newApp(cfg); err == nil || !strings.Contains(err.Error(), "secret or source is required") {
 		t.Fatalf("missing JWT_SECRET must stop startup: %v", err)
 	}
 }

@@ -2,134 +2,175 @@ package nhttp
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	stdhttp "net/http"
-	"os/signal"
 	"strconv"
-	"syscall"
+	"strings"
+	"sync"
 
 	router "github.com/ams-soft/go-ams-router"
 	"github.com/ams-soft/go-ams-router/middleware"
+	"github.com/ams-soft/nforge"
 	"github.com/ams-soft/nforge/codec"
-	"github.com/ams-soft/nforge/config"
-	"github.com/ams-soft/nforge/deps"
+	"github.com/ams-soft/nforge/jose"
+	"github.com/ams-soft/nforge/module"
+	"github.com/ams-soft/nforge/telemetry"
 )
 
-type ServerHttp struct {
-	Deps              *deps.Deps
-	Srv               *stdhttp.Server
-	globalMiddlewares []func(stdhttp.Handler) stdhttp.Handler
-	ShutdownFunc      []func()
+// Server is the HTTP transport of an application: one router shared by the
+// HTTP, HTTPS and HTTP/3 listeners, with the standard middleware chain, the
+// typed routes and the built-in routes. It does not own the application's
+// lifetime: Module starts it after every module registered its routes and
+// stops it first, and app.Run handles the signals. Use it through a pointer.
+type Server struct {
+	// Srv is the plain HTTP server; its Handler is the router every transport
+	// serves. Settings changed on it before Start reach every transport.
+	Srv *stdhttp.Server
 	// TypedRoutes holds the typed routes (and those from AddDocRoute), the source
 	// for the documentation generator.
 	TypedRoutes []TypedRoute
 
+	cfg      Config
+	app      module.App
+	logger   *slog.Logger
+	codec    *codec.Registry
+	jose     *jose.Service
+	tracing  *telemetry.Tracing
+	status   module.Introspection
+	failed   func(error)
+	accessed bool // request logging is on
+
 	specs specCache
 	graph graphPage //nolint:unused // used by graph.go, which only the nforge_graph build compiles
+
+	mu   sync.Mutex
+	run  *running
+	wg   sync.WaitGroup
+	stop sync.Once
 }
 
-// NewHTTPServer builds the server on deps, which it keeps and shares with the
-// caller. A Deps built by hand without a Logger gets a discarding one.
-func NewHTTPServer(deps *deps.Deps) *ServerHttp {
-	if deps == nil {
-		panic("nhttp: NewHTTPServer: nil Deps")
-	}
-	if deps.Logger == nil {
-		deps.Logger = slog.New(slog.DiscardHandler)
-	}
-	deps.Logger.Info(" [HTTPModule] Starting HTTP server")
+// Dependencies are the collaborators of a Server. Module fills them from the
+// module graph; a Server built with New outside an application (tests,
+// embedding) passes what it has.
+type Dependencies struct {
+	// App is the application metadata (docs title, version, banner, readiness).
+	App module.App
+	// Logger logs the server. Nil discards.
+	Logger *slog.Logger
+	// AccessLog adds the request log middleware (one record per request).
+	AccessLog bool
+	// Codec is the Registry of the requests; nil uses codec.Default().
+	Codec *codec.Registry
+	// JOSE authenticates private typed routes and serves the JWKS; nil means
+	// none (a private route then panics at registration).
+	JOSE *jose.Service
+	// Tracing adds the tracing middleware (request_id = trace_id); nil means
+	// none.
+	Tracing *telemetry.Tracing
+	// Status feeds the readiness route and the graph page; nil reports the
+	// server alone.
+	Status module.Introspection
+	// Failed is told when a listener fails after Start; nil ignores it.
+	Failed func(error)
+}
 
-	cfg := deps.Config.HTTP.Server
-	config.ApplyServerDefaults(&cfg) // a Config built without config.Load has zero timeouts
-
-	server := &ServerHttp{
-		Deps: deps,
+// New builds the server of cfg, with the defaults applied to a copy. Routes
+// and middlewares can be added until it serves its first request.
+func New(cfg Config, d Dependencies) *Server {
+	cfg.ApplyDefaults(d.App)
+	logger := d.Logger
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+	s := &Server{
+		cfg: cfg, app: d.App, logger: logger, codec: d.Codec, jose: d.JOSE, tracing: d.Tracing,
+		status: d.Status, failed: d.Failed,
+		accessed: d.AccessLog,
 		Srv: &stdhttp.Server{
-			Addr:              cfg.Host + ":" + strconv.Itoa(cfg.Port),
-			ReadHeaderTimeout: cfg.ReadHeaderTimeout,
-			ReadTimeout:       cfg.ReadTimeout,
-			WriteTimeout:      cfg.WriteTimeout,
-			IdleTimeout:       cfg.IdleTimeout,
+			Addr:              cfg.Server.Host + ":" + strconv.Itoa(cfg.Server.Port),
+			ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout,
+			ReadTimeout:       cfg.Server.ReadTimeout,
+			WriteTimeout:      cfg.Server.WriteTimeout,
+			IdleTimeout:       cfg.Server.IdleTimeout,
 		},
 	}
-	server.setStandardHandler()
-
-	return server
+	s.setStandardHandler()
+	return s
 }
 
-func (s *ServerHttp) AddShutdownFunc(fn func()) {
-	s.ShutdownFunc = append(s.ShutdownFunc, fn)
+// Config returns the effective configuration (defaults applied).
+func (s *Server) Config() Config { return s.cfg }
+
+// Use adds global middlewares after the standard chain (§3.3 of AGENTS.md).
+// Valid until the server serves its first request; application modules call it
+// during their Init.
+func (s *Server) Use(middlewares ...func(stdhttp.Handler) stdhttp.Handler) {
+	s.Router().Use(middlewares...)
 }
 
-func (s *ServerHttp) AddGlobalMiddleware(middleware func(stdhttp.Handler) stdhttp.Handler) {
-	s.globalMiddlewares = append(s.globalMiddlewares, middleware)
-}
-
-func (s *ServerHttp) setStandardHandler() {
+func (s *Server) setStandardHandler() {
 	handler := router.NewRouter()
 	s.Srv.Handler = handler // s.Typed()/s.Router() read the router from here
 
 	// essential middlewares: Tracing, Logger and Recoverer, then the optional
 	// Security and CORS (before routing, so preflights reach every path)
-	if s.Deps.Config.IsTracingEnabled() {
-		var tracingOpts []TracingOption
-		if s.Deps.Isolated() {
-			tracingOpts = append(tracingOpts, WithTracerProvider(s.Deps.TracerProvider))
+	if s.tracing != nil {
+		opts := []TracingOption{WithTracerProvider(s.tracing.Provider)}
+		if s.tracing.TrustIncoming {
+			opts = append(opts, WithTrustedIncomingContext())
 		}
-		if s.Deps.Config.Tracing.Otel.TrustsIncoming() {
-			tracingOpts = append(tracingOpts, WithTrustedIncomingContext())
-		}
-		handler.Use(Tracing(tracingOpts...))
+		handler.Use(Tracing(opts...))
 	}
-	if s.Deps.Config.Logging.Output.Otel.Enabled || s.Deps.Config.Logging.Output.Terminal.Enabled {
-		handler.Use(Logger(s.Deps.Logger))
+	if s.accessed {
+		handler.Use(Logger(s.logger))
 	}
 	handler.Use(middleware.Recoverer)
-	if s.Deps.Isolated() {
-		handler.Use(withRegistry(s.Deps.Codec))
+	if s.codec != nil && s.codec != codec.Default() {
+		handler.Use(withRegistry(s.codec))
 	}
-	limits := s.Deps.Config.HTTP.Server
-	config.ApplyServerDefaults(&limits)
-	handler.Use(bodyLimit(s.maxBodyBytes(limits)))
-	handler.Use(handlerTimeout(limits.HandlerTimeout))
-	sec := s.Deps.Config.HTTP.Security
-	config.ApplySecurityDefaults(&sec) // a Config built without config.Load has none
-	if sec.IsEnabled() {
-		handler.Use(middleware.Security(securityOptions(sec)))
+	handler.Use(bodyLimit(s.maxBodyBytes()))
+	handler.Use(handlerTimeout(s.cfg.Server.HandlerTimeout))
+	if s.cfg.Security.IsEnabled() {
+		handler.Use(middleware.Security(securityOptions(s.cfg.Security)))
 	}
-	if s.Deps.Config.HTTP.CORS.Enabled {
-		handler.Use(middleware.CORS(corsOptions(s.Deps.Config.HTTP.CORS)))
+	if s.cfg.CORS.Enabled {
+		handler.Use(middleware.CORS(corsOptions(s.cfg.CORS)))
 	}
 
-	if s.Deps.Config.HTTP.Docs.Enabled {
+	if s.cfg.Docs.Enabled {
 		s.registerDocs(handler)
 	}
-	if s.Deps.JOSE != nil && s.Deps.Config.JOSE.JWKS.Enabled {
+	if s.jose != nil && s.jose.JWKS().Enabled {
 		s.registerJWKS(handler)
 	}
-
-	if s.Deps.Config.HTTP.Routes.Graph.Enabled {
+	if s.cfg.Routes.Graph.Enabled {
 		s.registerGraph(handler)
 	}
-
-	if s.Deps.Config.HTTP.Routes.Health.Enabled || s.Deps.Config.HTTP.Routes.Readiness.Enabled {
+	if s.cfg.Routes.Health.Enabled || s.cfg.Routes.Readiness.Enabled {
 		s.Typed().Route("/", func(api *TypedRouter) {
-			setRoutes(api, s.Deps)
+			s.setRoutes(api)
 		})
 	}
-
 }
 
-// registry is the Registry of this server: the one of an isolated Deps, otherwise
-// the process default that requests also use.
-func (s *ServerHttp) registry() *codec.Registry {
-	if s.Deps.Isolated() {
-		return s.Deps.Codec
+// banner logs the nForge banner (http.server.header).
+func (s *Server) banner(ctx context.Context) {
+	str := fmt.Sprintf(" ***** AMS SOFT nForge v%s: %s v%s *****", nforge.Version, strings.ToUpper(s.app.Name), s.app.Version)
+	s.logger.InfoContext(ctx, str)
+	s.logger.InfoContext(ctx, strings.Repeat("=", len(str)+1))
+}
+
+// registry is the Registry of this server: the application's, or the process
+// default that requests also use.
+func (s *Server) registry() *codec.Registry {
+	if s.codec != nil {
+		return s.codec
 	}
 	return codec.Default()
 }
 
-// withRegistry makes the requests of an isolated server use its Registry.
+// withRegistry makes the requests of the server use its Registry.
 func withRegistry(registry *codec.Registry) func(stdhttp.Handler) stdhttp.Handler {
 	return func(next stdhttp.Handler) stdhttp.Handler {
 		return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
@@ -139,41 +180,16 @@ func withRegistry(registry *codec.Registry) func(stdhttp.Handler) stdhttp.Handle
 }
 
 // Router returns the server's router, for registering application routes.
-func (s *ServerHttp) Router() router.Router {
+func (s *Server) Router() router.Router {
 	r, _ := s.Srv.Handler.(router.Router)
 	return r
 }
 
-func (s *ServerHttp) LoadGlobalMiddleware() {
-	s.Deps.Logger.Info(" [HTTPModule] Loading global middlewares")
-	if r, ok := s.Srv.Handler.(router.Router); ok {
-
-		r.Use(s.globalMiddlewares...)
-	}
-}
-
-func (s *ServerHttp) Shutdown() {
-	for _, fn := range s.ShutdownFunc {
-		fn()
-	}
-}
-
-// Start serves every enabled transport (plain HTTP, HTTPS, HTTP/3) and blocks
-// until SIGINT/SIGTERM or a listener fails; see StartContext.
-func (s *ServerHttp) Start() error {
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-	return s.StartContext(ctx)
-}
-
 // maxBodyBytes is http.server.max_body_bytes, or the codec payload limit when
 // it is unset.
-func (s *ServerHttp) maxBodyBytes(cfg config.ServerConfig) int64 {
-	if cfg.MaxBodyBytes > 0 {
-		return int64(cfg.MaxBodyBytes)
+func (s *Server) maxBodyBytes() int64 {
+	if s.cfg.Server.MaxBodyBytes > 0 {
+		return int64(s.cfg.Server.MaxBodyBytes)
 	}
-	if limit := int64(s.Deps.Config.Codec.MaxPayloadBytes); limit > 0 {
-		return limit
-	}
-	return codec.DefaultMaxPayloadBytes
+	return s.registry().MaxPayloadBytes()
 }

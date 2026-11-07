@@ -10,7 +10,6 @@ import (
 	"time"
 
 	router "github.com/ams-soft/go-ams-router"
-	"github.com/ams-soft/nforge/config"
 	"github.com/ams-soft/nforge/http/internal/graph"
 	"github.com/ams-soft/nforge/module"
 )
@@ -34,7 +33,7 @@ type graphPage struct {
 // current returns the render, refreshing it when it is older than graphStatusTTL.
 // The lock is held across the probe on purpose: concurrent requests wait for one
 // sample instead of each starting their own.
-func (g *graphPage) current(s *ServerHttp, snap module.Snapshot) (graph.Rendered, error) {
+func (g *graphPage) current(s *Server, snap module.Snapshot) (graph.Rendered, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := time.Now()
@@ -45,10 +44,11 @@ func (g *graphPage) current(s *ServerHttp, snap module.Snapshot) (graph.Rendered
 	// that shows every module as not ready.
 	ctx, cancel := context.WithTimeout(context.Background(), graphProbeTimeout)
 	defer cancel()
-	status := s.Deps.ModuleStatus(ctx)
+	report := s.status.Status(ctx)
+	status := report.Modules
 	for _, st := range status {
 		if st.Availability == module.NotReady {
-			s.Deps.Logger.WarnContext(ctx, "[HTTPModule] Graph: module not ready", "module", string(st.ID))
+			s.logger.WarnContext(ctx, "[HTTPModule] Graph: module not ready", "module", string(st.ID))
 		}
 	}
 	rendered, err := graph.Render(graph.NewDocument(snap, status, now))
@@ -61,21 +61,25 @@ func (g *graphPage) current(s *ServerHttp, snap module.Snapshot) (graph.Rendered
 
 // registerGraph serves the module graph page at http.routes.graph.path and its
 // Mermaid script. It is public: the operator restricts it (see AGENTS.md §7.13).
-func (s *ServerHttp) registerGraph(r router.Router) {
-	cfg := &s.Deps.Config
-	if err := config.ValidateGraphRoute(cfg); err != nil { // a Config built by hand skips Load
+func (s *Server) registerGraph(r router.Router) {
+	cfg := &s.cfg
+	jwks := ""
+	if s.jose != nil && s.jose.JWKS().Enabled {
+		jwks = s.jose.JWKS().Path
+	}
+	if err := ValidateGraphRoute(cfg, jwks); err != nil { // a Config built by hand skips the module
 		panic("nhttp: " + err.Error())
 	}
-	snap, ok := s.Deps.Graph()
-	if !ok {
-		panic("nhttp: http.routes.graph needs a Deps built by deps.NewDeps")
+	if s.status == nil {
+		panic("nhttp: http.routes.graph needs a server built by nhttp.Module in an application")
 	}
-	path := cfg.HTTP.Routes.Graph.Path
+	snap := s.status.Snapshot()
+	path := cfg.Routes.Graph.Path
 	if path == "" {
-		path = config.DefaultGraphPath
+		path = DefaultGraphPath
 	}
-	assetURL := path + config.GraphAssetSuffix
-	title := cfg.App.Name
+	assetURL := path + GraphAssetSuffix
+	title := s.app.Name
 	page := &s.graph
 
 	r.Get(path, func(w stdhttp.ResponseWriter, req *stdhttp.Request) {
@@ -86,7 +90,7 @@ func (s *ServerHttp) registerGraph(r router.Router) {
 			html, csp, err = graph.Page(rendered, title, assetURL)
 		}
 		if err != nil {
-			s.Deps.Logger.ErrorContext(req.Context(), "[HTTPModule] Failed to render the module graph", "error", err)
+			s.logger.ErrorContext(req.Context(), "[HTTPModule] Failed to render the module graph", "error", err)
 			stdhttp.Error(w, "failed to render the graph", stdhttp.StatusInternalServerError)
 			return
 		}
@@ -120,7 +124,7 @@ func (s *ServerHttp) registerGraph(r router.Router) {
 			return
 		}
 		if err := graph.WriteMermaid(w); err != nil {
-			s.Deps.Logger.ErrorContext(req.Context(), "[HTTPModule] Failed to serve the Mermaid script", "error", err)
+			s.logger.ErrorContext(req.Context(), "[HTTPModule] Failed to serve the Mermaid script", "error", err)
 		}
 	})
 }

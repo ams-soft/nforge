@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ams-soft/nforge/config"
 	"github.com/ams-soft/nforge/http/internal/envelope"
 	"gopkg.in/yaml.v3"
 )
@@ -110,7 +109,15 @@ type schema = map[string]any
 const bearerScheme = "bearerAuth"
 
 // Build builds the spec of routes.
-func Build(cfg config.DocsConfig, routes []Route) *Doc {
+// Info is the documentation metadata of the spec (the http.docs section).
+type Info struct {
+	Title, Version string
+	// Auth is the documented scheme of private routes: bearer, or none.
+	Auth  string
+	Hosts []string
+}
+
+func Build(cfg Info, routes []Route) *Doc {
 	g := &schemaGen{
 		schemas:   map[string]schema{},
 		names:     map[reflect.Type]string{},

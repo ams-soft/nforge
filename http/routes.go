@@ -7,10 +7,9 @@ import (
 	"time"
 
 	router "github.com/ams-soft/go-ams-router"
-	"github.com/ams-soft/nforge/config"
-	"github.com/ams-soft/nforge/deps"
 	"github.com/ams-soft/nforge/http/internal/jwks"
 	"github.com/ams-soft/nforge/http/internal/openapi"
+	"github.com/ams-soft/nforge/module"
 )
 
 // Built-in routes registered by NewHTTPServer: health/readiness, the
@@ -20,90 +19,63 @@ type HealthResponse struct {
 	Status string `json:"status"`
 }
 
-type DatabaseInfo struct {
-	Health bool `json:"health"`
-}
-
-// JOSEInfo reports the JOSE service state in the readiness response.
-type JOSEInfo struct {
-	Health bool `json:"health"`
-}
-
-// CacheInfo reports the cache backend state in the readiness response.
-type CacheInfo struct {
-	Health bool `json:"health"`
-}
-
+// ReadinessResponse is the body of the readiness route.
 type ReadinessResponse struct {
-	Status string `json:"status,omitempty"`
-	// Database is omitted when database.enabled is false.
-	Database *DatabaseInfo `json:"database,omitempty"`
-	// JOSE is omitted when jose.enabled is false.
-	JOSE *JOSEInfo `json:"jose,omitempty"`
-	// Cache is omitted when cache.enabled is false.
-	Cache       *CacheInfo `json:"cache,omitempty"`
-	OnlineSince string     `json:"online_since"`
+	// Status is "ok" when the application is ready, "unavailable" otherwise.
+	Status      string `json:"status"`
+	OnlineSince string `json:"online_since"`
+	// Modules maps every enabled module to ready or not_ready. It names the
+	// modules, as the old database/jose/cache keys did: keep the route behind
+	// the gateway.
+	Modules map[string]string `json:"modules,omitempty"`
 }
 
-// readinessTimeout bounds the database and cache pings of the readiness
-// route, so a hung dependency makes the probe fail fast instead of piling up
-// requests.
+// readinessTimeout bounds how long a readiness request waits for the shared
+// probe (which has its own bound), so a hung dependency makes the probe fail
+// fast instead of piling up requests.
 const readinessTimeout = 2 * time.Second
 
-func setRoutes(api *TypedRouter, d *deps.Deps) {
-	cfg := d.Config
+func (s *Server) setRoutes(api *TypedRouter) {
+	cfg := s.cfg
 	tag := " maintenance"
-	if cfg.HTTP.Routes.Health.Enabled {
-		api.TGet(cfg.HTTP.Routes.Health.Path, nil, HealthResponse{}, func(w stdhttp.ResponseWriter, req *stdhttp.Request) {
+	if cfg.Routes.Health.Enabled {
+		api.TGet(cfg.Routes.Health.Path, nil, HealthResponse{}, func(w stdhttp.ResponseWriter, req *stdhttp.Request) {
 			_ = SendJSON(w, req, stdhttp.StatusOK, HealthResponse{Status: "ok"})
-		}, Opts{DocTag: tag, Description: "Health check"})
+		}, Opts{DocTag: tag, Description: "Health check (liveness): never touches the dependencies"})
 	}
 
-	if cfg.HTTP.Routes.Readiness.Enabled {
-		api.TGet(cfg.HTTP.Routes.Readiness.Path, nil, ReadinessResponse{}, func(w stdhttp.ResponseWriter, req *stdhttp.Request) {
-			resp := ReadinessResponse{Status: "ok", OnlineSince: cfg.App.OnlineSince}
-			healthy := true
-			if d.DB != nil {
-				ctx, cancel := context.WithTimeout(req.Context(), readinessTimeout)
-				defer cancel()
-				err := d.PingDatabase(ctx)
-				resp.Database = &DatabaseInfo{Health: err == nil}
-				if err != nil {
-					d.Logger.WarnContext(req.Context(), "[HTTPModule] Readiness: database unavailable", "error", err)
-					healthy = false
+	if cfg.Routes.Readiness.Enabled {
+		api.TGet(cfg.Routes.Readiness.Path, nil, ReadinessResponse{}, func(w stdhttp.ResponseWriter, req *stdhttp.Request) {
+			resp := ReadinessResponse{Status: "ok", OnlineSince: s.app.OnlineSince.UTC().Format(time.RFC3339)}
+			if s.status == nil {
+				_ = SendJSON(w, req, stdhttp.StatusOK, resp)
+				return
+			}
+			ctx, cancel := context.WithTimeout(req.Context(), readinessTimeout)
+			defer cancel()
+			report := s.status.Status(ctx)
+			resp.Modules = map[string]string{}
+			for _, m := range report.Modules {
+				if m.Availability == module.Disabled {
+					continue
+				}
+				resp.Modules[string(m.ID)] = string(m.Availability)
+				if m.Availability == module.NotReady {
+					s.logger.WarnContext(req.Context(), "[HTTPModule] Readiness: module not ready", "module", string(m.ID))
 				}
 			}
-			if d.JOSE != nil {
-				err := d.CheckJOSE(req.Context())
-				resp.JOSE = &JOSEInfo{Health: err == nil}
-				if err != nil {
-					d.Logger.WarnContext(req.Context(), "[HTTPModule] Readiness: jose unavailable", "error", err)
-					healthy = false
-				}
-			}
-			if d.Cache != nil {
-				// pinged on every probe: a recovered Redis is healthy again at once
-				ctx, cancel := context.WithTimeout(req.Context(), readinessTimeout)
-				defer cancel()
-				err := d.PingCache(ctx)
-				resp.Cache = &CacheInfo{Health: err == nil}
-				if err != nil {
-					d.Logger.WarnContext(req.Context(), "[HTTPModule] Readiness: cache unavailable", "error", err)
-					healthy = false
-				}
-			}
-			if !healthy {
+			if !report.Ready {
 				resp.Status = "unavailable"
 				_ = SendJSON(w, req, stdhttp.StatusServiceUnavailable, resp)
 				return
 			}
 			_ = SendJSON(w, req, stdhttp.StatusOK, resp)
-		}, Opts{DocTag: tag, Description: "Readiness check: 503 when the database, jose or the cache is unavailable"})
+		}, Opts{DocTag: tag, Description: "Readiness check: 503 until the application is started and while a critical module is not ready"})
 	}
 }
 
 // docsBase is the normalized documentation path ("/docs" by default).
-func docsBase(cfg config.DocsConfig) string {
+func docsBase(cfg DocsConfig) string {
 	base := "/" + strings.Trim(cfg.Path, "/")
 	if base == "/" {
 		base = "/docs"
@@ -114,11 +86,11 @@ func docsBase(cfg config.DocsConfig) string {
 // registerDocs serves the documentation at {path} (page), {path}/swagger.json
 // and {path}/swagger.yaml. The spec is generated on every request from
 // TypedRoutes, so it includes routes registered after the server was created.
-func (s *ServerHttp) registerDocs(r router.Router) {
-	base := docsBase(s.Deps.Config.HTTP.Docs)
+func (s *Server) registerDocs(r router.Router) {
+	base := docsBase(s.cfg.Docs)
 
 	r.Get(base, func(w stdhttp.ResponseWriter, req *stdhttp.Request) {
-		cfg := s.Deps.Config.HTTP.Docs
+		cfg := s.cfg.Docs
 		page, csp, err := openapi.RenderPage(openapi.Page{
 			Title:   cfg.Title,
 			Version: cfg.Version,
@@ -129,11 +101,11 @@ func (s *ServerHttp) registerDocs(r router.Router) {
 			Hosts:   cfg.Hosts,
 		})
 		if err != nil {
-			s.Deps.Logger.ErrorContext(req.Context(), "failed to render docs", "error", err)
+			s.logger.ErrorContext(req.Context(), "failed to render docs", "error", err)
 			stdhttp.Error(w, "failed to render docs", stdhttp.StatusInternalServerError)
 			return
 		}
-		if header := docsCSPHeader(s.Deps.Config.HTTP.Security); header != "" {
+		if header := docsCSPHeader(s.cfg.Security); header != "" {
 			w.Header().Set(header, csp)
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -143,13 +115,13 @@ func (s *ServerHttp) registerDocs(r router.Router) {
 	r.Get(base+"/swagger.yaml", s.serveSpec("application/yaml", (*openapi.Doc).YAML))
 }
 
-func (s *ServerHttp) serveSpec(contentType string, render func(*openapi.Doc) ([]byte, error)) stdhttp.HandlerFunc {
+func (s *Server) serveSpec(contentType string, render func(*openapi.Doc) ([]byte, error)) stdhttp.HandlerFunc {
 	return func(w stdhttp.ResponseWriter, req *stdhttp.Request) {
 		spec, err := s.specs.get(contentType, len(s.TypedRoutes), func() ([]byte, error) {
-			return render(buildOpenAPI(s.Deps.Config.HTTP.Docs, s.TypedRoutes))
+			return render(buildOpenAPI(s.cfg.Docs, s.TypedRoutes))
 		})
 		if err != nil {
-			s.Deps.Logger.ErrorContext(req.Context(), "failed to generate OpenAPI spec", "error", err)
+			s.logger.ErrorContext(req.Context(), "failed to generate OpenAPI spec", "error", err)
 			stdhttp.Error(w, "failed to generate spec", stdhttp.StatusInternalServerError)
 			return
 		}
@@ -165,7 +137,7 @@ func (s *ServerHttp) serveSpec(contentType string, render func(*openapi.Doc) ([]
 }
 
 // buildOpenAPI builds the spec of the registered typed routes.
-func buildOpenAPI(cfg config.DocsConfig, routes []TypedRoute) *openapi.Doc {
+func buildOpenAPI(cfg DocsConfig, routes []TypedRoute) *openapi.Doc {
 	docs := make([]openapi.Route, len(routes))
 	for i, rt := range routes {
 		docs[i] = openapi.Route{
@@ -184,38 +156,39 @@ func buildOpenAPI(cfg config.DocsConfig, routes []TypedRoute) *openapi.Doc {
 			Response:       rt.Response,
 		}
 	}
-	return openapi.Build(cfg, docs)
+	return openapi.Build(openapi.Info{Title: cfg.Title, Version: cfg.Version, Auth: cfg.Auth, Hosts: cfg.Hosts}, docs)
 }
 
 // registerJWKS serves the public JSON Web Key Set at jose.jwks.path (GET and
 // HEAD). It is a protocol endpoint: raw application/jwk-set+json, no
 // envelope, no typed-route capture, with a strong ETag for conditional GET.
-func (s *ServerHttp) registerJWKS(r router.Router) {
-	cfg := s.Deps.Config
-	path := cfg.JOSE.JWKS.Path
+func (s *Server) registerJWKS(r router.Router) {
+	cfg := s.cfg
+	jwksCfg := s.jose.JWKS()
+	path := jwksCfg.Path
 	reserved := map[string]string{}
-	if cfg.HTTP.Docs.Enabled {
-		base := docsBase(cfg.HTTP.Docs)
+	if cfg.Docs.Enabled {
+		base := docsBase(cfg.Docs)
 		for _, p := range []string{base, base + "/swagger.json", base + "/swagger.yaml"} {
 			reserved[p] = "http.docs"
 		}
 	}
-	if cfg.HTTP.Routes.Health.Enabled {
-		reserved[cfg.HTTP.Routes.Health.Path] = "http.routes.health"
+	if cfg.Routes.Health.Enabled {
+		reserved[cfg.Routes.Health.Path] = "http.routes.health"
 	}
-	if cfg.HTTP.Routes.Readiness.Enabled {
-		reserved[cfg.HTTP.Routes.Readiness.Path] = "http.routes.readiness"
+	if cfg.Routes.Readiness.Enabled {
+		reserved[cfg.Routes.Readiness.Path] = "http.routes.readiness"
 	}
 	if owner, ok := reserved[path]; ok {
 		panic("nhttp: jose.jwks.path " + path + " collides with " + owner)
 	}
 
 	maxAge := time.Minute
-	if cfg.JOSE.JWKS.CacheMaxAge != nil {
-		maxAge = *cfg.JOSE.JWKS.CacheMaxAge
+	if jwksCfg.CacheMaxAge != nil {
+		maxAge = *jwksCfg.CacheMaxAge
 	}
-	handler := jwks.Handler(s.Deps.JOSE.PublicJWKS, maxAge, func(ctx context.Context, err error) {
-		s.Deps.Logger.WarnContext(ctx, "[HTTPModule] JWKS unavailable", "error", err)
+	handler := jwks.Handler(s.jose.PublicJWKS, maxAge, func(ctx context.Context, err error) {
+		s.logger.WarnContext(ctx, "[HTTPModule] JWKS unavailable", "error", err)
 	})
 	r.Get(path, handler)
 	r.Head(path, handler)

@@ -1,4 +1,4 @@
-// Command cache shows deps.Cache with the same code for both drivers
+// Command cache shows the cache module with the same code for both drivers
 // (cache.driver: redis | memory) and both object codecs (cache.codec:
 // json | cbor): objects, TTLs, atomic NX, counters, raw bytes and
 // cache-aside loading with GetOrLoad.
@@ -7,34 +7,53 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"log/slog"
 	"os"
 
+	"github.com/ams-soft/nforge/app"
+	"github.com/ams-soft/nforge/cache"
+	"github.com/ams-soft/nforge/codec"
 	"github.com/ams-soft/nforge/config"
-	"github.com/ams-soft/nforge/deps"
 	nhttp "github.com/ams-soft/nforge/http"
+	"github.com/ams-soft/nforge/logs"
+	"github.com/ams-soft/nforge/module"
 )
 
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
-		slog.Error("[Fatal ERROR] unable to load config", "error", err)
+		fmt.Fprintln(os.Stderr, "[Fatal ERROR] unable to load config:", err)
 		os.Exit(1)
 	}
-
-	// With driver: redis and Redis down, NewDeps stops here ("unable to setup
+	application, err := newApp(cfg, newCatalog())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "[Fatal ERROR]", err)
+		os.Exit(1)
+	}
+	// With driver: redis and Redis down, the start stops here ("unable to setup
 	// cache"), like a database that cannot be reached at startup.
-	server := newServer(deps.NewDeps(*cfg), newCatalog())
-	if err := server.Start(); err != nil {
-		server.Shutdown()
+	if err := application.Run(context.Background()); err != nil {
+		fmt.Fprintln(os.Stderr, "[Fatal ERROR]", err)
 		os.Exit(1)
 	}
 }
 
-// newServer builds the server with every route; the tests drive it without
-// listening on a port and with their own catalog.
-func newServer(dps *deps.Deps, products *catalog) *nhttp.ServerHttp {
-	server := nhttp.NewHTTPServer(dps)
-	registerRoutes(server, products)
-	return server
+// newApp registers the modules; the tests reuse it with their own catalog.
+func newApp(cfg *config.Document, products *catalog, opts ...app.Option) (*app.Application, error) {
+	routes := module.New("routes", module.Definition{
+		Requires: []module.Handle{nhttp.Capability, cache.Capability},
+		Optional: []module.Handle{module.Logger},
+		Init: func(_ context.Context, s *module.Scope) (module.Hooks, error) {
+			logger, ok := module.Lookup(s, module.Logger)
+			if !ok {
+				logger = slog.New(slog.DiscardHandler)
+			}
+			registerRoutes(module.Require(s, nhttp.Capability), module.Require(s, cache.Capability), logger, products)
+			return module.Hooks{}, nil
+		},
+	})
+	mods := app.Modules(logs.Module(), codec.Module(), cache.Module(), nhttp.Module(), routes)
+	return app.New(cfg, append([]app.Option{mods}, opts...)...)
 }

@@ -1,44 +1,122 @@
+// Package config reads the configuration of an nForge application once: one
+// logical YAML document (a base file, ${VAR} expansion from the process
+// environment, an optional env file and the overlay of the environment) split
+// into immutable raw sections. It knows no module schema: the module that owns
+// a section decodes it, applies its defaults and validates it (package module,
+// Source.Decode). Only the reserved application sections are typed here: env,
+// app and prd_exceptions.
+//
+// Precedence, later wins, per section: base YAML, env file, overlay. An
+// unknown key is an error in every section, in the YAML and in the env file,
+// and so is a section that no registered module owns: a typo in a security
+// setting must not silently fall back to its default. Top-level keys starting
+// with "x-" are ignored, as room for application data in the same file.
 package config
 
 import (
-	"bytes"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"io/fs"
-	"math"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
 
-	"github.com/ams-soft/nforge/cache"
-	"github.com/ams-soft/nforge/jose"
 	"gopkg.in/yaml.v3"
 )
 
 const defaultConfigFileName = "config.yaml"
 
-// maxPayloadCeiling is the largest accepted codec.max_payload_bytes. The limit
-// exists to protect the process, so a value that no longer does is refused.
-const maxPayloadCeiling = 256 * MB
+// Reserved top-level sections, decoded by this package.
+const (
+	SectionEnv           = "env"
+	SectionApp           = "app"
+	SectionPrdExceptions = "prd_exceptions"
+)
 
-var hexColorRe = regexp.MustCompile(`^#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$`)
+// AppConfig is the app section.
+type AppConfig struct {
+	Name    string `yaml:"name"`    // REQUIRED
+	Version string `yaml:"version"` // REQUIRED
+	// InternalUse declares that the service is not reachable from the internet
+	// (default false). It only silences the prd warnings about unauthenticated
+	// maintenance endpoints; every other check is unaffected.
+	InternalUse bool `yaml:"internal_use"`
+}
 
-func Load() (*Config, error) {
+// PrdExceptions lists the insecure settings an operator accepts in production
+// on purpose. Every flag defaults to false: with env prd the matching setting
+// is then a load error instead of a startup warning. The keys are owned by the
+// modules that report the settings; unknown keys are errors.
+type PrdExceptions struct {
+	TLSKeyPermissions bool `yaml:"tls_key_permissions"` // TLS private key readable by group or others
+	RedisPlaintext    bool `yaml:"redis_plaintext"`     // Redis without TLS (credentials, or behind HTTPS/HTTP/3)
+	DatabasePlaintext bool `yaml:"database_plaintext"`  // PostgreSQL sslmode that can fall back to clear text
+}
+
+// Allows reports whether the named exception is set.
+func (e PrdExceptions) Allows(name string) bool {
+	switch name {
+	case "tls_key_permissions":
+		return e.TLSKeyPermissions
+	case "redis_plaintext":
+		return e.RedisPlaintext
+	case "database_plaintext":
+		return e.DatabasePlaintext
+	}
+	return false
+}
+
+// Document is a loaded configuration. It is immutable and safe for concurrent
+// use; Bind gives each application its own decoding session.
+type Document struct {
+	env         string
+	app         AppConfig
+	prd         PrdExceptions
+	onlineSince time.Time
+	sections    map[string]*section
+	order       []string // section names, in file order
+	envVars     map[string]string
+	reserved    map[string]bool // env file keys consumed by the reserved sections
+}
+
+// section holds the raw value of one top-level key, per layer.
+type section struct {
+	base, overlay *yaml.Node
+}
+
+// Env returns the environment: local, dev, stg or prd.
+func (d *Document) Env() string { return d.env }
+
+// App returns the app section.
+func (d *Document) App() AppConfig { return d.app }
+
+// PrdExceptions returns the prd_exceptions section.
+func (d *Document) PrdExceptions() PrdExceptions { return d.prd }
+
+// OnlineSince is when the configuration was loaded.
+func (d *Document) OnlineSince() time.Time { return d.onlineSince }
+
+// Sections returns the names of the non-reserved sections present, in the
+// order they first appear.
+func (d *Document) Sections() []string { return slices.Clone(d.order) }
+
+// Load parses the flags -config and -envfile (it calls flag.Parse: define your
+// own flags before) and loads the configuration; see LoadFlags.
+func Load() (*Document, error) {
 	configPath := flag.String("config", "", "path to the base config.yaml")
 	envFilePath := flag.String("envfile", "", "path to the env overrides file")
 	flag.Parse()
-
 	return LoadFlags(*configPath, *envFilePath)
 }
 
-func LoadFlags(configPath, envFilePath string) (*Config, error) {
-	cfg := &Config{Env: "local"}
-
+// LoadFlags loads configPath (default ./config.yaml in the working directory,
+// which may then be absent), the env file at envFilePath (optional) and the
+// overlay of the environment, config.<env>.yaml in the working directory
+// (dev, stg and prd; a missing overlay is skipped).
+func LoadFlags(configPath, envFilePath string) (*Document, error) {
 	basePath := configPath
 	if basePath == "" {
 		root, err := os.Getwd()
@@ -47,54 +125,91 @@ func LoadFlags(configPath, envFilePath string) (*Config, error) {
 		}
 		basePath = filepath.Join(root, defaultConfigFileName)
 	}
-
 	// The default ./config.yaml may be absent (everything can come from the
 	// env file and defaults); a path the caller named must exist, otherwise a
 	// typo in -config silently starts the app with an empty configuration.
-	if err := loadYAMLFile(basePath, cfg, configPath != ""); err != nil {
+	base, err := readYAMLFile(basePath, configPath != "")
+	if err != nil {
 		return nil, fmt.Errorf("load base config %q: %w", basePath, err)
 	}
-
+	d := &Document{sections: map[string]*section{}, envVars: map[string]string{}, reserved: map[string]bool{}}
 	if envFilePath != "" {
-		if err := applyEnvFile(envFilePath, cfg); err != nil {
+		if d.envVars, err = readEnvFile(envFilePath); err != nil {
 			return nil, fmt.Errorf("apply env file %q: %w", envFilePath, err)
 		}
 	}
 
-	env, err := normalizeEnv(cfg.Env)
-	if err != nil {
+	env := "local"
+	if err := d.decodeLayer(base, SectionEnv, &env); err != nil {
+		return nil, fmt.Errorf("load base config %q: %w", basePath, err)
+	}
+	if v, ok := d.envVars["ENV"]; ok {
+		env, d.reserved["ENV"] = v, true
+	}
+	if env, err = normalizeEnv(env); err != nil {
 		return nil, err
 	}
-	cfg.Env = env
 
-	if overlay := overlayFileFor(cfg.Env); overlay != "" {
+	var overlay *yaml.Node
+	if path := overlayFileFor(env); path != "" {
 		// Only a missing overlay is skipped: an unreadable one (permissions,
 		// I/O error) must not silently drop the environment's settings.
-		if _, err := os.Stat(overlay); err == nil {
-			if err := loadYAMLFile(overlay, cfg, true); err != nil {
-				return nil, fmt.Errorf("load overlay %q: %w", overlay, err)
+		if _, err := os.Stat(path); err == nil {
+			if overlay, err = readYAMLFile(path, true); err != nil {
+				return nil, fmt.Errorf("load overlay %q: %w", path, err)
 			}
 		} else if !errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("stat overlay %q: %w", overlay, err)
+			return nil, fmt.Errorf("stat overlay %q: %w", path, err)
 		}
 	}
-	if env, err = normalizeEnv(cfg.Env); err != nil { // an overlay may set env too
+	if err := d.decodeLayer(overlay, SectionEnv, &env); err != nil { // an overlay may set env too
+		return nil, fmt.Errorf("load overlay: %w", err)
+	}
+	if d.env, err = normalizeEnv(env); err != nil {
 		return nil, err
 	}
-	cfg.Env = env
 
-	cfg = feedDefaults(cfg)
-
-	if valid, err := validateRequiredConfig(cfg); !valid {
-		return nil, fmt.Errorf("validate config: %w", err)
+	for _, layer := range []struct {
+		root    *yaml.Node
+		overlay bool
+	}{{base, false}, {overlay, true}} {
+		for name, value := range topLevel(layer.root) {
+			if name == SectionEnv {
+				continue
+			}
+			s := d.sections[name]
+			if s == nil {
+				s = &section{}
+				d.sections[name] = s
+				if name != SectionApp && name != SectionPrdExceptions {
+					d.order = append(d.order, name)
+				}
+			}
+			if layer.overlay {
+				s.overlay = value
+			} else {
+				s.base = value
+			}
+		}
 	}
-	warnings, err := transportWarnings(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("validate config: %w", err)
+	for name, dst := range map[string]any{SectionApp: &d.app, SectionPrdExceptions: &d.prd} {
+		used := map[string]bool{}
+		if err := d.decode(name, dst, used); err != nil {
+			return nil, err
+		}
+		for k := range used {
+			d.reserved[k] = true
+		}
+		delete(d.sections, name)
 	}
-	cfg.Warnings = append(cfg.Warnings, warnings...)
-
-	return cfg, nil
+	if d.app.Name == "" {
+		return nil, errors.New("validate config: app.name must not be empty")
+	}
+	if d.app.Version == "" {
+		return nil, errors.New("validate config: app.version must not be empty")
+	}
+	d.onlineSince = time.Now().Truncate(time.Second)
+	return d, nil
 }
 
 // environments are the accepted values of env, in the form they are stored.
@@ -112,368 +227,40 @@ func normalizeEnv(env string) (string, error) {
 	return n, nil
 }
 
-func feedDefaults(cfg *Config) *Config {
-	if len(cfg.Codec.Formats.Enabled) == 0 {
-		cfg.Codec.Formats.Enabled = []string{"json"}
-	}
-	if cfg.Codec.MaxPayloadBytes == 0 {
-		cfg.Codec.MaxPayloadBytes = 5 * MB
-	}
-	cfg.App.OnlineSince = time.Now().Format(time.RFC3339)
-	if cfg.Codec.Default == "" {
-		cfg.Codec.Default = "json"
-	}
-	if cfg.Codec.XML.DisallowDTD == nil {
-		disallow := true
-		cfg.Codec.XML.DisallowDTD = &disallow
-	}
-	ApplyServerDefaults(&cfg.HTTP.Server)
-	feedRoutesDefaults(cfg)
-	feedDocsDefaults(cfg)
-	if cfg.HTTP.Auth.Realm == "" {
-		cfg.HTTP.Auth.Realm = "nforge-api"
-	}
-	if cfg.HTTP.Tenant.Source == "" {
-		cfg.HTTP.Tenant.Source = "claim"
-	}
-	if cfg.HTTP.Tenant.Header == "" {
-		cfg.HTTP.Tenant.Header = "X-Tenant-ID"
-	}
-	feedSecurityDefaults(&cfg.HTTP.Security)
-	feedCORSDefaults(&cfg.HTTP.CORS)
-	jose.ApplyDefaults(&cfg.JOSE)
-	cache.ApplyDefaults(&cfg.Cache)
-	return cfg
-}
-
-func feedRoutesDefaults(cfg *Config) {
-	if cfg.HTTP.Routes.Health.Enabled {
-		if cfg.HTTP.Routes.Health.Path == "" {
-			cfg.HTTP.Routes.Health.Path = "/health"
-		}
-	}
-	if cfg.HTTP.Routes.Readiness.Enabled {
-		if cfg.HTTP.Routes.Readiness.Path == "" {
-			cfg.HTTP.Routes.Readiness.Path = "/ready"
-		}
-	}
-	if cfg.HTTP.Routes.Graph.Enabled && cfg.HTTP.Routes.Graph.Path == "" {
-		cfg.HTTP.Routes.Graph.Path = DefaultGraphPath
-	}
-}
-
-func feedDocsDefaults(cfg *Config) {
-	docs := &cfg.HTTP.Docs
-	if docs.Path == "" {
-		docs.Path = "/docs"
-	}
-	docs.Path = "/" + strings.Trim(docs.Path, "/")
-	if docs.Title == "" {
-		docs.Title = cfg.App.Name
-	}
-	if docs.Version == "" {
-		docs.Version = cfg.App.Version
-	}
-
-	if docs.Auth == "" {
-		docs.Auth = "bearer"
-	}
-	if docs.Accent == "" {
-		docs.Accent = "#007d9cbf"
-	}
-	if len(docs.Hosts) == 0 {
-		host := cfg.HTTP.Server.Host
-		if host == "" || host == "0.0.0.0" || host == "::" {
-			host = "localhost"
-		}
-		docs.Hosts = []string{defaultDocsHost(cfg.HTTP.Server, host)}
-	}
-}
-
-func validateRequiredConfig(cfg *Config) (bool, error) {
-	if cfg.App.Name == "" {
-		return false, fmt.Errorf("app.name must not be empty")
-	}
-	if cfg.App.Version == "" {
-		return false, fmt.Errorf("app.version must not be empty")
-	}
-	if err := ValidateServer(cfg.HTTP.Server); err != nil {
-		return false, err
-	}
-	if p := cfg.Codec.MaxPayloadBytes; p < 0 || p > maxPayloadCeiling {
-		return false, fmt.Errorf("codec.max_payload_bytes must be between 0 and %d (256 MiB), got %d: every payload is held in memory while it is decoded", int64(maxPayloadCeiling), int64(p))
-	}
-	if auth := cfg.HTTP.Docs.Auth; auth != "bearer" && auth != "none" {
-		return false, fmt.Errorf("http.docs.auth must be bearer or none, got %q", auth)
-	}
-	if accent := cfg.HTTP.Docs.Accent; !hexColorRe.MatchString(accent) {
-		return false, fmt.Errorf("http.docs.accent must be a hex color (#RGB, #RGBA, #RRGGBB or #RRGGBBAA), got %q", accent)
-	}
-	if err := jose.ValidateConfig(cfg.JOSE); err != nil {
-		return false, err
-	}
-	if r := cfg.Tracing.Otel.Ratio(); r < 0 || r > 1 || math.IsNaN(r) {
-		return false, fmt.Errorf("tracing.otel.sample_ratio must be between 0 and 1, got %v", r)
-	}
-	if err := ValidateGraphRoute(cfg); err != nil {
-		return false, err
-	}
-	if err := validateAuth(cfg); err != nil {
-		return false, err
-	}
-	if err := validateTenant(cfg); err != nil {
-		return false, err
-	}
-	if err := validateCache(cfg); err != nil {
-		return false, err
-	}
-	if err := validateSecurity(cfg.HTTP.Security); err != nil {
-		return false, err
-	}
-	if err := validateCORS(cfg.HTTP.CORS); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-// validateCache checks the cache section and, when it is enabled, that its
-// object codec is one of codec.formats.enabled (the cache serializes through
-// the same registry, so a disabled format would fail at startup anyway).
-func validateCache(cfg *Config) error {
-	if !cfg.Cache.Enabled {
-		return nil
-	}
-	if err := cache.ValidateConfig(cfg.Cache); err != nil {
-		return err
-	}
-	// Cached objects are read back through the registry, which refuses
-	// payloads over codec.max_payload_bytes: a larger cached value could be
-	// stored but never decoded again.
-	if limit := int64(cfg.Codec.MaxPayloadBytes); int64(cfg.Cache.Limits.MaxValueBytes) > limit {
-		return fmt.Errorf("%w: cache.limits.max_value_bytes (%d) must not exceed codec.max_payload_bytes (%d), "+
-			"or values larger than the codec limit would be stored and never read back",
-			cache.ErrInvalidConfig, int64(cfg.Cache.Limits.MaxValueBytes), limit)
-	}
-	for _, f := range cfg.Codec.Formats.Enabled {
-		if strings.EqualFold(strings.TrimSpace(f), cfg.Cache.Codec) {
-			return nil
-		}
-	}
-	return fmt.Errorf("%w: cache.codec %q must be listed in codec.formats.enabled", cache.ErrUnsupportedCodec, cfg.Cache.Codec)
-}
-
-var headerNameRe = regexp.MustCompile("^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
-
-// validateTenant checks http.tenant and, when the database is enabled,
-// database.tenancy (so a bad tenancy section fails at load, before dialing).
-func validateTenant(cfg *Config) error {
-	switch cfg.HTTP.Tenant.Source {
-	case "claim", "header":
-	default:
-		return fmt.Errorf("http.tenant.source must be claim or header, got %q", cfg.HTTP.Tenant.Source)
-	}
-	if !headerNameRe.MatchString(cfg.HTTP.Tenant.Header) {
-		return fmt.Errorf("http.tenant.header %q is not a valid header name", cfg.HTTP.Tenant.Header)
-	}
-	if cfg.Database.Enabled {
-		return cfg.Database.Tenancy.Validate()
-	}
-	return nil
-}
-
-// validateAuth checks http.auth against the jose profiles. The realm goes
-// into a quoted-string of WWW-Authenticate, so quotes, backslashes and
-// control characters are rejected.
-func validateAuth(cfg *Config) error {
-	realm := cfg.HTTP.Auth.Realm
-	if len(realm) > 128 {
-		return fmt.Errorf("http.auth.realm must have at most 128 characters")
-	}
-	for i := 0; i < len(realm); i++ {
-		if c := realm[i]; c < 0x20 || c > 0x7e || c == '"' || c == '\\' {
-			return fmt.Errorf("http.auth.realm must be printable ASCII without quotes or backslashes")
-		}
-	}
-	name := cfg.HTTP.Auth.DefaultProfile
-	if name == "" {
-		return nil
-	}
-	if !cfg.JOSE.Enabled {
-		return fmt.Errorf("http.auth.default_profile requires jose.enabled: true")
-	}
-	for _, p := range cfg.JOSE.Profiles {
-		if p.Name == name {
-			if p.Kind != jose.KindJWTSigned && p.Kind != jose.KindJWTNested {
-				return fmt.Errorf("http.auth.default_profile %q must be a jwt_signed or jwt_nested profile", name)
-			}
-			if len(p.VerificationKeys) == 0 {
-				return fmt.Errorf("http.auth.default_profile %q cannot validate tokens", name)
-			}
-			return nil
-		}
-	}
-	return fmt.Errorf("http.auth.default_profile %q is not a configured jose profile", name)
-}
-
-// loadYAMLFile reads path into cfg. A missing file is an error only when
-// mustExist. Unknown keys are errors everywhere (a typo in a security setting
-// must not silently fall back to a default, which for http.cors.origins means
-// "any origin"); top-level keys starting with "x-" are ignored, as a place for
-// application-specific data in the same file.
-func loadYAMLFile(path string, cfg *Config, mustExist bool) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) && !mustExist {
-			return nil
-		}
-		return err
-	}
-	var root yaml.Node
-	if err := yaml.Unmarshal(data, &root); err != nil {
-		return err
-	}
-	if err := expandEnvNodes(&root); err != nil {
-		return err
-	}
-	dropExtensionKeys(&root)
-	if err := checkJOSEKeys(&root); err != nil {
-		return err
-	}
-	// Re-encode the expanded tree so the decoder can enforce KnownFields.
-	expanded, err := yaml.Marshal(&root)
-	if err != nil {
-		return err
-	}
-	dec := yaml.NewDecoder(bytes.NewReader(expanded))
-	dec.KnownFields(true)
-	if err := dec.Decode(cfg); err != nil && !errors.Is(err, io.EOF) {
-		return err
-	}
-	return nil
-}
-
-// dropExtensionKeys removes the top-level keys that start with "x-".
-func dropExtensionKeys(root *yaml.Node) {
-	doc := root
-	if doc.Kind == yaml.DocumentNode && len(doc.Content) > 0 {
-		doc = doc.Content[0]
-	}
-	if doc.Kind != yaml.MappingNode {
-		return
-	}
-	kept := doc.Content[:0]
-	for i := 0; i+1 < len(doc.Content); i += 2 {
-		if strings.HasPrefix(doc.Content[i].Value, "x-") {
-			continue
-		}
-		kept = append(kept, doc.Content[i], doc.Content[i+1])
-	}
-	doc.Content = kept
-}
-
-// checkJOSEKeys rejects unknown keys inside the `jose` section only (a typo
-// there could silently disable a security setting); the rest of the file
-// keeps the permissive decoding.
-func checkJOSEKeys(root *yaml.Node) error {
-	doc := root
-	if doc.Kind == yaml.DocumentNode && len(doc.Content) > 0 {
-		doc = doc.Content[0]
-	}
-	if doc.Kind != yaml.MappingNode {
-		return nil
-	}
-	for i := 0; i+1 < len(doc.Content); i += 2 {
-		if doc.Content[i].Value != "jose" {
-			continue
-		}
-		data, err := yaml.Marshal(doc.Content[i+1])
-		if err != nil {
-			return fmt.Errorf("jose: %w", err)
-		}
-		dec := yaml.NewDecoder(bytes.NewReader(data))
-		dec.KnownFields(true)
-		var probe jose.Config
-		if err := dec.Decode(&probe); err != nil && !errors.Is(err, io.EOF) {
-			return fmt.Errorf("jose: %w", err)
-		}
-	}
-	return nil
-}
-
-// envRefRe matches ${VAR} and ${VAR:-default}. The default ends at the first
-// "}" and may be empty (${VAR:-}), which is how a variable is declared optional.
-var envRefRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}`)
-
-// expandEnvNodes replaces ${VAR} with the environment variable's value in all
-// YAML scalars. A variable that is not set is an error (sorted, once each):
-// an empty password or secret that slips through is worse than a refusal to
-// start. ${VAR:-default} supplies a value when VAR is unset or empty, and
-// ${VAR:-} makes the variable optional. Expansion is done per node (not on
-// the raw text) so that values with special YAML characters do not break
-// parsing.
-func expandEnvNodes(n *yaml.Node) error {
-	unset := map[string]bool{}
-	expandEnv(n, unset)
-	if len(unset) == 0 {
-		return nil
-	}
-	names := make([]string, 0, len(unset))
-	for name := range unset {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	return fmt.Errorf("environment variable(s) %s referenced in the configuration are not set; set them or write ${NAME:-default} (${NAME:-} for an empty default)", strings.Join(names, ", "))
-}
-
-func expandEnv(n *yaml.Node, unset map[string]bool) {
-	if n.Kind == yaml.ScalarNode && strings.Contains(n.Value, "${") {
-		n.Value = envRefRe.ReplaceAllStringFunc(n.Value, func(ref string) string {
-			m := envRefRe.FindStringSubmatch(ref)
-			v, ok := os.LookupEnv(m[1])
-			if strings.Contains(ref, ":-") {
-				if v == "" {
-					return m[2]
-				}
-				return v
-			}
-			if !ok {
-				unset[m[1]] = true
-			}
-			return v
-		})
-		if n.Style&(yaml.SingleQuotedStyle|yaml.DoubleQuotedStyle) == 0 {
-			n.Tag = "" // re-resolve: `port: ${DB_PORT}` must become int, not !!str
-		}
-		return
-	}
-	for _, c := range n.Content {
-		expandEnv(c, unset)
-	}
-}
-
 func overlayFileFor(env string) string {
-	switch strings.ToUpper(env) {
-	case "PRD":
-		return "config.prd.yaml"
-	case "STG":
-		return "config.stg.yaml"
-	case "DEV":
-		return "config.dev.yaml"
+	switch env {
+	case "prd", "stg", "dev":
+		return "config." + env + ".yaml"
 	default:
 		return ""
 	}
 }
 
-func (cfg *Config) IsLoggingEnabled() bool {
-	return cfg.Logging.Output.Terminal.Enabled || cfg.Logging.Output.Otel.Enabled
+// decodeLayer decodes one top-level key of a single layer, strictly.
+func (d *Document) decodeLayer(root *yaml.Node, name string, dst any) error {
+	for key, value := range topLevel(root) {
+		if key == name {
+			return decodeNode(name, value, dst)
+		}
+	}
+	return nil
 }
 
-// IsTracingEnabled reports whether spans are exported: OTel must be on
-// (logging.output.otel.enabled) and tracing.otel.enabled, which defaults to
-// true, must not be false.
-func (cfg *Config) IsTracingEnabled() bool {
-	if !cfg.Logging.Output.Otel.Enabled {
-		return false
+// decode runs the pipeline of one section: base, env file, overlay.
+func (d *Document) decode(name string, dst any, used map[string]bool) error {
+	s := d.sections[name]
+	if s != nil && s.base != nil {
+		if err := decodeNode(name, s.base, dst); err != nil {
+			return fmt.Errorf("load base config: %w", err)
+		}
 	}
-	return cfg.Tracing.Otel.Enabled == nil || *cfg.Tracing.Otel.Enabled
+	if err := applyEnvVars(dst, name, d.envVars, used); err != nil {
+		return fmt.Errorf("apply env file: %w", err)
+	}
+	if s != nil && s.overlay != nil {
+		if err := decodeNode(name, s.overlay, dst); err != nil {
+			return fmt.Errorf("load overlay: %w", err)
+		}
+	}
+	return nil
 }

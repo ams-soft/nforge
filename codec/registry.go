@@ -38,6 +38,7 @@ type Registry struct {
 	order      []string
 	def        string
 	maxPayload int64
+	strict     bool
 	validate   func(any) error
 }
 
@@ -79,6 +80,7 @@ func New(cfg Config, extra ...Codec) (*Registry, error) {
 	r := &Registry{
 		codecs:     map[string]Codec{},
 		maxPayload: cfg.MaxPayloadBytes,
+		strict:     cfg.StrictUnknownFields,
 		validate:   cfg.Validate,
 	}
 	for _, f := range formats {
@@ -120,6 +122,13 @@ func (r *Registry) Formats() []string {
 	defer r.mu.RUnlock()
 	return append([]string(nil), r.order...)
 }
+
+// MaxPayloadBytes returns the payload limit of every decode.
+func (r *Registry) MaxPayloadBytes() int64 { return r.maxPayload }
+
+// StrictUnknownFields reports whether unknown fields are rejected. Code that
+// decodes outside the codecs (typed query strings) follows it.
+func (r *Registry) StrictUnknownFields() bool { return r.strict }
 
 // DefaultFormat returns the content type used when the format is "".
 func (r *Registry) DefaultFormat() string { return r.def }

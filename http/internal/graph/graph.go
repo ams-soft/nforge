@@ -107,7 +107,7 @@ func NewDocument(snap module.Snapshot, status []module.Status, at time.Time) Doc
 		doc.Edges[i] = Edge{From: string(e.From), To: string(e.To), Capability: string(e.Capability), Required: e.Required}
 	}
 	for i, s := range status {
-		doc.OperationalStatus[i] = Status{ID: string(s.ID), Initialization: string(s.Initialization), Status: string(s.Availability)}
+		doc.OperationalStatus[i] = Status{ID: string(s.ID), Initialization: string(s.State), Status: string(s.Availability)}
 	}
 	return doc
 }

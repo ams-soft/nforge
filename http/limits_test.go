@@ -11,21 +11,19 @@ import (
 	"time"
 
 	"github.com/ams-soft/nforge/codec"
-	"github.com/ams-soft/nforge/config"
-	"github.com/ams-soft/nforge/deps"
 	"github.com/ams-soft/nforge/telemetry"
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
-func limitsServer(t *testing.T, mutate func(*config.Config)) *ServerHttp {
+func limitsServer(t *testing.T, mutate func(*testConfig)) *Server {
 	t.Helper()
-	var cfg config.Config
-	cfg.App = config.AppConfig{Name: "t", Version: "1.0.0"}
+	var cfg testConfig
+	cfg.App.Name, cfg.App.Version = "t", "1.0.0"
 	if mutate != nil {
 		mutate(&cfg)
 	}
-	return NewHTTPServer(&deps.Deps{Config: cfg, Logger: slog.New(slog.DiscardHandler)})
+	return NewHTTPServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler)})
 }
 
 // Every request context has a deadline, so a handler that honors ctx (and the
@@ -39,7 +37,7 @@ func TestRequestContextHasADeadline(t *testing.T) {
 		"configured": {2 * time.Second, 2 * time.Second},
 	} {
 		t.Run(name, func(t *testing.T) {
-			s := limitsServer(t, func(c *config.Config) { c.HTTP.Server.HandlerTimeout = tc.set })
+			s := limitsServer(t, func(c *testConfig) { c.HTTP.Server.HandlerTimeout = tc.set })
 			var got time.Duration
 			var ok bool
 			s.Router().Get("/ctx", func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
@@ -57,7 +55,7 @@ func TestRequestContextHasADeadline(t *testing.T) {
 }
 
 func TestRequestContextIsCanceledAtTheDeadline(t *testing.T) {
-	s := limitsServer(t, func(c *config.Config) { c.HTTP.Server.HandlerTimeout = 20 * time.Millisecond })
+	s := limitsServer(t, func(c *testConfig) { c.HTTP.Server.HandlerTimeout = 20 * time.Millisecond })
 	var err error
 	s.Router().Get("/slow", func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		select {
@@ -74,7 +72,7 @@ func TestRequestContextIsCanceledAtTheDeadline(t *testing.T) {
 
 // A raw route that reads r.Body itself is bounded too.
 func TestRawRouteBodyIsBounded(t *testing.T) {
-	read := func(s *ServerHttp, body string) (int, error) {
+	read := func(s *Server, body string) (int, error) {
 		var n int
 		var err error
 		s.Router().Post("/raw", func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
@@ -88,13 +86,13 @@ func TestRawRouteBodyIsBounded(t *testing.T) {
 	}
 
 	t.Run("configured", func(t *testing.T) {
-		s := limitsServer(t, func(c *config.Config) { c.HTTP.Server.MaxBodyBytes = 1024 })
+		s := limitsServer(t, func(c *testConfig) { c.HTTP.Server.MaxBodyBytes = 1024 })
 		if n, err := read(s, strings.Repeat("a", 1000)); err != nil || n != 1000 {
 			t.Fatalf("a body under the limit: %d %v", n, err)
 		}
 	})
 	t.Run("over the limit", func(t *testing.T) {
-		s := limitsServer(t, func(c *config.Config) { c.HTTP.Server.MaxBodyBytes = 1024 })
+		s := limitsServer(t, func(c *testConfig) { c.HTTP.Server.MaxBodyBytes = 1024 })
 		_, err := read(s, strings.Repeat("a", 5000))
 		var tooBig *stdhttp.MaxBytesError
 		if !errors.As(err, &tooBig) {
@@ -102,7 +100,7 @@ func TestRawRouteBodyIsBounded(t *testing.T) {
 		}
 	})
 	t.Run("defaults to the codec limit", func(t *testing.T) {
-		s := limitsServer(t, func(c *config.Config) { c.Codec.MaxPayloadBytes = 2048 })
+		s := limitsServer(t, func(c *testConfig) { c.Codec.MaxPayloadBytes = 2048 })
 		_, err := read(s, strings.Repeat("a", 4096))
 		var tooBig *stdhttp.MaxBytesError
 		if !errors.As(err, &tooBig) {
@@ -115,7 +113,7 @@ func TestRawRouteBodyIsBounded(t *testing.T) {
 // body limit sits one byte above it so the codec still sees the excess) or a
 // smaller http.server.max_body_bytes.
 func TestTypedRouteAnswers413AtEitherLimit(t *testing.T) {
-	post := func(s *ServerHttp, size int) *httptest.ResponseRecorder {
+	post := func(s *Server, size int) *httptest.ResponseRecorder {
 		s.Typed().TPost("/items", item{}, item{}, func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 			_ = SendJSON(w, r, stdhttp.StatusOK, Body[item](r))
 		})
@@ -132,11 +130,11 @@ func TestTypedRouteAnswers413AtEitherLimit(t *testing.T) {
 			t.Fatal(err)
 		}
 		codec.SetDefault(reg)
-		s := limitsServer(t, func(c *config.Config) { c.Codec.MaxPayloadBytes = 64 })
+		s := limitsServer(t, func(c *testConfig) { c.Codec.MaxPayloadBytes = 64 })
 		if rec := post(s, 200); rec.Code != stdhttp.StatusRequestEntityTooLarge {
 			t.Fatalf("status %d, want 413: %s", rec.Code, rec.Body.String())
 		}
-		if rec := post(limitsServer(t, func(c *config.Config) { c.Codec.MaxPayloadBytes = 64 }), 20); rec.Code != stdhttp.StatusOK {
+		if rec := post(limitsServer(t, func(c *testConfig) { c.Codec.MaxPayloadBytes = 64 }), 20); rec.Code != stdhttp.StatusOK {
 			t.Fatalf("a body under the limit: %d %s", rec.Code, rec.Body.String())
 		}
 	})
@@ -146,7 +144,7 @@ func TestTypedRouteAnswers413AtEitherLimit(t *testing.T) {
 			t.Fatal(err)
 		}
 		codec.SetDefault(reg)
-		s := limitsServer(t, func(c *config.Config) { c.HTTP.Server.MaxBodyBytes = 64 })
+		s := limitsServer(t, func(c *testConfig) { c.HTTP.Server.MaxBodyBytes = 64 })
 		if rec := post(s, 200); rec.Code != stdhttp.StatusRequestEntityTooLarge {
 			t.Fatalf("status %d, want 413: %s", rec.Code, rec.Body.String())
 		}
@@ -156,7 +154,7 @@ func TestTypedRouteAnswers413AtEitherLimit(t *testing.T) {
 // Private responses must not be stored by shared caches, and the envelope
 // must not be MIME-sniffed.
 func TestPrivateResponsesAreNoStoreAndNosniff(t *testing.T) {
-	s := newSecurityServer(t, func(c *config.Config) {})
+	s := newSecurityServer(t, func(c *testConfig) {})
 	rec := serveReq(s, httptest.NewRequest("POST", "/private", nil))
 	if rec.Code != stdhttp.StatusUnauthorized {
 		t.Fatalf("status %d", rec.Code)
@@ -191,7 +189,7 @@ func TestTracingTrustIncomingFollowsTheConfig(t *testing.T) {
 
 	const forged = "33333333333333333333333333333333"
 	for _, trust := range []bool{true, false} {
-		s := limitsServer(t, func(c *config.Config) {
+		s := limitsServer(t, func(c *testConfig) {
 			c.Logging.Output.Otel.Enabled = true // tracing is on when OTel logging is
 			c.Tracing.Otel.TrustIncoming = &trust
 		})
@@ -209,7 +207,7 @@ func TestTracingTrustIncomingFollowsTheConfig(t *testing.T) {
 // The spec endpoints are public: rendering walks every route type, so it is
 // done once per route set and conditional requests are answered with 304.
 func TestSpecIsCachedAndConditional(t *testing.T) {
-	s := newSecurityServer(t, func(c *config.Config) {})
+	s := newSecurityServer(t, func(c *testConfig) {})
 	get := func(path, etag string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest("GET", path, nil)
 		if etag != "" {

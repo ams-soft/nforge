@@ -18,36 +18,49 @@ import (
 	"testing"
 	"time"
 
+	"sync"
+
 	router "github.com/ams-soft/go-ams-router"
-	"github.com/ams-soft/nforge/cache"
-	"github.com/ams-soft/nforge/config"
-	"github.com/ams-soft/nforge/database"
-	"github.com/ams-soft/nforge/deps"
 	"github.com/ams-soft/nforge/jose"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/ams-soft/nforge/module"
 	"gopkg.in/yaml.v3"
 )
 
-func newMaintenanceServer(t *testing.T, routes config.RoutesConfig, db *database.DB) *ServerHttp {
+// fakeStatus is an Introspection with a fixed report.
+type fakeStatus struct {
+	mu     sync.Mutex
+	report module.Report
+	calls  int
+}
+
+func (f *fakeStatus) Status(context.Context) module.Report {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	return f.report
+}
+func (f *fakeStatus) Snapshot() module.Snapshot { return module.Snapshot{} }
+func (f *fakeStatus) Phase() module.RunPhase    { return f.report.Phase }
+
+func (f *fakeStatus) set(r module.Report) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.report = r
+}
+
+func newMaintenanceServer(t *testing.T, routes RoutesConfig, status module.Introspection) *Server {
 	t.Helper()
-	var cfg config.Config
-	cfg.App.OnlineSince = "2026-01-02T03:04:05Z"
+	var cfg testConfig
 	cfg.HTTP.Routes = routes
-	s := &ServerHttp{
-		Deps: &deps.Deps{Config: cfg, Logger: slog.New(slog.DiscardHandler), DB: db},
-		Srv:  &stdhttp.Server{Handler: router.NewRouter()},
-	}
-	s.Typed().Route("/", func(api *TypedRouter) { setRoutes(api, s.Deps) })
-	return s
+	return NewHTTPServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler), Status: status})
 }
 
-func readinessOnly() config.RoutesConfig {
-	return config.RoutesConfig{Readiness: config.ReadinessConfig{Enabled: true, Path: "/ready"}}
+func readinessOnly() RoutesConfig {
+	return RoutesConfig{Readiness: ReadinessConfig{Enabled: true, Path: "/ready"}}
 }
 
-func TestReadinessWithoutDatabase(t *testing.T) {
+func TestReadinessWithoutStatus(t *testing.T) {
 	s := newMaintenanceServer(t, readinessOnly(), nil)
-
 	rec, env := do(t, s, stdhttp.MethodGet, "/ready", "", "")
 	if rec.Code != stdhttp.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
@@ -56,40 +69,41 @@ func TestReadinessWithoutDatabase(t *testing.T) {
 	if err := json.Unmarshal(env.Data, &data); err != nil {
 		t.Fatal(err)
 	}
-	if data["status"] != "ok" || data["online_since"] != "2026-01-02T03:04:05Z" {
+	if data["status"] != "ok" || data["online_since"] != "2026-01-02T03:04:05Z" || data["modules"] != nil {
 		t.Errorf("data = %v", data)
-	}
-	if _, ok := data["database"]; ok {
-		t.Errorf("database must be omitted when disabled: %v", data)
 	}
 }
 
-func TestReadinessDatabaseUnavailable(t *testing.T) {
-	// The pool connects lazily, so creating it on a closed port succeeds and
-	// the readiness ping is what fails.
-	poolCfg, err := pgxpool.ParseConfig("postgres://u:p@127.0.0.1:1/db?connect_timeout=1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	pool, err := pgxpool.NewWithConfig(context.Background(), poolCfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	db := database.New(pool)
-	t.Cleanup(func() { _ = db.Shutdown(context.Background()) })
-
-	s := newMaintenanceServer(t, readinessOnly(), db)
-
+// Readiness reports the application, every enabled module, and 503 until the
+// application is started and while a critical module is not ready.
+func TestReadinessFollowsTheApplication(t *testing.T) {
+	status := &fakeStatus{}
+	s := newMaintenanceServer(t, readinessOnly(), status)
+	ready := module.Report{Phase: module.PhaseStarted, Ready: true, Modules: []module.Status{
+		{ID: "cache", State: module.StateStarted, Availability: module.Ready, Critical: true},
+		{ID: "database", State: module.StateDisabled, Availability: module.Disabled, Critical: true},
+	}}
+	status.set(ready)
 	rec, env := do(t, s, stdhttp.MethodGet, "/ready", "", "")
-	if rec.Code != stdhttp.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503: %s", rec.Code, rec.Body)
+	var data map[string]any
+	_ = json.Unmarshal(env.Data, &data)
+	if rec.Code != 200 || data["status"] != "ok" || dig(data, "modules", "cache") != "ready" || dig(data, "modules", "database") != nil {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
+
+	down := ready
+	down.Ready = false
+	down.Modules = []module.Status{{ID: "cache", State: module.StateStarted, Availability: module.NotReady, Critical: true}}
+	status.set(down)
+	rec, env = do(t, s, stdhttp.MethodGet, "/ready", "", "")
 	detail, _ := env.Error.Detail.(map[string]any)
-	if detail["status"] != "unavailable" {
-		t.Errorf("detail = %v", env.Error.Detail)
+	if rec.Code != 503 || detail["status"] != "unavailable" || dig(detail, "modules", "cache") != "not_ready" {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
-	if dbInfo, _ := detail["database"].(map[string]any); dbInfo["health"] != false {
-		t.Errorf("database.health must be false: %v", detail)
+
+	status.set(module.Report{Phase: module.PhaseStopping})
+	if rec, _ := do(t, s, stdhttp.MethodGet, "/ready", "", ""); rec.Code != 503 {
+		t.Fatalf("a stopping application is not ready: %d", rec.Code)
 	}
 }
 
@@ -99,7 +113,7 @@ func TestHealthRouteOnlyWhenEnabled(t *testing.T) {
 		t.Errorf("health disabled: status = %d, want 404", rec.Code)
 	}
 
-	s = newMaintenanceServer(t, config.RoutesConfig{Health: config.HealthConfig{Enabled: true, Path: "/health"}}, nil)
+	s = newMaintenanceServer(t, RoutesConfig{Health: HealthConfig{Enabled: true, Path: "/health"}}, nil)
 	if rec, _ := do(t, s, stdhttp.MethodGet, "/health", "", ""); rec.Code != stdhttp.StatusOK {
 		t.Errorf("health enabled: status = %d, want 200", rec.Code)
 	}
@@ -108,64 +122,15 @@ func TestHealthRouteOnlyWhenEnabled(t *testing.T) {
 	}
 }
 
-func newCacheReadinessServer(t *testing.T) (*ServerHttp, *cache.Cache) {
-	t.Helper()
-	c, err := cache.Open(context.Background(), cache.Config{Enabled: true, Driver: cache.DriverMemory},
-		cache.WithNamespace("test", "app"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = c.Shutdown(context.Background()) })
+// Liveness never probes anything: a failing dependency must not restart a
+// process that is merely waiting for it.
+func TestHealthNeverProbes(t *testing.T) {
+	status := &fakeStatus{report: module.Report{Phase: module.PhaseStarted}}
 	routes := readinessOnly()
-	routes.Health = config.HealthConfig{Enabled: true, Path: "/health"}
-	s := newMaintenanceServer(t, routes, nil)
-	s.Deps.Cache = c // the routes read &s.Deps at request time
-	return s, c
-}
-
-func TestReadinessWithCache(t *testing.T) {
-	s, c := newCacheReadinessServer(t)
-
-	rec, env := do(t, s, stdhttp.MethodGet, "/ready", "", "")
-	if rec.Code != stdhttp.StatusOK {
-		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
-	}
-	var data map[string]any
-	_ = json.Unmarshal(env.Data, &data)
-	if info, _ := data["cache"].(map[string]any); info["health"] != true {
-		t.Fatalf("cache.health must be true: %v", data)
-	}
-	if _, ok := data["database"]; ok {
-		t.Fatal("database must stay omitted")
-	}
-
-	// an unavailable cache makes the probe fail with 503
-	_ = c.Shutdown(context.Background())
-	rec, env = do(t, s, stdhttp.MethodGet, "/ready", "", "")
-	if rec.Code != stdhttp.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503", rec.Code)
-	}
-	detail, _ := env.Error.Detail.(map[string]any)
-	if info, _ := detail["cache"].(map[string]any); info["health"] != false || detail["status"] != "unavailable" {
-		t.Fatalf("detail = %v", detail)
-	}
-}
-
-func TestReadinessOmitsDisabledCache(t *testing.T) {
-	s := newMaintenanceServer(t, readinessOnly(), nil)
-	_, env := do(t, s, stdhttp.MethodGet, "/ready", "", "")
-	var data map[string]any
-	_ = json.Unmarshal(env.Data, &data)
-	if _, ok := data["cache"]; ok {
-		t.Fatalf("cache must be omitted when disabled: %v", data)
-	}
-}
-
-func TestHealthNeverTouchesCache(t *testing.T) {
-	s, c := newCacheReadinessServer(t)
-	_ = c.Shutdown(context.Background())
-	if rec, _ := do(t, s, stdhttp.MethodGet, "/health", "", ""); rec.Code != stdhttp.StatusOK {
-		t.Fatalf("liveness must not depend on the cache: %d", rec.Code)
+	routes.Health = HealthConfig{Enabled: true, Path: "/health"}
+	s := newMaintenanceServer(t, routes, status)
+	if rec, _ := do(t, s, stdhttp.MethodGet, "/health", "", ""); rec.Code != stdhttp.StatusOK || status.calls != 0 {
+		t.Fatalf("liveness: %d, %d probes", rec.Code, status.calls)
 	}
 }
 
@@ -181,10 +146,10 @@ type docUser struct {
 	Friends []docUser   `json:"friends,omitempty"`
 }
 
-func newDocsServer(t *testing.T) *ServerHttp {
+func newDocsServer(t *testing.T) *Server {
 	t.Helper()
 	s, tr := newTypedServer()
-	s.Deps.Config.HTTP.Docs = config.DocsConfig{
+	s.cfg.Docs = DocsConfig{
 		Enabled: true, Path: "/docs", Title: "My API", Version: "1.2.3",
 		Auth: "bearer", Hosts: []string{"http://localhost:8080"}, Accent: "#007d9cbf",
 	}
@@ -202,7 +167,7 @@ func newDocsServer(t *testing.T) *ServerHttp {
 	return s
 }
 
-func getJSON(t *testing.T, s *ServerHttp, target string) map[string]any {
+func getJSON(t *testing.T, s *Server, target string) map[string]any {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	s.Srv.Handler.ServeHTTP(rec, httptest.NewRequest("GET", target, nil))
@@ -345,25 +310,33 @@ func TestOpenAPIYAMLAndPage(t *testing.T) {
 	}
 
 	// auth disabled: no securitySchemes nor security
-	s.Deps.Config.HTTP.Docs.Auth = "none"
+	s.cfg.Docs.Auth = "none"
 	spec := getJSON(t, s, "/docs/swagger.json")
 	if dig(spec, "components", "securitySchemes") != nil || dig(spec, "paths", "/api/users", "post", "security") != nil {
 		t.Error("auth none still generates security")
 	}
 }
 
-func newJWKSServer(t *testing.T, svc *jose.Service) *ServerHttp {
+// jwksService is a JOSE service whose JWKS is cached for 120 s.
+func jwksService(t *testing.T) *jose.Service {
 	t.Helper()
-	cfg := config.Config{}
-	cfg.JOSE = testJOSEConfig()
-	jose.ApplyDefaults(&cfg.JOSE)
+	cfg := testJOSEConfig()
 	age := 120 * time.Second
-	cfg.JOSE.JWKS.CacheMaxAge = &age
-	return NewHTTPServer(&deps.Deps{Config: cfg, Logger: slog.New(slog.DiscardHandler), JOSE: svc})
+	cfg.JWKS.CacheMaxAge = &age
+	svc, err := jose.New(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return svc
+}
+
+func newJWKSServer(t *testing.T, svc *jose.Service) *Server {
+	t.Helper()
+	return NewHTTPServer(&testDeps{Logger: slog.New(slog.DiscardHandler), JOSE: svc})
 }
 
 func TestJWKSEndpoint(t *testing.T) {
-	s := newJWKSServer(t, sharedJOSE())
+	s := newJWKSServer(t, jwksService(t))
 	get := func(method string, headers ...string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, "/.well-known/jwks.json", nil)
 		for i := 0; i < len(headers); i += 2 {
@@ -406,7 +379,7 @@ func TestJWKSEndpoint(t *testing.T) {
 		t.Fatalf("HEAD: %d %v", head.Code, head.Header())
 	}
 
-	closed, _ := jose.New(context.Background(), testJOSEConfig())
+	closed := jwksService(t)
 	_ = closed.Shutdown(context.Background())
 	s = newJWKSServer(t, closed)
 	if rec := get("GET"); rec.Code != 503 || strings.Contains(rec.Body.String(), "keys") {
@@ -433,9 +406,9 @@ func TestJWKSETagChangesWithKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := config.Config{JOSE: jcfg}
+	cfg := testConfig{JOSE: jcfg}
 	jose.ApplyDefaults(&cfg.JOSE)
-	s := NewHTTPServer(&deps.Deps{Config: cfg, Logger: slog.New(slog.DiscardHandler), JOSE: svc})
+	s := NewHTTPServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler), JOSE: svc})
 	etag := func() string {
 		rec := httptest.NewRecorder()
 		s.Srv.Handler.ServeHTTP(rec, httptest.NewRequest("GET", "/.well-known/jwks.json", nil))
@@ -452,37 +425,18 @@ func TestJWKSETagChangesWithKeys(t *testing.T) {
 }
 
 func TestJWKSPathCollision(t *testing.T) {
-	cfg := config.Config{}
-	cfg.JOSE = testJOSEConfig()
-	jose.ApplyDefaults(&cfg.JOSE)
-	cfg.JOSE.JWKS.Path = "/health"
-	cfg.HTTP.Routes.Health = config.HealthConfig{Enabled: true, Path: "/health"}
+	jcfg := testJOSEConfig()
+	jcfg.JWKS.Path = "/health"
+	svc, err := jose.New(context.Background(), jcfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig{}
+	cfg.HTTP.Routes.Health = HealthConfig{Enabled: true, Path: "/health"}
 	defer func() {
 		if r := recover(); r == nil || !strings.Contains(fmt.Sprint(r), "collides") {
 			t.Fatalf("expected a collision panic, got %v", r)
 		}
 	}()
-	NewHTTPServer(&deps.Deps{Config: cfg, Logger: slog.New(slog.DiscardHandler), JOSE: sharedJOSE()})
-}
-
-func TestReadinessWithJOSE(t *testing.T) {
-	svc, err := jose.New(context.Background(), testJOSEConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := newMaintenanceServer(t, readinessOnly(), nil)
-	s.Deps.JOSE = svc
-
-	rec, env := do(t, s, "GET", "/ready", "", "")
-	var data map[string]any
-	_ = json.Unmarshal(env.Data, &data)
-	if rec.Code != 200 || dig(data, "jose", "health") != true || data["database"] != nil {
-		t.Fatalf("%d %s", rec.Code, rec.Body.String())
-	}
-	_ = svc.Shutdown(context.Background())
-	rec, env = do(t, s, "GET", "/ready", "", "")
-	detail, _ := env.Error.Detail.(map[string]any)
-	if rec.Code != 503 || detail["status"] != "unavailable" || dig(detail, "jose", "health") != false {
-		t.Fatalf("%d %s", rec.Code, rec.Body.String())
-	}
+	NewHTTPServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler), JOSE: svc})
 }

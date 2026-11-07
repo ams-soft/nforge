@@ -8,30 +8,27 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/ams-soft/nforge/config"
-	"github.com/ams-soft/nforge/deps"
 )
 
-func newSecurityServer(t *testing.T, mutate func(*config.Config)) *ServerHttp {
+func newSecurityServer(t *testing.T, mutate func(*testConfig)) *Server {
 	t.Helper()
-	var cfg config.Config
-	cfg.App = config.AppConfig{Name: "t", Version: "1.0.0"}
-	cfg.HTTP.Routes.Health = config.HealthConfig{Enabled: true, Path: "/health"}
-	cfg.HTTP.Docs = config.DocsConfig{
+	var cfg testConfig
+	cfg.App.Name, cfg.App.Version = "t", "1.0.0"
+	cfg.HTTP.Routes.Health = HealthConfig{Enabled: true, Path: "/health"}
+	cfg.HTTP.Docs = DocsConfig{
 		Enabled: true, Path: "/docs", Title: "T", Version: "1", Auth: "bearer",
 		Hosts: []string{"https://api.example.com/v1"}, Accent: "#007d9c",
 	}
 	cfg.HTTP.Auth.DefaultProfile = "access"
 	mutate(&cfg)
-	s := NewHTTPServer(&deps.Deps{Config: cfg, Logger: slog.New(slog.DiscardHandler), JOSE: sharedJOSE()})
+	s := NewHTTPServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler), JOSE: sharedJOSE()})
 	s.Typed().TPost("/private", nil, nil, func(stdhttp.ResponseWriter, *stdhttp.Request) {
 		t.Error("private handler must not run on a preflight")
 	}, Opts{IsPrivate: true})
 	return s
 }
 
-func serveReq(s *ServerHttp, req *stdhttp.Request) *httptest.ResponseRecorder {
+func serveReq(s *Server, req *stdhttp.Request) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
 	s.Srv.Handler.ServeHTTP(rec, req)
 	return rec
@@ -39,14 +36,14 @@ func serveReq(s *ServerHttp, req *stdhttp.Request) *httptest.ResponseRecorder {
 
 func TestSecurityHeaders(t *testing.T) {
 	include := false
-	s := newSecurityServer(t, func(c *config.Config) {
-		c.HTTP.Security = config.SecurityConfig{
+	s := newSecurityServer(t, func(c *testConfig) {
+		c.HTTP.Security = SecurityConfig{
 			Disable: []string{"X-Frame-Options"},
-			CSP: config.CSPConfig{Directives: map[string][]string{
+			CSP: CSPConfig{Directives: map[string][]string{
 				"script-src":                {"'self'", "https://cdn.example.com"},
 				"upgrade-insecure-requests": nil,
 			}},
-			HSTS:           config.HSTSConfig{MaxAge: time.Hour, IncludeSubdomains: &include, Preload: true},
+			HSTS:           HSTSConfig{MaxAge: time.Hour, IncludeSubdomains: &include, Preload: true},
 			ReferrerPolicy: []string{"strict-origin"},
 		}
 	})
@@ -77,16 +74,16 @@ func TestDocsPageCSP(t *testing.T) {
 	off := false
 	cases := []struct {
 		name         string
-		sec          config.SecurityConfig
+		sec          SecurityConfig
 		header, none string
 	}{
-		{"enforced", config.SecurityConfig{}, "Content-Security-Policy", "Content-Security-Policy-Report-Only"},
-		{"report only", config.SecurityConfig{CSP: config.CSPConfig{ReportOnly: true}}, "Content-Security-Policy-Report-Only", "Content-Security-Policy"},
-		{"csp disabled", config.SecurityConfig{Disable: []string{"content-security-policy"}}, "", "Content-Security-Policy"},
-		{"security off", config.SecurityConfig{Enabled: &off}, "", "Content-Security-Policy"},
+		{"enforced", SecurityConfig{}, "Content-Security-Policy", "Content-Security-Policy-Report-Only"},
+		{"report only", SecurityConfig{CSP: CSPConfig{ReportOnly: true}}, "Content-Security-Policy-Report-Only", "Content-Security-Policy"},
+		{"csp disabled", SecurityConfig{Disable: []string{"content-security-policy"}}, "", "Content-Security-Policy"},
+		{"security off", SecurityConfig{Enabled: &off}, "", "Content-Security-Policy"},
 	}
 	for _, c := range cases {
-		s := newSecurityServer(t, func(cfg *config.Config) { cfg.HTTP.Security = c.sec })
+		s := newSecurityServer(t, func(cfg *testConfig) { cfg.HTTP.Security = c.sec })
 		rec := serveReq(s, httptest.NewRequest("GET", "/docs", nil))
 		m := nonceRe.FindAllStringSubmatch(rec.Body.String(), -1)
 		if len(m) != 3 || m[0][1] != m[1][1] || m[1][1] != m[2][1] {
@@ -107,7 +104,7 @@ func TestDocsPageCSP(t *testing.T) {
 	}
 
 	// A fresh nonce per render.
-	s := newSecurityServer(t, func(cfg *config.Config) {})
+	s := newSecurityServer(t, func(cfg *testConfig) {})
 	a := nonceRe.FindStringSubmatch(serveReq(s, httptest.NewRequest("GET", "/docs", nil)).Body.String())
 	b := nonceRe.FindStringSubmatch(serveReq(s, httptest.NewRequest("GET", "/docs", nil)).Body.String())
 	if a[1] == b[1] {
@@ -125,8 +122,8 @@ func TestDocsPageCSP(t *testing.T) {
 }
 
 func TestCORS(t *testing.T) {
-	s := newSecurityServer(t, func(c *config.Config) {
-		c.HTTP.CORS = config.CORSConfig{
+	s := newSecurityServer(t, func(c *testConfig) {
+		c.HTTP.CORS = CORSConfig{
 			Enabled:              true,
 			Origins:              []string{"https://app.example.com"},
 			OriginPatterns:       []string{`^https://[a-z]+\.preview\.example\.com$`},
@@ -171,7 +168,7 @@ func TestCORS(t *testing.T) {
 // both files need a Subresource Integrity hash, otherwise whatever the CDN
 // serves for "@5" runs in the API's origin.
 func TestDocsPageAssetsArePinnedWithIntegrity(t *testing.T) {
-	s := newSecurityServer(t, func(cfg *config.Config) {})
+	s := newSecurityServer(t, func(cfg *testConfig) {})
 	body := serveReq(s, httptest.NewRequest("GET", "/docs", nil)).Body.String()
 
 	assetRe := regexp.MustCompile(`(?s)<(?:script|link)[^>]*?(?:src|href)="(https://[^"]+)"[^>]*>`)
@@ -196,13 +193,13 @@ func TestDocsPageAssetsArePinnedWithIntegrity(t *testing.T) {
 
 // Security headers are sent unless explicitly turned off.
 func TestSecurityHeadersAreOnByDefault(t *testing.T) {
-	s := newSecurityServer(t, func(c *config.Config) { c.HTTP.Security = config.SecurityConfig{} })
+	s := newSecurityServer(t, func(c *testConfig) { c.HTTP.Security = SecurityConfig{} })
 	h := serveReq(s, httptest.NewRequest("GET", "/health", nil)).Header()
 	if h.Get("Content-Security-Policy") == "" || h.Get("X-Frame-Options") == "" {
 		t.Errorf("default headers missing: %v", h)
 	}
 	off := false
-	s = newSecurityServer(t, func(c *config.Config) { c.HTTP.Security = config.SecurityConfig{Enabled: &off} })
+	s = newSecurityServer(t, func(c *testConfig) { c.HTTP.Security = SecurityConfig{Enabled: &off} })
 	if h := serveReq(s, httptest.NewRequest("GET", "/health", nil)).Header(); h.Get("Content-Security-Policy") != "" {
 		t.Errorf("enabled: false must send none: %v", h)
 	}

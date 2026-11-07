@@ -10,7 +10,7 @@ import (
 // registerPlainRoutes shows plain (untyped) routes: the handler parses and
 // answers itself, in each codec format. Typed routes (users.go) do the same
 // work for you and document themselves.
-func registerPlainRoutes(server *nhttp.ServerHttp, logger *slog.Logger) {
+func registerPlainRoutes(server *nhttp.Server, logger *slog.Logger) {
 	r := server.Router()
 
 	// curl -X POST localhost:8080/echo/json -H 'Content-Type: application/json' -d '{"name":"Ana"}'

@@ -83,8 +83,8 @@ func SetLogLevelByEnv(env string) slog.Level {
 	case "prd":
 		return slog.LevelError
 	default:
-		// config.Load only accepts the four values above, so this is a Config
-		// built by hand: stay quiet rather than verbose.
+		// the configuration only accepts the four values above, so this is an
+		// App built by hand: stay quiet rather than verbose.
 		return slog.LevelInfo
 	}
 }

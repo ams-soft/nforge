@@ -19,7 +19,6 @@ import (
 	"testing"
 
 	router "github.com/ams-soft/go-ams-router"
-	"github.com/ams-soft/nforge/config"
 	"github.com/ams-soft/nforge/jose"
 )
 
@@ -113,7 +112,7 @@ func issue(t *testing.T, profile, scope string, custom any) string {
 	return token
 }
 
-func doAuth(t *testing.T, s *ServerHttp, method, target, token string) *httptest.ResponseRecorder {
+func doAuth(t *testing.T, s *Server, method, target, token string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, target, nil)
 	if token != "" {
@@ -486,31 +485,31 @@ func TestTypedPrivateRoutes(t *testing.T) {
 
 func TestTypedPrivateRoutePanics(t *testing.T) {
 	h := func(stdhttp.ResponseWriter, *stdhttp.Request) {}
-	cases := map[string]func(s *ServerHttp, tr *TypedRouter){
-		"profile without private": func(_ *ServerHttp, tr *TypedRouter) { tr.TGet("/x", nil, nil, h, Opts{AuthProfile: "access"}) },
-		"scopes without private":  func(_ *ServerHttp, tr *TypedRouter) { tr.TGet("/x", nil, nil, h, Opts{RequiredScopes: []string{"a"}}) },
-		"jose disabled": func(s *ServerHttp, tr *TypedRouter) {
-			s.Deps.JOSE = nil
+	cases := map[string]func(s *Server, tr *TypedRouter){
+		"profile without private": func(_ *Server, tr *TypedRouter) { tr.TGet("/x", nil, nil, h, Opts{AuthProfile: "access"}) },
+		"scopes without private":  func(_ *Server, tr *TypedRouter) { tr.TGet("/x", nil, nil, h, Opts{RequiredScopes: []string{"a"}}) },
+		"jose disabled": func(s *Server, tr *TypedRouter) {
+			s.jose = nil
 			tr.TGet("/x", nil, nil, h, Opts{IsPrivate: true})
 		},
-		"no default profile": func(s *ServerHttp, tr *TypedRouter) {
-			s.Deps.Config.HTTP.Auth.DefaultProfile = ""
+		"no default profile": func(s *Server, tr *TypedRouter) {
+			s.cfg.Auth.DefaultProfile = ""
 			tr.TGet("/x", nil, nil, h, Opts{IsPrivate: true})
 		},
-		"unknown profile": func(_ *ServerHttp, tr *TypedRouter) {
+		"unknown profile": func(_ *Server, tr *TypedRouter) {
 			tr.TGet("/x", nil, nil, h, Opts{IsPrivate: true, AuthProfile: "nope"})
 		},
-		"generic profile": func(_ *ServerHttp, tr *TypedRouter) {
+		"generic profile": func(_ *Server, tr *TypedRouter) {
 			tr.TGet("/x", nil, nil, h, Opts{IsPrivate: true, AuthProfile: "msg"})
 		},
-		"producer profile": func(_ *ServerHttp, tr *TypedRouter) {
+		"producer profile": func(_ *Server, tr *TypedRouter) {
 			tr.TGet("/x", nil, nil, h, Opts{IsPrivate: true, AuthProfile: "issuer-only"})
 		},
-		"invalid scope": func(_ *ServerHttp, tr *TypedRouter) {
+		"invalid scope": func(_ *Server, tr *TypedRouter) {
 			tr.TGet("/x", nil, nil, h, Opts{IsPrivate: true, RequiredScopes: []string{"a b"}})
 		},
-		"docs auth none": func(s *ServerHttp, tr *TypedRouter) {
-			s.Deps.Config.HTTP.Docs.Enabled, s.Deps.Config.HTTP.Docs.Auth = true, "none"
+		"docs auth none": func(s *Server, tr *TypedRouter) {
+			s.cfg.Docs.Enabled, s.cfg.Docs.Auth = true, "none"
 			tr.TGet("/x", nil, nil, h, Opts{IsPrivate: true})
 		},
 	}
@@ -534,7 +533,7 @@ func TestOpenAPIAuthDocumentation(t *testing.T) {
 	tr.TGet("/me", nil, nil, h, Opts{IsPrivate: true})
 	tr.TGet("/public", nil, nil, h)
 	s.AddDocRoute(TypedRoute{Method: "GET", Path: "/raw", IsPrivate: true})
-	cfg := config.DocsConfig{Auth: "bearer", Title: "t", Version: "1"}
+	cfg := DocsConfig{Auth: "bearer", Title: "t", Version: "1"}
 	data, _ := buildOpenAPI(cfg, s.TypedRoutes).JSON()
 	var spec map[string]any
 	_ = json.Unmarshal(data, &spec)

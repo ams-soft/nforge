@@ -3,14 +3,12 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"testing"
 
-	"github.com/ams-soft/nforge/config"
-	"github.com/ams-soft/nforge/deps"
+	"github.com/ams-soft/nforge/app"
+	nhttp "github.com/ams-soft/nforge/http"
 )
 
 // TestDatabaseRoutes runs the /db/notes routes against a real PostgreSQL:
@@ -22,21 +20,7 @@ func TestDatabaseRoutes(t *testing.T) {
 	if dsn == "" {
 		t.Skip("NFORGE_TEST_DATABASE_URL not set")
 	}
-	env := filepath.Join(t.TempDir(), "test.env")
-	content := "DATABASE_DSN=" + dsn + "\nLOGGING_OUTPUT_TERMINAL_ENABLED=false\nLOGGING_OUTPUT_OTEL_ENABLED=false\nHTTP_SERVER_HEADER=false\n"
-	if err := os.WriteFile(env, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := config.LoadFlags("config.yaml", env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dps := deps.NewDeps(*cfg)
-	t.Cleanup(func() { _ = dps.Shutdown(context.Background()) })
-	s, err := newServer(dps)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s, _ := app.Value(startApp(t, "DATABASE_DSN="+dsn+"\n"), nhttp.Capability)
 
 	rec := call(t, s, "POST", "/db/notes", "application/json", `{"text":"hello"}`)
 	if rec.Code != 201 {
@@ -67,8 +51,8 @@ func TestDatabaseRoutes(t *testing.T) {
 	if rec := call(t, s, "DELETE", path, "", ""); rec.Code != 404 {
 		t.Fatalf("delete again: %d", rec.Code)
 	}
-	ready := data(t, call(t, s, "GET", "/ready", "", "")).(map[string]any)
-	if ready["database"].(map[string]any)["health"] != true {
+	ready, _ := data(t, call(t, s, "GET", "/ready", "", "")).(map[string]any)
+	if modules, _ := ready["modules"].(map[string]any); modules["database"] != "ready" {
 		t.Fatalf("ready: %v", ready)
 	}
 }

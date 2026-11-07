@@ -5,10 +5,12 @@ import (
 	stdhttp "net/http"
 	"time"
 
-	"github.com/ams-soft/nforge/deps"
 	nhttp "github.com/ams-soft/nforge/http"
 	"github.com/ams-soft/nforge/jose"
 )
+
+// accessProfile is the jose profile of the demo tokens (http.auth.default_profile).
+const accessProfile = "access"
 
 // Demo credentials. DO NOT ship hard-coded credentials: a real application
 // checks the user store (with hashed passwords) before issuing a token.
@@ -41,10 +43,9 @@ type MeResponse struct {
 // registerAuthRoutes registers the demo login and one private route. The
 // token profile is http.auth.default_profile ("access" in config.yaml); see
 // the jose example for scopes, nested tokens and raw Authenticate.
-func registerAuthRoutes(server *nhttp.ServerHttp) {
-	dps := server.Deps
-	logger := server.Deps.Logger
-	const profile = "access"
+func registerAuthRoutes(e env) {
+	server, logger := e.server, e.logger
+	const profile = accessProfile
 
 	server.Typed().Route("/auth", func(auth *nhttp.TypedRouter) {
 		auth.TPost("/login", LoginRequest{}, LoginResponse{}, func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
@@ -56,14 +57,14 @@ func registerAuthRoutes(server *nhttp.ServerHttp) {
 				_ = nhttp.SendJSON(w, r, stdhttp.StatusUnauthorized, "invalid credentials")
 				return
 			}
-			token, err := dps.JOSE.IssueJWT(r.Context(), profile, jose.RegisteredClaims{Subject: "1"}, nil)
+			token, err := e.jose.IssueJWT(r.Context(), profile, jose.RegisteredClaims{Subject: "1"}, nil)
 			if err != nil {
 				logger.ErrorContext(r.Context(), "failed to issue token", "error", err) // sanitized: no token or key data
 				_ = nhttp.SendJSON(w, r, stdhttp.StatusInternalServerError, "internal error")
 				return
 			}
 			_ = nhttp.SendJSON(w, r, stdhttp.StatusOK, LoginResponse{
-				AccessToken: token, TokenType: "Bearer", ExpiresIn: tokenTTL(dps, profile),
+				AccessToken: token, TokenType: "Bearer", ExpiresIn: int64(e.accessTTL / time.Second),
 			})
 		}, nhttp.Opts{DocTag: "auth", Description: "Demo login (admin@admin.com / admin123): issues a bearer token"})
 
@@ -75,13 +76,4 @@ func registerAuthRoutes(server *nhttp.ServerHttp) {
 			})
 		}, nhttp.Opts{DocTag: "auth", Description: "Returns the authenticated principal", IsPrivate: true})
 	})
-}
-
-func tokenTTL(dps *deps.Deps, profile string) int64 {
-	for _, p := range dps.Config.JOSE.Profiles {
-		if p.Name == profile {
-			return int64(p.JWT.TTL / time.Second)
-		}
-	}
-	return 0
 }

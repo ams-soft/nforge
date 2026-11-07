@@ -5,9 +5,6 @@ import (
 	stdhttp "net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/ams-soft/nforge/config"
-	"github.com/ams-soft/nforge/deps"
 )
 
 type cycleResponse struct {
@@ -19,10 +16,10 @@ type cycleResponse struct {
 // process on CBOR and XML routes (stack overflow, not recoverable). It must be
 // a 500 on every codec.
 func TestTypedRouteWithCyclicResponseIsA500(t *testing.T) {
-	var cfg config.Config
-	cfg.App = config.AppConfig{Name: "t", Version: "1.0.0"}
+	var cfg testConfig
+	cfg.App.Name, cfg.App.Version = "t", "1.0.0"
 	cfg.Codec.Formats.Enabled = []string{"json", "cbor", "xml"}
-	s := NewHTTPServer(&deps.Deps{Config: cfg, Logger: slog.New(slog.DiscardHandler)})
+	s := NewHTTPServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler)})
 	for _, format := range []string{"json", "cbor", "xml"} {
 		s.Typed().TGet("/cycle-"+format, nil, cycleResponse{}, func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 			a := &cycleResponse{Name: "a"}

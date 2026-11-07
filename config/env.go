@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"reflect"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -22,7 +21,14 @@ import (
 // from the parser and restoring it afterwards makes "$" an ordinary character
 // in every kind of value.
 func readEnvFile(path string) (map[string]string, error) {
-	raw, err := os.ReadFile(path)
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > maxConfigFileBytes {
+		return nil, fmt.Errorf("the file is larger than %d bytes", maxConfigFileBytes)
+	}
+	raw, err := os.ReadFile(path) //nolint:gosec // the path is the operator's configuration
 	if err != nil {
 		return nil, err
 	}
@@ -40,32 +46,23 @@ func readEnvFile(path string) (map[string]string, error) {
 	return vars, nil
 }
 
-func applyEnvFile(path string, cfg *Config) error {
-	vars, err := readEnvFile(path)
-	if err != nil {
-		return err
+// applyEnvVars sets the fields of dst (a pointer to a struct) from the env
+// file keys of section: the YAML path of each leaf in upper case, joined by
+// "_" (http.server.port is HTTP_SERVER_PORT). The keys it consumed are added
+// to used; the caller reports the keys nothing consumed. A dst that is not a
+// pointer to a struct has no env keys.
+func applyEnvVars(dst any, section string, vars map[string]string, used map[string]bool) error {
+	if len(vars) == 0 {
+		return nil
 	}
-	used := map[string]bool{}
-	if err := applyEnvVars(reflect.ValueOf(cfg).Elem(), nil, vars, used); err != nil {
-		return err
+	v := reflect.ValueOf(dst)
+	if v.Kind() != reflect.Pointer || v.IsNil() || v.Elem().Kind() != reflect.Struct {
+		return nil
 	}
-	// A key that names no field is a typo (HTTP_CORS_ORIGNS) or a stale
-	// leftover, and ignoring it would silently keep the default, which for a
-	// security setting is the unsafe one.
-	var unknown []string
-	for key := range vars {
-		if !used[key] {
-			unknown = append(unknown, key)
-		}
-	}
-	if len(unknown) > 0 {
-		slices.Sort(unknown)
-		return fmt.Errorf("unknown keys %s: a key is the YAML path in upper case joined by \"_\" (for example HTTP_SERVER_PORT)", strings.Join(unknown, ", "))
-	}
-	return nil
+	return applyEnvFields(v.Elem(), []string{section}, vars, used)
 }
 
-func applyEnvVars(v reflect.Value, prefix []string, vars map[string]string, used map[string]bool) error {
+func applyEnvFields(v reflect.Value, prefix []string, vars map[string]string, used map[string]bool) error {
 	t := v.Type()
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
@@ -78,7 +75,7 @@ func applyEnvVars(v reflect.Value, prefix []string, vars map[string]string, used
 		path := append(append([]string{}, prefix...), name)
 
 		if fv.Kind() == reflect.Struct {
-			if err := applyEnvVars(fv, path, vars, used); err != nil {
+			if err := applyEnvFields(fv, path, vars, used); err != nil {
 				return err
 			}
 			continue

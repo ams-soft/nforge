@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	config "github.com/ams-soft/nforge/config"
+	"github.com/ams-soft/nforge/module"
 	"github.com/ams-soft/nforge/telemetry"
 	"github.com/lmittmann/tint"
 	"go.opentelemetry.io/contrib/bridges/otelslog"
@@ -19,19 +19,24 @@ import (
 // Option configures Setup.
 type Option func(*options)
 
-type options struct{ noGlobals bool }
+type options struct{ globals bool }
 
-// WithoutGlobals leaves slog.Default and the OTel error handler alone, so several
-// loggers can coexist in one process. OTel failures then go to OTel's default
-// handler instead of the terminal.
-func WithoutGlobals() Option { return func(o *options) { o.noGlobals = true } }
+// WithProcessGlobals also installs the logger as slog.Default and routes the
+// OTel error handler to the terminal. Without it the process-wide state is left
+// alone, so several loggers can coexist in one process; OTel failures then go
+// to OTel's default handler.
+func WithProcessGlobals() Option { return func(o *options) { o.globals = true } }
 
-func Setup(ctx context.Context, config config.Config, opts ...Option) (*slog.Logger, func(context.Context) error, error) {
+// Setup builds the logger of the logging settings: the terminal output (tint)
+// and the OTel log export, each optional, under a handler that adds the
+// request_id of the context. The level follows app.Env. It returns the flush
+// of the OTel exporter.
+func Setup(ctx context.Context, s Settings, app module.App, opts ...Option) (*slog.Logger, func(context.Context) error, error) {
 	var o options
 	for _, opt := range opts {
 		opt(&o)
 	}
-	loglevel := SetLogLevelByEnv(config.Env)
+	loglevel := SetLogLevelByEnv(app.Env)
 
 	prettyHandler := tint.NewTextHandler(os.Stdout, &tint.Options{
 		Level:      loglevel,
@@ -40,7 +45,7 @@ func Setup(ctx context.Context, config config.Config, opts ...Option) (*slog.Log
 	})
 
 	var handlers []slog.Handler
-	if config.Logging.Output.Terminal.Enabled {
+	if s.Output.Terminal.Enabled {
 		handlers = append(handlers, &leveledHandler{Handler: prettyHandler, level: loglevel})
 	}
 
@@ -48,14 +53,14 @@ func Setup(ctx context.Context, config config.Config, opts ...Option) (*slog.Log
 
 	// Nothing OTel-related (exporter, error handler) is started unless
 	// logging.output.otel.enabled is true.
-	if config.Logging.Output.Otel.Enabled {
-		provider, err := newOtelProvider(ctx, config)
+	if s.Output.Otel.Enabled {
+		provider, err := newOtelProvider(ctx, s, app)
 		if err != nil {
 			return nil, nil, err
 		}
 		shutdown = provider.Shutdown
 
-		otelHandler := otelslog.NewHandler(config.App.Name,
+		otelHandler := otelslog.NewHandler(app.Name,
 			otelslog.WithLoggerProvider(provider),
 			otelslog.WithSource(loglevel == slog.LevelDebug),
 		)
@@ -65,7 +70,7 @@ func Setup(ctx context.Context, config config.Config, opts ...Option) (*slog.Log
 		// log, which slog.SetDefault turns into INFO records that also reach the
 		// otel handler. Send them to the terminal only, as warnings: queueing them on
 		// the exporter that is failing would just feed it more records.
-		if !o.noGlobals {
+		if o.globals {
 			terminal := slog.New(&leveledHandler{Handler: prettyHandler, level: loglevel})
 			otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
 				terminal.Warn(" [LoggerModule] Telemetry export failed", "err", err) //nolint:sloglint // runs later, outside the setup ctx
@@ -74,22 +79,22 @@ func Setup(ctx context.Context, config config.Config, opts ...Option) (*slog.Log
 	}
 
 	logger := slog.New(&contextHandler{Handler: NewMultiHandler(handlers...)})
-	if !o.noGlobals {
+	if o.globals {
 		slog.SetDefault(logger)
 	}
 
 	return logger, shutdown, nil
 }
 
-func newOtelProvider(ctx context.Context, config config.Config) (*sdklog.LoggerProvider, error) {
+func newOtelProvider(ctx context.Context, s Settings, app module.App) (*sdklog.LoggerProvider, error) {
 	var opts []otlploggrpc.Option
 
-	if endpoint := config.Logging.Output.Otel.Endpoint; strings.Contains(endpoint, "://") {
+	if endpoint := s.Output.Otel.Endpoint; strings.Contains(endpoint, "://") {
 		opts = append(opts, otlploggrpc.WithEndpointURL(endpoint))
 	} else if endpoint != "" {
 		opts = append(opts, otlploggrpc.WithEndpoint(endpoint))
 	}
-	if insecure := config.Logging.Output.Otel.Insecure; insecure {
+	if s.Output.Otel.Insecure {
 		opts = append(opts, otlploggrpc.WithInsecure())
 	}
 
@@ -98,7 +103,7 @@ func newOtelProvider(ctx context.Context, config config.Config) (*sdklog.LoggerP
 		return nil, err
 	}
 
-	res, err := telemetry.NewResource(ctx, config)
+	res, err := telemetry.NewResource(ctx, app)
 	if err != nil {
 		return nil, err
 	}

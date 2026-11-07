@@ -228,7 +228,7 @@ func registerNoteRoutes(api *nhttp.TypedRouter, db *database.DB, logger *slog.Lo
 // registerRawNoteRoute serves the same listing as a raw route:
 // server.TenantMiddleware() is the guard of Opts.Tenant, configured from
 // http.tenant, for plain routes and groups.
-func registerRawNoteRoute(server *nhttp.ServerHttp, db *database.DB, logger *slog.Logger) {
+func registerRawNoteRoute(server *nhttp.Server, db *database.DB, logger *slog.Logger) {
 	// curl localhost:8080/raw/notes -H "X-Tenant-ID: $A"
 	server.Router().With(server.TenantMiddleware()).Get("/raw/notes", noteHandler(db, logger, func(w stdhttp.ResponseWriter, req *stdhttp.Request, tdb *database.DB) error {
 		notes, err := listNotes(req.Context(), tdb)
@@ -238,5 +238,5 @@ func registerRawNoteRoute(server *nhttp.ServerHttp, db *database.DB, logger *slo
 		return err
 	}))
 	server.AddDocRoute(nhttp.TypedRoute{Method: "GET", Path: "/raw/notes", Tag: "notes", Tenant: true,
-		TenantHeader: server.Deps.Config.HTTP.Tenant.Header, Description: "Lists notes (raw route with TenantMiddleware)", Response: []Note{}})
+		TenantHeader: server.Config().Tenant.Header, Description: "Lists notes (raw route with TenantMiddleware)", Response: []Note{}})
 }

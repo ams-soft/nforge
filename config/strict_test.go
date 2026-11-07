@@ -10,6 +10,15 @@ import (
 
 const baseYAML = "app: {name: a, version: '1'}\n"
 
+func writeConfig(t *testing.T, text string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func writeEnv(t *testing.T, text string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "test.env")
@@ -19,99 +28,254 @@ func writeEnv(t *testing.T, text string) string {
 	return path
 }
 
-// A typo in any section must fail the load: http.cors.origns used to
-// leave origins empty, which means "any origin".
-func TestUnknownYAMLKeysAreRejected(t *testing.T) {
+// server is a module schema, as a module would define it.
+type server struct {
+	Port    int           `yaml:"port"`
+	Host    string        `yaml:"host"`
+	Timeout time.Duration `yaml:"timeout"`
+	Origins []string      `yaml:"origins"`
+	Enabled *bool         `yaml:"enabled"`
+	TLS     struct {
+		KeyFile string `yaml:"key_file"`
+	} `yaml:"tls"`
+	Keys []struct {
+		Kid string `yaml:"kid"`
+	} `yaml:"keys"`
+	Labels map[string]string `yaml:"labels"`
+}
+
+type store struct {
+	Password string `yaml:"password"`
+	Host     string `yaml:"host"`
+	Name     string `yaml:"name"`
+	User     string `yaml:"user"`
+	Port     int    `yaml:"port"`
+}
+
+func load(t *testing.T, yaml, env string) (*Document, error) {
+	t.Helper()
+	envPath := ""
+	if env != "" {
+		envPath = writeEnv(t, env)
+	}
+	return LoadFlags(writeConfig(t, yaml), envPath)
+}
+
+func decode[T any](t *testing.T, b *Binding, section string) T {
+	t.Helper()
+	var v T
+	if err := b.Decode(section, &v); err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+func TestReservedSections(t *testing.T) {
+	d, err := load(t, "env: Dev\napp: {name: svc, version: 1.2.3, internal_use: true}\nprd_exceptions: {redis_plaintext: true}\n", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Env() != "dev" || d.App() != (AppConfig{Name: "svc", Version: "1.2.3", InternalUse: true}) {
+		t.Fatalf("env %q app %+v", d.Env(), d.App())
+	}
+	if !d.PrdExceptions().Allows("redis_plaintext") || d.PrdExceptions().Allows("database_plaintext") || d.PrdExceptions().Allows("nope") {
+		t.Fatalf("exceptions = %+v", d.PrdExceptions())
+	}
+	if time.Since(d.OnlineSince()) > time.Minute {
+		t.Fatal("online since")
+	}
+	if len(d.Sections()) != 0 {
+		t.Fatalf("reserved sections are not module sections: %v", d.Sections())
+	}
+	for _, bad := range []string{"app: {name: a}\n", "app: {version: '1'}\n"} {
+		if _, err := load(t, bad, ""); err == nil || !strings.Contains(err.Error(), "must not be empty") {
+			t.Errorf("%q: err = %v", bad, err)
+		}
+	}
+	if _, err := load(t, baseYAML+"prd_exceptions: {redis_plain: true}\n", ""); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Errorf("unknown exception: err = %v", err)
+	}
+	b := d.Bind()
+	if err := b.Decode("app", &AppConfig{}); err == nil {
+		t.Error("a module cannot own a reserved section")
+	}
+}
+
+// A typo in any section must fail: http.cors.origns used to leave origins
+// empty, which means "any origin".
+func TestUnknownKeysAreRejected(t *testing.T) {
 	cases := map[string]string{
-		"security.enabld":        baseYAML + "http: {security: {enabld: true}}\n",
-		"cors.origns":            baseYAML + "http: {cors: {enabled: true, origns: ['https://a.example']}}\n",
-		"cors.credentails":       baseYAML + "http: {cors: {enabled: true, origins: ['https://a.example'], credentails: true}}\n", //nolint:misspell // deliberate typo
-		"tls.min_verison":        baseYAML + "http: {server: {tls: {min_verison: '1.2'}}}\n",                                      //nolint:misspell // deliberate typo
-		"tenancy.modee":          baseYAML + "database: {tenancy: {modee: rls}}\n",
-		"top level":              baseYAML + "htpp: {server: {port: 1}}\n",
-		"codec.strict_unknown":   baseYAML + "codec: {strict_unknown: true}\n",
-		"logging.output.termnal": baseYAML + "logging: {output: {termnal: {enabled: true}}}\n",
+		"nested key": baseYAML + "server: {tls: {key_fil: x}}\n",
+		"leaf key":   baseYAML + "server: {origns: [a]}\n",
 	}
 	for name, text := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := LoadFlags(writeConfig(t, text), "")
-			if err == nil {
-				t.Fatal("want an error for the misspelt key")
+			d, err := load(t, text, "")
+			if err != nil {
+				t.Fatal(err)
 			}
-			if !strings.Contains(err.Error(), "not found") {
-				t.Errorf("the error must name the field: %v", err)
+			err = d.Bind().Decode("server", &server{})
+			if err == nil || !strings.Contains(err.Error(), "not found") || !strings.Contains(err.Error(), "server") {
+				t.Fatalf("err = %v", err)
 			}
 		})
+	}
+	if _, err := load(t, baseYAML+"app: {name: b, version: '2'}\n", ""); err == nil || !strings.Contains(err.Error(), "twice") {
+		t.Fatalf("duplicate section: err = %v", err)
+	}
+	if _, err := load(t, "- a\n- b\n", ""); err == nil {
+		t.Fatal("a sequence is not a configuration")
+	}
+}
+
+// YAML cannot activate a module: a section nobody owns is an error.
+func TestSectionsOfUnregisteredModulesAreRejected(t *testing.T) {
+	d, err := load(t, baseYAML+"server: {port: 1}\ndatabse: {host: x}\n", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := d.Bind()
+	_ = decode[server](t, b, "server")
+	err = b.Finish()
+	if err == nil || !strings.Contains(err.Error(), `section "databse" belongs to no registered module`) {
+		t.Fatalf("err = %v", err)
+	}
+	b = d.Bind()
+	b.Own("server")
+	b.Own("databse")
+	if err := b.Finish(); err != nil {
+		t.Fatalf("owned sections: %v", err)
 	}
 }
 
 func TestExtensionKeysAreIgnored(t *testing.T) {
-	text := baseYAML + "x-feature-flags:\n  beta: true\nx-team: payments\n"
-	cfg, err := LoadFlags(writeConfig(t, text), "")
+	d, err := load(t, baseYAML+"x-feature-flags:\n  beta: true\nx-team: payments\n", "")
 	if err != nil {
 		t.Fatalf("top-level x- keys are for the application: %v", err)
 	}
-	if cfg.App.Name != "a" {
-		t.Fatalf("app = %+v", cfg.App)
+	if err := d.Bind().Finish(); err != nil {
+		t.Fatal(err)
 	}
 	// only at the top level
-	if _, err := LoadFlags(writeConfig(t, baseYAML+"http: {x-extra: 1}\n"), ""); err == nil {
+	d, err = load(t, baseYAML+"server: {x-extra: 1}\n", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Bind().Decode("server", &server{}); err == nil {
 		t.Fatal("x- keys are allowed only at the top level")
 	}
 }
 
+// Precedence, later wins: base YAML, env file, overlay.
+func TestLayersApplyInOrder(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	base := writeConfig(t, "env: stg\n"+baseYAML+"server: {port: 1, host: base, timeout: 1s, labels: {a: '1'}}\nstore: {name: base}\n")
+	if err := os.WriteFile("config.stg.yaml", []byte("server: {host: overlay, labels: {b: '2'}}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d, err := LoadFlags(base, writeEnv(t, "SERVER_PORT=2\nSERVER_HOST=env\nSERVER_TIMEOUT=5s\nSTORE_PORT=7\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := d.Bind()
+	s := decode[server](t, b, "server")
+	if s.Port != 2 || s.Host != "overlay" || s.Timeout != 5*time.Second || s.Labels["a"] != "1" || s.Labels["b"] != "2" {
+		t.Fatalf("server = %+v", s)
+	}
+	// a section only the env file sets is decoded too
+	if st := decode[store](t, b, "store"); st.Port != 7 || st.Name != "base" {
+		t.Fatalf("store = %+v", st)
+	}
+	if err := b.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	// defaults survive an absent section
+	b = d.Bind()
+	other := store{Host: "default"}
+	if err := b.Decode("absent", &other); err != nil || other.Host != "default" || b.Present("absent") || !b.Present("server") {
+		t.Fatalf("absent section: %v %+v", err, other)
+	}
+}
+
 func TestUnknownEnvFileKeysAreRejected(t *testing.T) {
-	yaml := writeConfig(t, baseYAML)
 	for name, text := range map[string]string{
-		"typo":       "HTTP_CORS_ORIGNS=https://a.example\n",
-		"lower case": "http_server_port=9090\n",
+		"typo":       "SERVER_ORIGNS=https://a.example\n",
+		"lower case": "server_port=9090\n",
 		"stale":      "SOME_OTHER_TOOL_VAR=1\n",
-		"mixed":      "HTTP_SERVER_PORT=9090\nHTTP_SERVER_PROT=1\n",
+		"mixed":      "SERVER_PORT=9090\nSERVER_PROT=1\n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := LoadFlags(yaml, writeEnv(t, text))
-			if err == nil || !strings.Contains(err.Error(), "unknown keys") {
+			d, err := load(t, baseYAML, text)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b := d.Bind()
+			_ = decode[server](t, b, "server")
+			if err := b.Finish(); err == nil || !strings.Contains(err.Error(), "unknown keys") {
 				t.Fatalf("want an unknown keys error, got %v", err)
 			}
 		})
 	}
-	cfg, err := LoadFlags(yaml, writeEnv(t, "HTTP_SERVER_PORT=9090\nDATABASE_POOL_MAX_CONNS=5\n"))
+	d, err := load(t, baseYAML, "SERVER_PORT=9090\nSERVER_ORIGINS=a, b\nSERVER_ENABLED=false\nAPP_NAME=renamed\nENV=dev\n")
 	if err != nil {
+		t.Fatal(err)
+	}
+	b := d.Bind()
+	s := decode[server](t, b, "server")
+	if s.Port != 9090 || len(s.Origins) != 2 || s.Origins[1] != "b" || s.Enabled == nil || *s.Enabled || d.App().Name != "renamed" || d.Env() != "dev" {
+		t.Fatalf("env values not applied: %+v %+v", s, d.App())
+	}
+	if err := b.Finish(); err != nil {
 		t.Fatalf("valid keys: %v", err)
 	}
-	if cfg.HTTP.Server.Port != 9090 || cfg.Database.Pool.MaxConns != 5 {
-		t.Fatalf("env values not applied: %+v", cfg.HTTP.Server)
+}
+
+// Maps and sequences of structs are YAML only; an env key naming one is an
+// explicit error, not ignored.
+func TestEnvFileRejectsStructuredFields(t *testing.T) {
+	for _, key := range []string{"SERVER_KEYS=x", "SERVER_LABELS=a=b"} {
+		d, err := load(t, baseYAML, key+"\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := d.Bind().Decode("server", &server{}); err == nil || !strings.Contains(err.Error(), "cannot be set from the env file") {
+			t.Errorf("%s: err = %v", key, err)
+		}
 	}
-	// load-time fields cannot be set from the file
-	if _, err := LoadFlags(yaml, writeEnv(t, "WARNINGS=x\nAPP_ONLINESINCE=y\n")); err == nil {
-		t.Fatal("load-time fields are not configuration")
+	d, err := load(t, baseYAML, "SERVER_PORT=99999999999999999999\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Bind().Decode("server", &server{}); err == nil {
+		t.Error("an overflowing value must be rejected")
 	}
 }
 
 // env decides the overlay and the log level, so a misspelling must not pass.
 func TestEnvIsValidatedAndNormalized(t *testing.T) {
 	for _, bad := range []string{"production", "prod", "development", "test", "stage"} {
-		_, err := LoadFlags(writeConfig(t, "env: "+`"`+bad+`"`+"\n"+baseYAML), "")
+		_, err := load(t, "env: "+`"`+bad+`"`+"\n"+baseYAML, "")
 		if err == nil || !strings.Contains(err.Error(), "env must be one of") {
 			t.Errorf("env %q must be rejected, got %v", bad, err)
 		}
 	}
 	for in, want := range map[string]string{"PRD": "prd", "Dev": "dev", "stg": "stg", "local": "local"} {
-		cfg, err := LoadFlags(writeConfig(t, "env: "+in+"\n"+baseYAML), "")
+		d, err := load(t, "env: "+in+"\n"+baseYAML, "")
 		if err != nil {
 			t.Fatalf("env %q: %v", in, err)
 		}
-		if cfg.Env != want {
-			t.Errorf("env %q normalized to %q, want %q", in, cfg.Env, want)
+		if d.Env() != want {
+			t.Errorf("env %q normalized to %q, want %q", in, d.Env(), want)
 		}
 	}
-	// env can come from the env file; it is validated there too
-	if _, err := LoadFlags(writeConfig(t, baseYAML), writeEnv(t, "ENV=production\n")); err == nil {
+	if _, err := load(t, baseYAML, "ENV=production\n"); err == nil {
 		t.Error("env from the env file must be validated")
 	}
 }
 
-// A missing overlay is skipped; an unreadable one is an error.
+// A missing overlay is skipped; an unreadable or invalid one is an error, and
+// the overlay may change env.
 func TestOverlayErrors(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
@@ -119,18 +283,31 @@ func TestOverlayErrors(t *testing.T) {
 	if _, err := LoadFlags(yaml, ""); err != nil {
 		t.Fatalf("no overlay file is fine: %v", err)
 	}
-	if err := os.WriteFile("config.prd.yaml", []byte("codec: {strict_unknown_fields: true}\n"), 0o600); err != nil {
+	if err := os.WriteFile("config.prd.yaml", []byte("server: {port: 3}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := LoadFlags(yaml, "")
-	if err != nil || !cfg.Codec.StrictUnknownFields {
-		t.Fatalf("overlay must apply: %v %+v", err, cfg)
+	d, err := LoadFlags(yaml, "")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err := os.WriteFile("config.prd.yaml", []byte("codec: {strict_unknown_field: true}\n"), 0o600); err != nil {
+	if s := decode[server](t, d.Bind(), "server"); s.Port != 3 {
+		t.Fatalf("overlay must apply: %+v", s)
+	}
+	if err := os.WriteFile("config.prd.yaml", []byte("server: {prot: 3}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d, err = LoadFlags(yaml, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Bind().Decode("server", &server{}); err == nil || !strings.Contains(err.Error(), "overlay") {
+		t.Fatalf("a typo in the overlay must fail too: %v", err)
+	}
+	if err := os.WriteFile("config.prd.yaml", []byte("env: production\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := LoadFlags(yaml, ""); err == nil {
-		t.Fatal("a typo in the overlay must fail too")
+		t.Fatal("env set by the overlay must be validated")
 	}
 	if os.Geteuid() != 0 {
 		if err := os.Chmod(dir, 0o000); err == nil {
@@ -151,31 +328,40 @@ func TestExplicitConfigMustExist(t *testing.T) {
 	if _, err := LoadFlags(missing, ""); err == nil || !strings.Contains(err.Error(), "nope.yaml") {
 		t.Fatalf("a missing -config file must fail with its name: %v", err)
 	}
-	// default path, absent: configuration comes from the env file and defaults
-	env := writeEnv(t, "APP_NAME=a\nAPP_VERSION=1\n")
-	if _, err := LoadFlags("", env); err != nil {
+	if _, err := LoadFlags("", writeEnv(t, "APP_NAME=a\nAPP_VERSION=1\n")); err != nil {
 		t.Fatalf("absent default config.yaml is allowed: %v", err)
 	}
 }
 
+func TestConfigFileSizeIsBounded(t *testing.T) {
+	big := baseYAML + "x-blob: '" + strings.Repeat("a", maxConfigFileBytes) + "'\n"
+	if _, err := load(t, big, ""); err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := LoadFlags(writeConfig(t, baseYAML), writeEnv(t, "X="+strings.Repeat("a", maxConfigFileBytes)+"\n")); err == nil {
+		t.Fatal("an oversized env file must be refused")
+	}
+}
+
 // An unset ${VAR} is an error naming every missing variable, unless it carries
-// a default.
+// a default; expansion keeps the YAML types.
 func TestUnsetEnvVariablesAreAnError(t *testing.T) {
 	t.Setenv("NF_TEST_SET", "x")
 	t.Setenv("NF_TEST_EMPTY", "")
-	text := baseYAML + "http: {docs: {title: '${NF_TEST_SET}-${NF_TEST_UNSET_A}', version: '${NF_TEST_UNSET_B}${NF_TEST_UNSET_A}'}}\n"
-	_, err := LoadFlags(writeConfig(t, text), "")
+	t.Setenv("NF_TEST_PORT", "8081")
+	text := baseYAML + "server: {host: '${NF_TEST_SET}-${NF_TEST_UNSET_A}', tls: {key_file: '${NF_TEST_UNSET_B}${NF_TEST_UNSET_A}'}}\n"
+	_, err := load(t, text, "")
 	if err == nil || !strings.Contains(err.Error(), "NF_TEST_UNSET_A, NF_TEST_UNSET_B") || strings.Contains(err.Error(), "NF_TEST_SET") {
 		t.Fatalf("err = %v", err)
 	}
-
-	text = baseYAML + "http: {docs: {title: '${NF_TEST_SET:-d}-${NF_TEST_UNSET_A:-fallback}-${NF_TEST_UNSET_B:-}', version: '${NF_TEST_EMPTY}${NF_TEST_EMPTY:-v}'}}\n"
-	cfg, err := LoadFlags(writeConfig(t, text), "")
+	text = baseYAML + "server:\n  port: ${NF_TEST_PORT}\n  host: '${NF_TEST_SET:-d}-${NF_TEST_UNSET_A:-fallback}-${NF_TEST_UNSET_B:-}'\n  tls: {key_file: '${NF_TEST_EMPTY}${NF_TEST_EMPTY:-v}'}\n"
+	d, err := load(t, text, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.HTTP.Docs.Title != "x-fallback-" || cfg.HTTP.Docs.Version != "v" {
-		t.Errorf("title = %q, version = %q", cfg.HTTP.Docs.Title, cfg.HTTP.Docs.Version)
+	s := decode[server](t, d.Bind(), "server")
+	if s.Host != "x-fallback-" || s.TLS.KeyFile != "v" || s.Port != 8081 {
+		t.Errorf("server = %+v", s)
 	}
 }
 
@@ -183,90 +369,55 @@ func TestUnsetEnvVariablesAreAnError(t *testing.T) {
 // $NAME from earlier keys of the file (an unknown name became empty), so
 // "pa$SWORD" lost a piece of the password.
 func TestEnvFileValuesAreLiteral(t *testing.T) {
-	env := writeEnv(t, strings.Join([]string{
-		"DATABASE_PASSWORD=pa$SWORD$HOME",
-		`DATABASE_HOST="h$USER"`,
-		"DATABASE_NAME='lit$X'",
-		"DATABASE_USER=${APP_NAME}",
+	env := strings.Join([]string{
+		"STORE_PASSWORD=pa$SWORD$HOME",
+		`STORE_HOST="h$USER"`,
+		"STORE_NAME='lit$X'",
+		"STORE_USER=${APP_NAME}",
 		"APP_NAME=a",
 		"APP_VERSION=1 # a comment is still a comment",
-		"export CACHE_PREFIX=cost$$",
-		"# DATABASE_PORT=1 is commented out",
-		`HTTP_DOCS_TITLE="a \"quoted\" $T"`,
+		"# STORE_PORT=1 is commented out",
 		"",
-	}, "\n"))
-	cfg, err := LoadFlags("", env)
+	}, "\n")
+	d, err := LoadFlags("", writeEnv(t, env))
 	if err != nil {
 		t.Fatal(err)
 	}
+	st := decode[store](t, d.Bind(), "store")
 	checks := map[string][2]string{
-		"password":   {cfg.Database.Password, "pa$SWORD$HOME"},
-		"host":       {cfg.Database.Host, "h$USER"},
-		"name":       {cfg.Database.Name, "lit$X"},
-		"user":       {cfg.Database.User, "${APP_NAME}"},
-		"version":    {cfg.App.Version, "1"},
-		"prefix":     {cfg.Cache.Prefix, "cost$$"},
-		"docs title": {cfg.HTTP.Docs.Title, `a "quoted" $T`},
+		"password": {st.Password, "pa$SWORD$HOME"},
+		"host":     {st.Host, "h$USER"},
+		"name":     {st.Name, "lit$X"},
+		"user":     {st.User, "${APP_NAME}"},
+		"version":  {d.App().Version, "1"},
 	}
 	for name, c := range checks {
 		if c[0] != c[1] {
 			t.Errorf("%s = %q, want %q", name, c[0], c[1])
 		}
 	}
-	if cfg.Database.Port != 0 {
-		t.Errorf("a commented key must not be read: port %d", cfg.Database.Port)
+	if st.Port != 0 {
+		t.Errorf("a commented key must not be read: port %d", st.Port)
 	}
 	if _, err := LoadFlags("", writeEnv(t, "APP_NAME=a\x00b\n")); err == nil {
 		t.Error("a NUL byte must be rejected")
 	}
 }
 
-func TestHandlerTimeoutAndBodyLimitSettings(t *testing.T) {
-	cfg, err := LoadFlags(writeConfig(t, baseYAML), "")
+// One document, several applications: each binding has its own bookkeeping.
+func TestBindingsAreIndependent(t *testing.T) {
+	d, err := load(t, baseYAML+"server: {port: 1}\n", "SERVER_PORT=2\n")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.HTTP.Server.HandlerTimeout != 30*time.Second || cfg.HTTP.Server.MaxBodyBytes != 0 {
-		t.Fatalf("defaults: %+v", cfg.HTTP.Server)
+	a, b := d.Bind(), d.Bind()
+	if s := decode[server](t, a, "server"); s.Port != 2 {
+		t.Fatalf("port = %d", s.Port)
 	}
-	cfg, err = LoadFlags(writeConfig(t, baseYAML+"http: {server: {handler_timeout: 5s, max_body_bytes: 2mb}}\n"), "")
-	if err != nil || cfg.HTTP.Server.HandlerTimeout != 5*time.Second || cfg.HTTP.Server.MaxBodyBytes != 2*MB {
-		t.Fatalf("configured: %v %+v", err, cfg.HTTP.Server)
-	}
-	for _, bad := range []string{"handler_timeout: -1s", "max_body_bytes: 2gb"} {
-		if _, err := LoadFlags(writeConfig(t, baseYAML+"http: {server: {"+bad+"}}\n"), ""); err == nil {
-			t.Errorf("%s must be refused", bad)
-		}
-	}
-	// reachable from the env file like every other field
-	cfg, err = LoadFlags(writeConfig(t, baseYAML), writeEnv(t, "HTTP_SERVER_HANDLER_TIMEOUT=7s\nDATABASE_CONNECTION_STATEMENT_TIMEOUT=45s\n"))
-	if err != nil || cfg.HTTP.Server.HandlerTimeout != 7*time.Second || cfg.Database.Connection.StatementTimeout != 45*time.Second {
-		t.Fatalf("env file: %v %+v", err, cfg.HTTP.Server)
-	}
-}
-
-func TestTracingSampleRatioAndTrust(t *testing.T) {
-	cfg, err := LoadFlags(writeConfig(t, baseYAML), "")
-	if err != nil {
+	if err := a.Finish(); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Tracing.Otel.Ratio() != 1 || cfg.Tracing.Otel.TrustsIncoming() {
-		t.Fatalf("defaults must keep every request and distrust the caller: %+v", cfg.Tracing.Otel)
-	}
-	cfg, err = LoadFlags(writeConfig(t, baseYAML+"tracing: {otel: {sample_ratio: 0.1, trust_incoming: true}}\n"), "")
-	if err != nil || cfg.Tracing.Otel.Ratio() != 0.1 || !cfg.Tracing.Otel.TrustsIncoming() {
-		t.Fatalf("configured: %v %+v", err, cfg.Tracing.Otel)
-	}
-	if cfg, err = LoadFlags(writeConfig(t, baseYAML+"tracing: {otel: {sample_ratio: 0}}\n"), ""); err != nil || cfg.Tracing.Otel.Ratio() != 0 {
-		t.Fatalf("an explicit 0 must be kept: %v", err)
-	}
-	for _, bad := range []string{"-0.1", "1.5", ".nan"} {
-		if _, err := LoadFlags(writeConfig(t, baseYAML+"tracing: {otel: {sample_ratio: "+bad+"}}\n"), ""); err == nil {
-			t.Errorf("sample_ratio %s must be refused", bad)
-		}
-	}
-	if cfg, err = LoadFlags(writeConfig(t, baseYAML), writeEnv(t, "TRACING_OTEL_SAMPLE_RATIO=0.5\nTRACING_OTEL_TRUST_INCOMING=true\n")); err != nil ||
-		cfg.Tracing.Otel.Ratio() != 0.5 || !cfg.Tracing.Otel.TrustsIncoming() {
-		t.Fatalf("env file: %v %+v", err, cfg.Tracing.Otel)
+	if err := b.Finish(); err == nil {
+		t.Fatal("the second application did not register the server module")
 	}
 }

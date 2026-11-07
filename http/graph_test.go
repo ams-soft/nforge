@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html"
 	"log/slog"
 	stdhttp "net/http"
@@ -19,42 +20,52 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ams-soft/nforge/cache"
-	"github.com/ams-soft/nforge/codec"
+	"github.com/ams-soft/nforge/app"
 	"github.com/ams-soft/nforge/config"
-	"github.com/ams-soft/nforge/deps"
 	"github.com/ams-soft/nforge/http/internal/graph"
+	"github.com/ams-soft/nforge/internal/apptest"
 	"github.com/ams-soft/nforge/module"
 )
 
-func graphConfig() config.Config {
-	var cfg config.Config
-	cfg.Env, cfg.App.Name, cfg.App.Version = "local", "graph-app", "1"
-	cfg.Codec.Formats.Enabled = []string{"json"}
-	cfg.Codec.Default = "json"
-	cfg.HTTP.Routes.Graph.Enabled = true
-	return cfg
-}
+const graphYAML = "app: {name: graph-app, version: '1'}\nhttp: {routes: {graph: {enabled: true}}}\n"
 
-// keepDefaultCodec restores the process-wide registry that bootstrap replaces.
-func keepDefaultCodec(t *testing.T) {
+// graphServer starts an application of every built-in module plus extra on
+// yaml (the http.server section is added), and returns its HTTP server.
+func graphServer(t *testing.T, yaml string, extra ...module.Descriptor) *Server {
 	t.Helper()
-	previous := codec.Default()
-	t.Cleanup(func() { codec.SetDefault(previous) })
-}
-
-func graphServer(t *testing.T, cfg config.Config, extra ...deps.Module) *ServerHttp {
-	t.Helper()
-	keepDefaultCodec(t)
-	d, err := deps.Bootstrap(context.Background(), cfg, deps.WithModules(extra...))
+	s, err := graphServerE(t, yaml, extra...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = d.Shutdown(context.Background()) })
-	return NewHTTPServer(d)
+	return s
 }
 
-func getGraph(s *ServerHttp, path string, headers ...string) *httptest.ResponseRecorder {
+func graphServerE(t *testing.T, yaml string, extra ...module.Descriptor) (*Server, error) {
+	t.Helper()
+	// a free port through the env file, which merges into any http section
+	env := writeEnv(t, fmt.Sprintf("HTTP_SERVER_HOST=127.0.0.1\nHTTP_SERVER_PORT=%d\nTRACING_OTEL_ENABLED=false\n", freePort(t)))
+	doc, err := config.LoadFlags(writeConfig(t, yaml), env)
+	if err != nil {
+		return nil, err
+	}
+	var s *Server
+	grab := module.New("grab", module.Definition{Requires: []module.Handle{Capability}, Init: func(_ context.Context, sc *module.Scope) (module.Hooks, error) {
+		s = module.Require(sc, Capability)
+		return module.Hooks{}, nil
+	}})
+	mods := append(allModules(), grab)
+	a, err := app.New(doc, app.Modules(append(mods, extra...)...), apptest.Quiet(), app.WithProbeInterval(time.Nanosecond, 2*time.Second))
+	if err != nil {
+		return nil, err
+	}
+	if err := a.Start(context.Background()); err != nil {
+		return nil, err
+	}
+	t.Cleanup(func() { _ = a.Shutdown(context.Background()) })
+	return s, nil
+}
+
+func getGraph(s *Server, path string, headers ...string) *httptest.ResponseRecorder {
 	req := httptest.NewRequestWithContext(context.Background(), stdhttp.MethodGet, path, nil)
 	for i := 0; i+1 < len(headers); i += 2 {
 		req.Header.Set(headers[i], headers[i+1])
@@ -80,22 +91,20 @@ func graphDocument(t *testing.T, body string) graph.Document {
 }
 
 func TestGraphDisabledRegistersNothing(t *testing.T) {
-	cfg := graphConfig()
-	cfg.HTTP.Routes.Graph.Enabled = false
-	s := graphServer(t, cfg)
+	s := graphServer(t, "app: {name: graph-app, version: '1'}\n")
 	for _, path := range []string{"/graph", "/graph/mermaid.min.js"} {
 		if got := getGraph(s, path).Code; got != stdhttp.StatusNotFound {
 			t.Errorf("%s = %d, want 404", path, got)
 		}
 	}
 	// the structure still exists: the orchestrator needs it
-	if _, ok := s.Deps.Graph(); !ok {
+	if len(s.status.Snapshot().Modules) == 0 {
 		t.Fatal("the graph is resolved whether or not the route is on")
 	}
 }
 
 func TestGraphPage(t *testing.T) {
-	s := graphServer(t, graphConfig())
+	s := graphServer(t, graphYAML)
 	rec := getGraph(s, "/graph")
 	if rec.Code != stdhttp.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
@@ -144,9 +153,7 @@ func TestGraphPage(t *testing.T) {
 }
 
 func TestGraphCustomPath(t *testing.T) {
-	cfg := graphConfig()
-	cfg.HTTP.Routes.Graph.Path = "/internal/topology"
-	s := graphServer(t, cfg)
+	s := graphServer(t, "app: {name: graph-app, version: '1'}\nhttp: {routes: {graph: {enabled: true, path: /internal/topology}}}\n")
 	if got := getGraph(s, "/internal/topology").Code; got != stdhttp.StatusOK {
 		t.Fatalf("status = %d", got)
 	}
@@ -156,7 +163,7 @@ func TestGraphCustomPath(t *testing.T) {
 }
 
 func TestGraphAsset(t *testing.T) {
-	s := graphServer(t, graphConfig())
+	s := graphServer(t, graphYAML)
 	gz := getGraph(s, "/graph/mermaid.min.js", "Accept-Encoding", "br, gzip")
 	if gz.Code != stdhttp.StatusOK || gz.Header().Get("Content-Encoding") != "gzip" || !bytes.Equal(gz.Body.Bytes(), graph.MermaidGzip()) {
 		t.Fatalf("gzip: %d %v", gz.Code, gz.Header())
@@ -176,9 +183,7 @@ func TestGraphAsset(t *testing.T) {
 // The API policy of http.security would block the page; report-only mode must
 // not weaken what the page enforces.
 func TestGraphReplacesTheSecurityPolicy(t *testing.T) {
-	cfg := graphConfig()
-	cfg.HTTP.Security.CSP.ReportOnly = true
-	rec := getGraph(graphServer(t, cfg), "/graph")
+	rec := getGraph(graphServer(t, "app: {name: graph-app, version: '1'}\nhttp: {routes: {graph: {enabled: true}}, security: {csp: {report_only: true}}}\n"), "/graph")
 	h := rec.Header()
 	if h.Get("Content-Security-Policy-Report-Only") != "" || !strings.Contains(h.Get("Content-Security-Policy"), "'nonce-") {
 		t.Fatalf("headers: %v", h)
@@ -191,13 +196,11 @@ func TestGraphReplacesTheSecurityPolicy(t *testing.T) {
 // Secrets in the configuration must not reach the page in any tab.
 func TestGraphLeaksNoConfiguration(t *testing.T) {
 	const secret = "s3cr3t-value"
-	cfg := graphConfig()
-	cfg.Cache = cache.Config{Enabled: true, Driver: cache.DriverMemory, Prefix: secret}
-	cache.ApplyDefaults(&cfg.Cache)
-	cfg.Database.Password = secret
-	cfg.Database.DSN = "postgres://u:" + secret + "@db.internal.example/x"
-	cfg.Logging.Output.Otel.Endpoint = "http://" + secret + ":4317"
-	body := getGraph(graphServer(t, cfg), "/graph").Body.String()
+	yaml := graphYAML + "cache: {enabled: true, driver: memory, prefix: " + secret + "}\n" +
+		"database: {password: " + secret + ", dsn: 'postgres://u:" + secret + "@db.internal.example/x'}\n" +
+		"logging: {output: {otel: {endpoint: 'http://" + secret + ":4317'}}}\n" +
+		"tracing: {otel: {enabled: false}}\n"
+	body := getGraph(graphServer(t, yaml), "/graph").Body.String()
 	for _, leak := range []string{secret, "db.internal", "postgres://", "4317"} {
 		if strings.Contains(body, leak) {
 			t.Errorf("the page leaks %q", leak)
@@ -209,15 +212,15 @@ func TestGraphLeaksNoConfiguration(t *testing.T) {
 // sample expires, the structure does not change, and no error text is exposed.
 func TestGraphStatusIsDynamic(t *testing.T) {
 	var down atomic.Bool
-	flaky := deps.Module{ID: "flaky", Init: func(context.Context, config.Config, *module.Scope) (module.Hooks, error) {
+	flaky := module.New("flaky", module.Definition{Init: func(context.Context, *module.Scope) (module.Hooks, error) {
 		return module.Hooks{Ready: func(context.Context) error {
 			if down.Load() {
 				return errors.New("dial tcp 10.0.0.9:5432: secret detail")
 			}
 			return nil
 		}}, nil
-	}}
-	s := graphServer(t, graphConfig(), flaky)
+	}})
+	s := graphServer(t, graphYAML, flaky)
 	status := func() string {
 		for _, st := range graphDocument(t, getGraph(s, "/graph").Body.String()).OperationalStatus {
 			if st.ID == "flaky" {
@@ -240,7 +243,7 @@ func TestGraphStatusIsDynamic(t *testing.T) {
 	}
 }
 
-func expireGraphSample(t *testing.T, s *ServerHttp) {
+func expireGraphSample(t *testing.T, s *Server) {
 	t.Helper()
 	s.graph.mu.Lock()
 	defer s.graph.mu.Unlock()
@@ -249,14 +252,14 @@ func expireGraphSample(t *testing.T, s *ServerHttp) {
 
 func TestGraphBurstCostsOneProbe(t *testing.T) {
 	var probes atomic.Int32
-	counted := deps.Module{ID: "counted", Init: func(context.Context, config.Config, *module.Scope) (module.Hooks, error) {
+	counted := module.New("counted", module.Definition{Init: func(context.Context, *module.Scope) (module.Hooks, error) {
 		return module.Hooks{Ready: func(context.Context) error {
 			probes.Add(1)
 			time.Sleep(10 * time.Millisecond)
 			return nil
 		}}, nil
-	}}
-	s := graphServer(t, graphConfig(), counted)
+	}})
+	s := graphServer(t, graphYAML, counted)
 	var wg sync.WaitGroup
 	for range 32 {
 		wg.Go(func() { _ = getGraph(s, "/graph") })
@@ -277,16 +280,17 @@ func TestGraphPanicsOnMisuse(t *testing.T) {
 		}()
 		fn()
 	}
-	cfg := graphConfig()
-	mustPanic("no plan", "deps.NewDeps", func() { NewHTTPServer(&deps.Deps{Config: cfg, Logger: slog.New(slog.DiscardHandler)}) })
+	var cfg testConfig
+	cfg.HTTP.Routes.Graph.Enabled = true
+	mustPanic("no application", "nhttp.Module", func() { NewHTTPServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler)}) })
 	cfg.HTTP.Routes.Health.Enabled, cfg.HTTP.Routes.Health.Path = true, "/graph"
-	keepDefaultCodec(t)
-	d, err := deps.NewDepsE(cfg)
-	if err != nil {
-		t.Fatal(err)
+	mustPanic("collision", "collides", func() {
+		NewHTTPServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler), Status: &fakeStatus{}})
+	})
+	// in an application the collision is a configuration error, before anything starts
+	if _, err := graphServerE(t, "app: {name: g, version: '1'}\nhttp: {routes: {graph: {enabled: true}, health: {enabled: true, path: /graph}}}\n"); err == nil || !strings.Contains(err.Error(), "collides") {
+		t.Fatalf("err = %v", err)
 	}
-	t.Cleanup(func() { _ = d.Shutdown(context.Background()) })
-	mustPanic("collision", "collides", func() { NewHTTPServer(d) })
 }
 
 func TestAcceptsGzip(t *testing.T) {

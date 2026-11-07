@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ams-soft/nforge/config"
 	"github.com/quic-go/quic-go/http3"
 )
 
@@ -84,7 +83,7 @@ func (p *lossyUDP) pump(read func([]byte) (int, error), write func([]byte)) {
 // QUIC retransmits over a lossy path: requests and a large body arrive intact,
 // and the shutdown afterwards stays bounded.
 func TestHTTP3SurvivesPacketLoss(t *testing.T) {
-	h := start(t, func(c *config.ServerConfig) { c.HTTP3.Enabled = true })
+	h := start(t, func(c *ServerConfig) { c.HTTP3.Enabled = true })
 	direct := h.h3Client()
 	get(t, direct, addr("https", h.h3, "/ping")).Body.Close() // the listener is up
 

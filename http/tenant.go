@@ -112,7 +112,7 @@ func SetTenant(resolve TenantResolver) func(stdhttp.Handler) stdhttp.Handler {
 // TenantMiddleware returns Tenant configured from http.tenant (source and
 // header) and http.auth.realm, the same guard used by typed routes with
 // Opts.Tenant, for raw routes and route groups.
-func (s *ServerHttp) TenantMiddleware(opts ...TenantOption) func(stdhttp.Handler) stdhttp.Handler {
+func (s *Server) TenantMiddleware(opts ...TenantOption) func(stdhttp.Handler) stdhttp.Handler {
 	g := s.tenantGuard()
 	for _, opt := range opts {
 		if opt == nil {
@@ -145,8 +145,8 @@ type tenantGuard struct {
 	logger   func() *slog.Logger
 }
 
-func (s *ServerHttp) tenantGuard() *tenantGuard {
-	cfg := s.Deps.Config.HTTP
+func (s *Server) tenantGuard() *tenantGuard {
+	cfg := s.cfg
 	resolve := TenantFromClaim()
 	if cfg.Tenant.Source == "header" {
 		resolve = TenantFromHeader(cfg.Tenant.Header)
@@ -155,7 +155,7 @@ func (s *ServerHttp) tenantGuard() *tenantGuard {
 	if realm == "" {
 		realm = DefaultRealm
 	}
-	return &tenantGuard{resolve: resolve, realm: realm, logger: func() *slog.Logger { return s.Deps.Logger }}
+	return &tenantGuard{resolve: resolve, realm: realm, logger: func() *slog.Logger { return s.logger }}
 }
 
 func (g *tenantGuard) middleware() func(stdhttp.Handler) stdhttp.Handler {

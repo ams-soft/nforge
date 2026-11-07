@@ -122,10 +122,8 @@ func (c *catalog) find(ctx context.Context, id int64) (Product, error) {
 }
 
 // registerRoutes mounts the cache routes. Handlers only use
-// server.Deps.Cache; every error is mapped by sendCacheError.
-func registerRoutes(server *nhttp.ServerHttp, products *catalog) {
-	c := server.Deps.Cache
-	logger := server.Deps.Logger
+// the cache module's Cache; every error is mapped by sendCacheError.
+func registerRoutes(server *nhttp.Server, c *cache.Cache, logger *slog.Logger, products *catalog) {
 	fail := func(w stdhttp.ResponseWriter, req *stdhttp.Request, err error) { sendCacheError(w, req, logger, err) }
 	tag := func(description string) nhttp.Opts { return nhttp.Opts{DocTag: "cache", Description: description} }
 
@@ -248,7 +246,7 @@ func registerRoutes(server *nhttp.ServerHttp, products *catalog) {
 
 // registerRaw mounts the byte routes (plain routes: raw bytes have no
 // envelope and no codec).
-func registerRaw(server *nhttp.ServerHttp, c *cache.Cache, logger *slog.Logger) {
+func registerRaw(server *nhttp.Server, c *cache.Cache, logger *slog.Logger) {
 	r := server.Router()
 
 	// curl -X PUT 'localhost:8080/raw/blob?ttl=1m' --data-binary 'any bytes'

@@ -3,19 +3,19 @@ package telemetry
 import (
 	"context"
 
-	config "github.com/ams-soft/nforge/config"
+	"github.com/ams-soft/nforge/module"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
 
 // NewResource describes the service; it is shared by logs and traces so that
 // both reach Grafana with the same service_name/deployment_environment.
-func NewResource(ctx context.Context, config config.Config) (*resource.Resource, error) {
+func NewResource(ctx context.Context, app module.App) (*resource.Resource, error) {
 	return resource.New(ctx,
 		resource.WithAttributes(
-			semconv.ServiceName(config.App.Name),
-			semconv.ServiceVersion(config.App.Version),
-			semconv.DeploymentEnvironment(config.Env),
+			semconv.ServiceName(app.Name),
+			semconv.ServiceVersion(app.Version),
+			semconv.DeploymentEnvironment(app.Env),
 		),
 		resource.WithHost(), // host.name
 		// No WithProcess(): it includes process.command_args, which may leak secrets passed via flags.

@@ -80,12 +80,12 @@ type TypedRoute struct {
 // documentation includes the prefix.
 type TypedRouter struct {
 	router.Router
-	srv    *ServerHttp
+	srv    *Server
 	prefix string
 }
 
 // Typed returns the TypedRouter at the server root.
-func (s *ServerHttp) Typed() *TypedRouter {
+func (s *Server) Typed() *TypedRouter {
 	return &TypedRouter{Router: s.Router(), srv: s}
 }
 
@@ -93,7 +93,7 @@ func (s *ServerHttp) Typed() *TypedRouter {
 // Handler is ignored). For GET, the Schema fields become the query string.
 // IsPrivate here is documentation only: protect the raw handler with
 // Authenticate yourself.
-func (s *ServerHttp) AddDocRoute(route TypedRoute) {
+func (s *Server) AddDocRoute(route TypedRoute) {
 	route.Method = strings.ToUpper(route.Method)
 	route.Codec = mustFormat(s.registry(), route.Codec)
 	route.Handler = nil
@@ -229,7 +229,7 @@ func (tr *TypedRouter) handle(method, pattern string, request, response any, h s
 
 // routeAuth builds the authenticator of a private route, panicking on any
 // inconsistency so that a route cannot silently end up public.
-func (s *ServerHttp) routeAuth(method, path string, o Opts) (*authenticator, string) {
+func (s *Server) routeAuth(method, path string, o Opts) (*authenticator, string) {
 	fail := func(format string, args ...any) {
 		panic(fmt.Sprintf("nhttp: %s %s: ", method, path) + fmt.Sprintf(format, args...))
 	}
@@ -239,23 +239,23 @@ func (s *ServerHttp) routeAuth(method, path string, o Opts) (*authenticator, str
 		}
 		return nil, ""
 	}
-	cfg := s.Deps.Config
-	if cfg.HTTP.Docs.Enabled && cfg.HTTP.Docs.Auth == "none" {
+	cfg := s.cfg
+	if cfg.Docs.Enabled && cfg.Docs.Auth == "none" {
 		fail("private route with http.docs.auth: none would be documented without security")
 	}
 	profile := o.AuthProfile
 	if profile == "" {
-		profile = cfg.HTTP.Auth.DefaultProfile
+		profile = cfg.Auth.DefaultProfile
 	}
 	if profile == "" {
 		fail("private route without AuthProfile and without http.auth.default_profile")
 	}
-	realm := cfg.HTTP.Auth.Realm
+	realm := cfg.Auth.Realm
 	if realm == "" {
 		realm = DefaultRealm
 	}
-	logger := func() *slog.Logger { return s.Deps.Logger }
-	auth, err := newAuthenticator(s.Deps.JOSE, profile, []AuthOption{WithRealm(realm), WithScopes(o.RequiredScopes...)}, logger)
+	logger := func() *slog.Logger { return s.logger }
+	auth, err := newAuthenticator(s.jose, profile, []AuthOption{WithRealm(realm), WithScopes(o.RequiredScopes...)}, logger)
 	if err != nil {
 		fail("%v", err)
 	}
@@ -264,11 +264,11 @@ func (s *ServerHttp) routeAuth(method, path string, o Opts) (*authenticator, str
 
 // routeTenant builds the tenant guard of a route with Opts.Tenant. The claim
 // source needs a Principal, so it panics on a public route.
-func (s *ServerHttp) routeTenant(method, path string, o Opts) (*tenantGuard, string) {
+func (s *Server) routeTenant(method, path string, o Opts) (*tenantGuard, string) {
 	if !o.Tenant {
 		return nil, ""
 	}
-	src := s.Deps.Config.HTTP.Tenant
+	src := s.cfg.Tenant
 	if src.Source == "header" {
 		return s.tenantGuard(), src.Header
 	}
@@ -286,8 +286,8 @@ func authScopes(a *authenticator) []string {
 }
 
 func (tr *TypedRouter) wrap(format string, reqType, resType reflect.Type, isQuery bool, auth *authenticator, tenant *tenantGuard, h stdhttp.HandlerFunc) stdhttp.HandlerFunc {
-	logger := tr.srv.Deps.Logger
-	strict := tr.srv.Deps.Config.Codec.StrictUnknownFields
+	logger := tr.srv.logger
+	strict := tr.srv.registry().StrictUnknownFields()
 	return func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		if auth != nil {
 			// A private response (or its 401/403) is specific to the caller:

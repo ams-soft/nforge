@@ -24,8 +24,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ams-soft/nforge/config"
-	"github.com/ams-soft/nforge/deps"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 )
@@ -89,40 +87,35 @@ func freePort(t *testing.T) int {
 }
 
 type harness struct {
-	s      *ServerHttp
-	cancel context.CancelFunc
-	done   chan error
-	pool   *x509.CertPool
-	hits   atomic.Int32
-	auxRan atomic.Int32
-	http   int
-	tls    int
-	h3     int
+	s    *Server
+	pool *x509.CertPool
+	hits atomic.Int32
+	http int
+	tls  int
+	h3   int
 
 	certFile, keyFile string
 }
 
 // start builds a server whose config comes from mutate (on top of a TLS pair
-// and fresh ports), registers /ping and runs StartContext.
-func start(t *testing.T, mutate func(c *config.ServerConfig)) *harness {
+// and fresh ports), registers /ping and starts it.
+func start(t *testing.T, mutate func(c *ServerConfig)) *harness {
 	t.Helper()
 	h := newHarness(t, mutate)
 	h.run(t)
 	return h
 }
 
-func newHarness(t *testing.T, mutate func(c *config.ServerConfig)) *harness {
+func newHarness(t *testing.T, mutate func(c *ServerConfig)) *harness {
 	t.Helper()
 	certFile, keyFile, pool := writeCert(t)
 	h := &harness{pool: pool, http: freePort(t), tls: freePort(t), h3: freePort(t), certFile: certFile, keyFile: keyFile}
-	var cfg config.Config
-	cfg.HTTP.Server = config.ServerConfig{Host: "127.0.0.1", Port: h.http}
-	cfg.HTTP.Server.TLS = config.ServerTLSConfig{Port: h.tls, CertFile: certFile, KeyFile: keyFile}
-	cfg.HTTP.Server.HTTP3 = config.ServerHTTP3Config{Port: h.h3}
+	var cfg testConfig
+	cfg.HTTP.Server = ServerConfig{Host: "127.0.0.1", Port: h.http}
+	cfg.HTTP.Server.TLS = ServerTLSConfig{Port: h.tls, CertFile: certFile, KeyFile: keyFile}
+	cfg.HTTP.Server.HTTP3 = ServerHTTP3Config{Port: h.h3}
 	mutate(&cfg.HTTP.Server)
-	d := &deps.Deps{Config: cfg, Logger: slog.New(slog.DiscardHandler)}
-	d.AddShutdown(func(context.Context) error { h.auxRan.Add(1); return nil })
-	h.s = NewHTTPServer(d)
+	h.s = NewHTTPServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler)})
 	h.s.Router().Get("/ping", func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		h.hits.Add(1)
 		_, _ = io.WriteString(w, r.Proto)
@@ -134,25 +127,21 @@ func newHarness(t *testing.T, mutate func(c *config.ServerConfig)) *harness {
 	return h
 }
 
+// run starts the server: Start returns once every listener is bound.
 func (h *harness) run(t *testing.T) {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	h.cancel, h.done = cancel, make(chan error, 1)
-	go func() { h.done <- h.s.StartContext(ctx) }()
+	if err := h.s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { _ = h.stop(t) })
 }
 
+// stop drains and closes every transport; later calls return nil.
 func (h *harness) stop(t *testing.T) error {
 	t.Helper()
-	h.cancel()
-	select {
-	case err := <-h.done:
-		h.done <- err // idempotent for the Cleanup
-		return err
-	case <-time.After(15 * time.Second):
-		t.Fatal("StartContext did not return")
-		return nil
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return h.s.Stop(ctx)
 }
 
 func (h *harness) tcpClient(redirects bool) *stdhttp.Client {
@@ -208,14 +197,14 @@ func refused(port int) bool {
 }
 
 func TestZeroConfigDefaultsTo8080(t *testing.T) {
-	s := NewHTTPServer(&deps.Deps{Logger: slog.New(slog.DiscardHandler)})
+	s := NewHTTPServer(&testDeps{Logger: slog.New(slog.DiscardHandler)})
 	if s.Srv.Addr != ":8080" {
 		t.Fatalf("Addr = %q, want :8080", s.Srv.Addr)
 	}
 }
 
 func TestAllTransportsShareTheHandler(t *testing.T) {
-	h := start(t, func(c *config.ServerConfig) {
+	h := start(t, func(c *ServerConfig) {
 		c.TLS.Enabled, c.HTTP3.Enabled = true, true
 	})
 	if got := body(t, get(t, &stdhttp.Client{Timeout: 5 * time.Second}, addr("http", h.http, "/ping"))); got != "HTTP/1.1" {
@@ -259,7 +248,7 @@ func TestMinTLSVersion(t *testing.T) {
 		client uint16
 		ok     bool
 	}{{"", tls.VersionTLS12, false}, {"1.3", tls.VersionTLS12, false}, {"1.2", tls.VersionTLS12, true}} {
-		h := start(t, func(c *config.ServerConfig) { c.TLS.Enabled, c.TLS.MinVersion = true, tc.min })
+		h := start(t, func(c *ServerConfig) { c.TLS.Enabled, c.TLS.MinVersion = true, tc.min })
 		get(t, h.tcpClient(true), addr("https", h.tls, "/ping")).Body.Close() // wait for startup with a TLS 1.3 client
 		cl := h.tcpClient(true)
 		cl.Transport.(*stdhttp.Transport).TLSClientConfig.MaxVersion = tc.client
@@ -271,7 +260,7 @@ func TestMinTLSVersion(t *testing.T) {
 }
 
 func TestRedirectOnlyListener(t *testing.T) {
-	h := start(t, func(c *config.ServerConfig) {
+	h := start(t, func(c *ServerConfig) {
 		c.TLS.Enabled, c.TLS.RedirectHTTP = true, true
 	})
 	get(t, h.tcpClient(true), addr("https", h.tls, "/ping")).Body.Close()
@@ -316,7 +305,7 @@ func TestRedirectHandlerEdgeCases(t *testing.T) {
 }
 
 func TestHTTPDisabled(t *testing.T) {
-	h := start(t, func(c *config.ServerConfig) { c.TLS.Enabled, c.TLS.DisableInsecureHTTP = true, true })
+	h := start(t, func(c *ServerConfig) { c.TLS.Enabled, c.TLS.DisableInsecureHTTP = true, true })
 	get(t, h.tcpClient(true), addr("https", h.tls, "/ping")).Body.Close()
 	if !refused(h.http) {
 		t.Error("the plain HTTP port is open")
@@ -325,13 +314,13 @@ func TestHTTPDisabled(t *testing.T) {
 
 func TestHTTP3Alone(t *testing.T) {
 	certFile, keyFile, _ := writeCert(t)
-	h := newHarness(t, func(c *config.ServerConfig) {
+	h := newHarness(t, func(c *ServerConfig) {
 		c.TLS.CertFile, c.TLS.KeyFile = "", ""
 		c.TLS.DisableInsecureHTTP = true
-		c.HTTP3 = config.ServerHTTP3Config{Enabled: true, Port: c.HTTP3.Port, SameKeyCertTLS: new(false), CertFile: certFile, KeyFile: keyFile}
+		c.HTTP3 = ServerHTTP3Config{Enabled: true, Port: c.HTTP3.Port, SameKeyCertTLS: new(false), CertFile: certFile, KeyFile: keyFile}
 	})
 	pool := x509.NewCertPool()
-	raw, _ := os.ReadFile(h.s.Deps.Config.HTTP.Server.HTTP3.CertFile)
+	raw, _ := os.ReadFile(h.s.cfg.Server.HTTP3.CertFile)
 	blk, _ := pem.Decode(raw)
 	crt, _ := x509.ParseCertificate(blk.Bytes)
 	pool.AddCert(crt)
@@ -348,7 +337,7 @@ func TestHTTP3Alone(t *testing.T) {
 }
 
 func TestAltSvcDisabled(t *testing.T) {
-	h := start(t, func(c *config.ServerConfig) {
+	h := start(t, func(c *ServerConfig) {
 		c.TLS.Enabled, c.HTTP3.Enabled, c.HTTP3.Advertise = true, true, new(false)
 	})
 	resp := get(t, h.tcpClient(true), addr("https", h.tls, "/ping"))
@@ -360,29 +349,26 @@ func TestAltSvcDisabled(t *testing.T) {
 
 func TestStartupFailuresLeaveNothingRunning(t *testing.T) {
 	t.Run("bad certificate", func(t *testing.T) {
-		h := newHarness(t, func(c *config.ServerConfig) {
+		h := newHarness(t, func(c *ServerConfig) {
 			c.TLS.Enabled = true
 			c.TLS.KeyFile = c.TLS.CertFile // not a key
 		})
-		err := h.s.StartContext(context.Background())
+		err := h.s.Start(context.Background())
 		if err == nil || !strings.Contains(err.Error(), "certificate") {
 			t.Fatalf("err = %v", err)
 		}
 		if !refused(h.http) || !refused(h.tls) {
 			t.Error("a listener stayed open")
 		}
-		if h.auxRan.Load() != 1 {
-			t.Errorf("Deps.Shutdown ran %d times, want 1", h.auxRan.Load())
-		}
 	})
 	t.Run("occupied UDP port", func(t *testing.T) {
-		h := newHarness(t, func(c *config.ServerConfig) { c.TLS.Enabled, c.HTTP3.Enabled = true, true })
+		h := newHarness(t, func(c *ServerConfig) { c.TLS.Enabled, c.HTTP3.Enabled = true, true })
 		pc, err := net.ListenPacket("udp", "127.0.0.1:"+strconv.Itoa(h.h3))
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer pc.Close()
-		if err := h.s.StartContext(context.Background()); err == nil {
+		if err := h.s.Start(context.Background()); err == nil {
 			t.Fatal("expected a bind error")
 		}
 		if !refused(h.http) || !refused(h.tls) {
@@ -390,13 +376,13 @@ func TestStartupFailuresLeaveNothingRunning(t *testing.T) {
 		}
 	})
 	t.Run("occupied HTTP port", func(t *testing.T) {
-		h := newHarness(t, func(c *config.ServerConfig) { c.TLS.Enabled, c.HTTP3.Enabled = true, true })
+		h := newHarness(t, func(c *ServerConfig) { c.TLS.Enabled, c.HTTP3.Enabled = true, true })
 		ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(h.http))
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer ln.Close()
-		if err := h.s.StartContext(context.Background()); err == nil {
+		if err := h.s.Start(context.Background()); err == nil {
 			t.Fatal("expected a bind error")
 		}
 		if !refused(h.tls) {
@@ -410,51 +396,43 @@ func TestStartupFailuresLeaveNothingRunning(t *testing.T) {
 		}
 	})
 	t.Run("invalid config", func(t *testing.T) {
-		h := newHarness(t, func(c *config.ServerConfig) { c.TLS.RedirectHTTP = true })
-		if err := h.s.StartContext(context.Background()); err == nil || !strings.Contains(err.Error(), "redirect_http") {
+		h := newHarness(t, func(c *ServerConfig) { c.TLS.RedirectHTTP = true })
+		if err := h.s.Start(context.Background()); err == nil || !strings.Contains(err.Error(), "redirect_http") {
 			t.Fatalf("err = %v", err)
 		}
 	})
 }
 
-func TestShutdownReleasesListenersBeforeDeps(t *testing.T) {
-	h := newHarness(t, func(c *config.ServerConfig) { c.TLS.Enabled, c.HTTP3.Enabled = true, true })
-	var rebound atomic.Bool
-	h.s.Deps.AddShutdown(func(context.Context) error {
-		// runs first (LIFO): every port must already be free
-		ok := true
-		for _, p := range []int{h.http, h.tls} {
-			ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(p))
-			if err != nil {
-				ok = false
-			} else {
-				ln.Close()
-			}
-		}
-		pc, err := net.ListenPacket("udp", "127.0.0.1:"+strconv.Itoa(h.h3))
-		if err != nil {
-			ok = false
-		} else {
-			pc.Close()
-		}
-		rebound.Store(ok)
-		return nil
-	})
+// Stop returns only once every listener is released, so the module can close
+// what the handlers use right after it.
+func TestStopReleasesEveryListener(t *testing.T) {
+	h := newHarness(t, func(c *ServerConfig) { c.TLS.Enabled, c.HTTP3.Enabled = true, true })
 	h.run(t)
 	get(t, h.h3Client(), addr("https", h.h3, "/ping")).Body.Close()
 	if err := h.stop(t); err != nil {
 		t.Fatalf("shutdown: %v", err)
 	}
-	if !rebound.Load() {
-		t.Error("a listener was still bound when Deps.Shutdown ran")
+	for _, p := range []int{h.http, h.tls} {
+		ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(p))
+		if err != nil {
+			t.Errorf("tcp %d still bound: %v", p, err)
+		} else {
+			ln.Close()
+		}
 	}
-	if h.auxRan.Load() != 1 {
-		t.Errorf("Deps.Shutdown ran %d times", h.auxRan.Load())
+	pc, err := net.ListenPacket("udp", "127.0.0.1:"+strconv.Itoa(h.h3))
+	if err != nil {
+		t.Errorf("udp still bound: %v", err)
+	} else {
+		pc.Close()
+	}
+	if err := h.s.Start(context.Background()); err == nil {
+		t.Fatal("a server starts once")
 	}
 }
 
 func TestConcurrentTrafficAndShutdown(t *testing.T) {
-	h := start(t, func(c *config.ServerConfig) { c.TLS.Enabled, c.HTTP3.Enabled = true, true })
+	h := start(t, func(c *ServerConfig) { c.TLS.Enabled, c.HTTP3.Enabled = true, true })
 	get(t, h.h3Client(), addr("https", h.h3, "/ping")).Body.Close()
 	clients := []struct {
 		c *stdhttp.Client
@@ -488,7 +466,7 @@ func TestConcurrentTrafficAndShutdown(t *testing.T) {
 }
 
 func TestHTTP3StreamTimeout(t *testing.T) {
-	h := newHarness(t, func(c *config.ServerConfig) {
+	h := newHarness(t, func(c *ServerConfig) {
 		c.TLS.Enabled, c.HTTP3.Enabled = true, true
 		c.HTTP3.MaxStreamTimeout = 200 * time.Millisecond
 	})
@@ -531,7 +509,7 @@ func TestQUICIdleTimeoutApplied(t *testing.T) {
 	// does not honor values under ~5 s on an idle connection in practice, so a
 	// smaller one would not prove the setting is applied.)
 	const idle = 6 * time.Second
-	h := start(t, func(c *config.ServerConfig) {
+	h := start(t, func(c *ServerConfig) {
 		c.TLS.Enabled, c.HTTP3.Enabled = true, true
 		c.HTTP3.MaxIdleTimeout = idle
 	})
@@ -577,7 +555,7 @@ func newReq(t *testing.T, target string) *stdhttp.Request {
 // transport, not only to the plain HTTP listener.
 func TestSrvCustomisationReachesEveryTransport(t *testing.T) {
 	var states atomic.Int32
-	h := newHarness(t, func(c *config.ServerConfig) { c.HTTP3.Enabled, c.TLS.Enabled = true, true })
+	h := newHarness(t, func(c *ServerConfig) { c.HTTP3.Enabled, c.TLS.Enabled = true, true })
 	h.s.Srv.MaxHeaderBytes = 2048
 	h.s.Srv.ConnState = func(net.Conn, stdhttp.ConnState) { states.Add(1) }
 	h.run(t)

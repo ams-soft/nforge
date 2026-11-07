@@ -8,14 +8,10 @@ import (
 	"net"
 	stdhttp "net/http"
 	"net/url"
-	"os"
-	"os/signal"
 	"strconv"
 	"sync"
-	"syscall"
 	"time"
 
-	"github.com/ams-soft/nforge/config"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 )
@@ -27,113 +23,93 @@ const (
 	redirectMaxHeaderBytes = 16 << 10
 )
 
-// StartContext serves every enabled transport and blocks until ctx is done or
-// one of them fails (Start passes a context canceled by SIGINT/SIGTERM).
-//
-// Startup is transactional: the certificates are loaded and every TCP and UDP
-// listener is bound before any request is accepted, so a bad certificate or an
-// occupied port leaves nothing running. All transports share the application
-// handler (Srv.Handler); the redirect-only HTTP listener has its own handler
-// and serves no application route or middleware.
-//
-// On the way out, in every case, the servers stop accepting and drain for up
-// to 10 s (HTTP/3 sends GOAWAY and then closes its connections), and then
-// Deps.Shutdown runs exactly once. ServerHttp.ShutdownFunc is not called.
-func (s *ServerHttp) StartContext(ctx context.Context) error {
-	cfg := s.Deps.Config.HTTP.Server
-	config.ApplyServerDefaults(&cfg)
+// Start binds every enabled transport (plain HTTP, HTTPS, HTTP/3) and serves
+// them in the background; it returns once they are all bound, so the
+// application is reachable when it returns. Start is transactional: the
+// certificates are loaded and every TCP and UDP listener is bound before any
+// request is accepted, so a bad certificate or an occupied port leaves
+// nothing running. All transports share the application handler (Srv.Handler);
+// the redirect-only HTTP listener has its own handler and serves no
+// application route or middleware. A listener that fails later is reported to
+// Dependencies.Failed (the module turns it into an application failure).
+// Start does not handle signals: app.Run does.
+func (s *Server) Start(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.run != nil {
+		return errors.New("nhttp: server already started")
+	}
+	cfg := s.cfg.Server
+	ApplyServerDefaults(&cfg)
 	run, err := s.prepare(ctx, cfg)
 	if err != nil {
-		s.Deps.Logger.ErrorContext(ctx, "[HTTPModule] Failed to start server", "err", err)
-		return errors.Join(err, s.shutdownDeps())
+		s.logger.ErrorContext(ctx, "[HTTPModule] Failed to start server", "err", err)
+		return err
 	}
-
-	stopReload := s.reloadOnSIGHUP(ctx, run)
-	defer stopReload()
-
-	errCh := make(chan error, len(run.servers))
-	var wg sync.WaitGroup
+	s.run = run
 	for _, srv := range run.servers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			s.Deps.Logger.InfoContext(ctx, "[HTTPModule] Server running", "transport", srv.name, "addr", srv.addr)
+		s.wg.Go(func() {
+			s.logger.InfoContext(ctx, "[HTTPModule] Server running", "transport", srv.name, "addr", srv.addr)
 			if err := srv.serve(); err != nil {
-				errCh <- fmt.Errorf("%s: %w", srv.name, err)
+				err = fmt.Errorf("nhttp: %s: %w", srv.name, err)
+				s.logger.ErrorContext(ctx, "[HTTPModule] Server failed", "err", err)
+				if s.failed != nil {
+					s.failed(err)
+				}
 			}
-		}()
+		})
 	}
-
-	var serveErr error
-	select {
-	case serveErr = <-errCh:
-		s.Deps.Logger.ErrorContext(ctx, "[HTTPModule] Server failed", "err", serveErr)
-	case <-ctx.Done():
-		s.Deps.Logger.InfoContext(ctx, "[HTTPModule] Shutting down server...")
-	}
-
-	sctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer cancel()
-	stopErr := run.shutdown(sctx)
-	wg.Wait()
-	if stopErr != nil {
-		s.Deps.Logger.ErrorContext(ctx, "[HTTPModule] Forced shutdown", "err", stopErr)
-	} else if serveErr == nil {
-		s.Deps.Logger.InfoContext(ctx, "[HTTPModule] Server stopped successfully")
-	}
-
-	// Only after every listener is released: close the cache, JOSE, database,
-	// tracing and logs (LIFO). Logs from here on may be lost.
-	return errors.Join(serveErr, stopErr, s.shutdownDeps())
+	return nil
 }
 
-// reloadOnSIGHUP reloads the TLS certificates and the JOSE keys when the
-// process receives SIGHUP, the conventional "re-read your credentials" signal,
-// so a rotation needs no restart and drops no connection. A failed reload
-// keeps what was loaded before. The returned func stops the listener.
-func (s *ServerHttp) reloadOnSIGHUP(ctx context.Context, run *running) (stop func()) {
-	hup := make(chan os.Signal, 1)
-	signal.Notify(hup, syscall.SIGHUP)
-	done := make(chan struct{})
-	go func() {
-		for {
-			select {
-			case <-hup:
-				s.reloadCredentials(ctx, run)
-			case <-done:
-				return
-			}
+// Stop stops every transport: they stop accepting, drain the requests in
+// flight for up to 10 s or until ctx ends (HTTP/3 sends GOAWAY and then closes
+// its connections), are then closed, and Stop waits for the serve loops. Only
+// the first call does anything; a server never started stops at once.
+func (s *Server) Stop(ctx context.Context) error {
+	var err error
+	s.stop.Do(func() {
+		s.mu.Lock()
+		run := s.run
+		s.mu.Unlock()
+		if run == nil {
+			return
 		}
-	}()
-	return func() { signal.Stop(hup); close(done) }
+		s.logger.InfoContext(ctx, "[HTTPModule] Shutting down server...")
+		sctx, cancel := context.WithTimeout(ctx, shutdownTimeout)
+		defer cancel()
+		err = run.shutdown(sctx)
+		s.wg.Wait()
+		if err != nil {
+			s.logger.ErrorContext(ctx, "[HTTPModule] Forced shutdown", "err", err)
+			return
+		}
+		s.logger.InfoContext(ctx, "[HTTPModule] Server stopped successfully")
+	})
+	return err
 }
 
-// reloadCredentials re-reads the certificate files and the JOSE key files.
-// Errors are logged without paths or key material.
-func (s *ServerHttp) reloadCredentials(ctx context.Context, run *running) {
-	log := s.Deps.Logger
+// Reload re-reads the TLS certificate files now (the module's Reload hook, run
+// on SIGHUP by app.Run), so a rotation needs no restart and drops no
+// connection. A pair that fails to load keeps the previous certificate; the
+// errors carry no path or key material.
+func (s *Server) Reload(ctx context.Context) error {
+	s.mu.Lock()
+	run := s.run
+	s.mu.Unlock()
+	if run == nil {
+		return nil
+	}
+	var errs []error
 	for _, rl := range run.reloaders {
 		if err := rl.Reload(); err != nil {
-			log.WarnContext(ctx, "[HTTPModule] TLS certificate reload failed; keeping the previous one", "error", err)
+			s.logger.WarnContext(ctx, "[HTTPModule] TLS certificate reload failed; keeping the previous one", "error", err)
+			errs = append(errs, err)
 			continue
 		}
-		log.InfoContext(ctx, "[HTTPModule] TLS certificate reloaded")
+		s.logger.InfoContext(ctx, "[HTTPModule] TLS certificate reloaded")
 	}
-	if s.Deps.JOSE != nil {
-		rctx, cancel := context.WithTimeout(ctx, shutdownTimeout)
-		defer cancel()
-		if err := s.Deps.ReloadJOSE(rctx); err != nil {
-			log.WarnContext(ctx, "[HTTPModule] JOSE key reload failed; keeping the previous keys", "error", err)
-		} else {
-			log.InfoContext(ctx, "[HTTPModule] JOSE keys reloaded")
-		}
-	}
-}
-
-func (s *ServerHttp) shutdownDeps() error {
-	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer cancel()
-	return s.Deps.Shutdown(ctx)
+	return errors.Join(errs...)
 }
 
 // transport is one bound listener and how to serve and stop it.
@@ -183,8 +159,8 @@ func (c closers) closeAll() error {
 
 // prepare validates the configuration, loads the certificates and binds every
 // listener. On any error nothing stays open.
-func (s *ServerHttp) prepare(ctx context.Context, cfg config.ServerConfig) (_ *running, err error) {
-	if err := config.ValidateServer(cfg); err != nil {
+func (s *Server) prepare(ctx context.Context, cfg ServerConfig) (_ *running, err error) {
+	if err := ValidateServer(cfg); err != nil {
 		return nil, fmt.Errorf("nhttp: %w", err)
 	}
 	var (
@@ -202,7 +178,7 @@ func (s *ServerHttp) prepare(ctx context.Context, cfg config.ServerConfig) (_ *r
 	}()
 
 	warnReload := func(err error) {
-		s.Deps.Logger.WarnContext(ctx, "[HTTPModule] TLS certificate reload failed; keeping the previous one", "error", err)
+		s.logger.WarnContext(ctx, "[HTTPModule] TLS certificate reload failed; keeping the previous one", "error", err)
 	}
 	if cfg.TLS.Enabled {
 		c, err := newCertReloader(cfg.TLS.CertFile, cfg.TLS.KeyFile, warnReload)
@@ -243,7 +219,7 @@ func (s *ServerHttp) prepare(ctx context.Context, cfg config.ServerConfig) (_ *r
 			Handler:        streamTimeout(app, cfg.HTTP3.MaxStreamTimeout),
 			IdleTimeout:    cfg.IdleTimeout,
 			MaxHeaderBytes: s.Srv.MaxHeaderBytes,
-			Logger:         s.Deps.Logger,
+			Logger:         s.logger,
 		}
 		run.servers = append(run.servers, transport{
 			name: "http3", addr: h3Addr,
@@ -304,7 +280,7 @@ func (s *ServerHttp) prepare(ctx context.Context, cfg config.ServerConfig) (_ *r
 // exported Srv before Start (header limit, error log, connection hooks,
 // protocol and HTTP/2 settings) are carried over one by one: the application
 // configures Srv once and every transport behaves the same.
-func (s *ServerHttp) newTCPServer(cfg config.ServerConfig, addr string, h stdhttp.Handler) *stdhttp.Server {
+func (s *Server) newTCPServer(cfg ServerConfig, addr string, h stdhttp.Handler) *stdhttp.Server {
 	return &stdhttp.Server{
 		Addr:              addr,
 		Handler:           h,
@@ -348,7 +324,7 @@ func ignoreClosed(err error) error {
 }
 
 func minTLS(v string) uint16 {
-	if v == config.TLSVersion12 {
+	if v == TLSVersion12 {
 		return tls.VersionTLS12
 	}
 	return tls.VersionTLS13

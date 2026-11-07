@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"log/slog"
+	"net"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -12,17 +15,36 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ams-soft/nforge/app"
+	"github.com/ams-soft/nforge/cache"
 	"github.com/ams-soft/nforge/config"
-	"github.com/ams-soft/nforge/deps"
 	nhttp "github.com/ams-soft/nforge/http"
 )
 
-// newTestServer loads the real config.yaml (quiet) with extra env-file
-// lines and returns the server and its catalog.
-func newTestServer(t *testing.T, env string) (*nhttp.ServerHttp, *catalog) {
+// testServer is the example's server with its cache.
+type testServer struct {
+	*nhttp.Server
+	cache *cache.Cache
+}
+
+// freePort returns a TCP port that was free a moment ago.
+func freePort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// newTestServer starts the example on the real config.yaml (quiet, on a free
+// port) with extra env-file lines and returns the server and its catalog; the
+// tests drive Srv.Handler without the network.
+func newTestServer(t *testing.T, env string) (*testServer, *catalog) {
 	t.Helper()
 	file := filepath.Join(t.TempDir(), "test.env")
-	content := "LOGGING_OUTPUT_TERMINAL_ENABLED=false\nHTTP_SERVER_HEADER=false\n" + env
+	content := fmt.Sprintf("LOGGING_OUTPUT_TERMINAL_ENABLED=false\nHTTP_SERVER_HEADER=false\nHTTP_SERVER_PORT=%d\n", freePort(t)) + env
 	if err := os.WriteFile(file, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -30,16 +52,24 @@ func newTestServer(t *testing.T, env string) (*nhttp.ServerHttp, *catalog) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dps := deps.NewDeps(*cfg)
-	t.Cleanup(func() { _ = dps.Shutdown(context.Background()) })
 	products := newCatalog()
-	return newServer(dps, products), products
+	a, err := newApp(cfg, products, app.WithLogger(slog.New(slog.DiscardHandler)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.Shutdown(context.Background()) })
+	s, _ := app.Value(a, nhttp.Capability)
+	c, _ := app.Value(a, cache.Capability)
+	return &testServer{Server: s, cache: c}, products
 }
 
-func memoryServer(t *testing.T) (*nhttp.ServerHttp, *catalog) {
+func memoryServer(t *testing.T) (*testServer, *catalog) {
 	t.Helper()
 	s, c := newTestServer(t, "CACHE_DRIVER=memory\n")
-	if s.Deps.Cache.Driver() != "memory" {
+	if s.cache.Driver() != "memory" {
 		t.Fatal("the test env selects the memory driver")
 	}
 	return s, c
@@ -51,7 +81,7 @@ type result struct {
 	raw    string
 }
 
-func call(t *testing.T, s *nhttp.ServerHttp, method, path, body string) result {
+func call(t *testing.T, s *testServer, method, path, body string) result {
 	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	if body != "" && !strings.HasPrefix(path, "/raw/") {
@@ -69,7 +99,7 @@ func call(t *testing.T, s *nhttp.ServerHttp, method, path, body string) result {
 
 // exerciseObjects covers Set/Get/TTL/Expire/SetIfAbsent/Delete/Increment and
 // the raw view of an object; it runs on both drivers.
-func exerciseObjects(t *testing.T, s *nhttp.ServerHttp) {
+func exerciseObjects(t *testing.T, s *testServer) {
 	if r := call(t, s, "GET", "/api/v1/items/greeting", ""); r.status != 404 {
 		t.Fatalf("miss: %d %s", r.status, r.raw)
 	}
@@ -139,7 +169,7 @@ func exerciseObjects(t *testing.T, s *nhttp.ServerHttp) {
 
 // exerciseGetOrLoad shows that concurrent misses share one load and that
 // loader errors are not cached.
-func exerciseGetOrLoad(t *testing.T, s *nhttp.ServerHttp, products *catalog) {
+func exerciseGetOrLoad(t *testing.T, s *testServer, products *catalog) {
 	products.delay = 200 * time.Millisecond
 	var wg sync.WaitGroup
 	for range 10 {
@@ -179,7 +209,7 @@ func TestGetOrLoadSharesOneLoad(t *testing.T) {
 func TestReadinessReportsCache(t *testing.T) {
 	s, _ := memoryServer(t)
 	r := call(t, s, "GET", "/ready", "")
-	if c, _ := r.data["cache"].(map[string]any); r.status != 200 || c["health"] != true {
+	if m, _ := r.data["modules"].(map[string]any); r.status != 200 || m["cache"] != "ready" {
 		t.Fatalf("ready: %d %s", r.status, r.raw)
 	}
 }

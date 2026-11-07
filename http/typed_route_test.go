@@ -12,15 +12,14 @@ import (
 
 	router "github.com/ams-soft/go-ams-router"
 	"github.com/ams-soft/nforge/codec"
-	"github.com/ams-soft/nforge/deps"
 )
 
-func newTypedServer() (*ServerHttp, *TypedRouter) {
-	s := &ServerHttp{
-		Deps: &deps.Deps{Logger: slog.New(slog.DiscardHandler), JOSE: sharedJOSE()},
-		Srv:  &stdhttp.Server{Handler: router.NewRouter()},
+func newTypedServer() (*Server, *TypedRouter) {
+	s := &Server{
+		logger: slog.New(slog.DiscardHandler), jose: sharedJOSE(),
+		Srv: &stdhttp.Server{Handler: router.NewRouter()},
 	}
-	s.Deps.Config.HTTP.Auth.DefaultProfile = "access"
+	s.cfg.Auth.DefaultProfile = "access"
 	return s, s.Typed()
 }
 
@@ -46,7 +45,7 @@ type envelopeBody struct {
 	} `json:"error"`
 }
 
-func do(t *testing.T, s *ServerHttp, method, target, contentType, body string) (*httptest.ResponseRecorder, envelopeBody) {
+func do(t *testing.T, s *Server, method, target, contentType, body string) (*httptest.ResponseRecorder, envelopeBody) {
 	t.Helper()
 	req := httptest.NewRequest(method, target, strings.NewReader(body))
 	if contentType != "" {
@@ -218,7 +217,11 @@ func TestTGet(t *testing.T) {
 
 	// The router refuses routes once it has served, so strict mode gets its own server.
 	s, _ = newTypedServer()
-	s.Deps.Config.Codec.StrictUnknownFields = true
+	strict, err := codec.New(codec.Config{StrictUnknownFields: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.codec = strict
 	tr = s.Typed()
 	tr.TGet("/strict", listUsers{}, nil, func(w stdhttp.ResponseWriter, r *stdhttp.Request) {})
 	if rec, _ := do(t, s, "GET", "/strict?limit=1&unknown=1", "", ""); rec.Code != 400 {

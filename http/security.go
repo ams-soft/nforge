@@ -6,12 +6,11 @@ import (
 	"time"
 
 	"github.com/ams-soft/go-ams-router/middleware"
-	"github.com/ams-soft/nforge/config"
 )
 
 // securityOptions translates http.security into the router's options. The
 // config was validated at load, so middleware.Security does not panic.
-func securityOptions(sec config.SecurityConfig) middleware.SecurityOptions {
+func securityOptions(sec SecurityConfig) middleware.SecurityOptions {
 	o := middleware.SecurityOptions{
 		ContentSecurityPolicy: middleware.CSPOptions{
 			DisableDefaults: sec.CSP.DisableDefaults,
@@ -74,7 +73,7 @@ func securityOptions(sec config.SecurityConfig) middleware.SecurityOptions {
 
 // corsOptions translates http.cors into the router's options (patterns were
 // compiled once at load, so MustCompile cannot fail).
-func corsOptions(c config.CORSConfig) middleware.CORSOptions {
+func corsOptions(c CORSConfig) middleware.CORSOptions {
 	o := middleware.CORSOptions{
 		Origin:               c.Origins,
 		Methods:              c.Methods,
@@ -92,7 +91,7 @@ func corsOptions(c config.CORSConfig) middleware.CORSOptions {
 
 // docsCSPHeader returns the CSP header name http.security uses, or "" when
 // it sends none; the docs page then replaces that header with its own policy.
-func docsCSPHeader(sec config.SecurityConfig) string {
+func docsCSPHeader(sec SecurityConfig) string {
 	if !sec.IsEnabled() {
 		return ""
 	}

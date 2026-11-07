@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	router "github.com/ams-soft/go-ams-router"
-	"github.com/ams-soft/nforge/deps"
 )
 
 type handlerItem struct {
@@ -29,9 +28,9 @@ func (i *handlerItem) Validate() error {
 	return nil
 }
 
-func handlerServer(t *testing.T, logs *bytes.Buffer) *ServerHttp {
+func handlerServer(t *testing.T, logs *bytes.Buffer) *Server {
 	t.Helper()
-	s := NewHTTPServer(&deps.Deps{Logger: slog.New(slog.NewTextHandler(logs, nil))})
+	s := NewHTTPServer(&testDeps{Logger: slog.New(slog.NewTextHandler(logs, nil))})
 	api := s.Typed()
 	Get(api, "/items", func(_ *stdhttp.Request, q handlerQuery) ([]handlerItem, error) {
 		return make([]handlerItem, q.Limit), nil
@@ -60,7 +59,7 @@ func handlerServer(t *testing.T, logs *bytes.Buffer) *ServerHttp {
 	return s
 }
 
-func handlerCall(s *ServerHttp, method, path, body string) *httptest.ResponseRecorder {
+func handlerCall(s *Server, method, path, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequestWithContext(context.Background(), method, path, strings.NewReader(body))
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
@@ -126,6 +125,6 @@ func TestGenericHandlerRejectsANonSuccessStatus(t *testing.T) {
 			t.Fatalf("panic = %q", r)
 		}
 	}()
-	s := NewHTTPServer(&deps.Deps{})
+	s := NewHTTPServer(&testDeps{})
 	Post(s.Typed(), "/x", func(*stdhttp.Request, Empty) (Empty, error) { return Empty{}, nil }, Opts{Status: 404})
 }

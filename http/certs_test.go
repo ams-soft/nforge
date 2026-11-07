@@ -1,6 +1,7 @@
 package nhttp
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -12,14 +13,11 @@ import (
 	"net"
 	stdhttp "net/http"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strconv"
-	"syscall"
 	"testing"
 	"time"
 
-	"github.com/ams-soft/nforge/config"
 	"github.com/quic-go/quic-go/http3"
 )
 
@@ -152,16 +150,11 @@ func TestNewCertReloaderFailsOnABadPair(t *testing.T) {
 	}
 }
 
-// End to end: SIGHUP makes the running server serve a rotated certificate on
-// new connections, over HTTPS and HTTP/3, without a restart.
-func TestSIGHUPReloadsTheCertificate(t *testing.T) {
-	// Register for SIGHUP first so a signal can never hit the default action
-	// (terminating the test process) even before the server's handler is up.
-	guard := make(chan os.Signal, 4)
-	signal.Notify(guard, syscall.SIGHUP)
-	defer signal.Stop(guard)
-
-	h := start(t, func(c *config.ServerConfig) { c.HTTP3.Enabled, c.TLS.Enabled = true, true })
+// End to end: Reload (the hook app.Run calls on SIGHUP) makes the running
+// server serve a rotated certificate on new connections, over HTTPS and
+// HTTP/3, without a restart. The server itself handles no signal.
+func TestReloadServesTheRotatedCertificate(t *testing.T) {
+	h := start(t, func(c *ServerConfig) { c.HTTP3.Enabled, c.TLS.Enabled = true, true })
 	served := func(tcp bool) string {
 		t.Helper()
 		var cert *x509.Certificate
@@ -199,15 +192,11 @@ func TestSIGHUPReloadsTheCertificate(t *testing.T) {
 	}
 
 	writePair(t, h.certFile, h.keyFile, "rotated")
-	if err := syscall.Kill(os.Getpid(), syscall.SIGHUP); err != nil {
+	if err := h.s.Reload(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for served(true) != "rotated" {
-		if time.Now().After(deadline) {
-			t.Fatal("SIGHUP did not reload the HTTPS certificate")
-		}
-		time.Sleep(20 * time.Millisecond)
+	if got := served(true); got != "rotated" {
+		t.Fatalf("HTTPS serves %q after Reload", got)
 	}
 	if got := served(false); got != "rotated" {
 		t.Fatalf("HTTP/3 serves %q, want rotated (it shares the pair)", got)
