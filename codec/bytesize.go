@@ -23,11 +23,11 @@ const (
 	GB          = 1024 * MB
 )
 
-var byteUnits = map[string]ByteSize{
-	"": B, "b": B,
-	"k": KB, "kb": KB, "kib": KB,
-	"m": MB, "mb": MB, "mib": MB,
-	"g": GB, "gb": GB, "gib": GB,
+var byteUnits = map[string]uint64{
+	"": 1, "b": 1,
+	"k": 1 << 10, "kb": 1 << 10, "kib": 1 << 10,
+	"m": 1 << 20, "mb": 1 << 20, "mib": 1 << 20,
+	"g": 1 << 30, "gb": 1 << 30, "gib": 1 << 30,
 }
 
 // ParseByteSize parses a size such as "1mb" or "1048576".
@@ -49,7 +49,7 @@ func ParseByteSize(s string) (ByteSize, error) {
 		if err != nil {
 			return 0, fmt.Errorf("invalid size %q: too large", s)
 		}
-		hi, lo := bits.Mul64(n, uint64(mult))
+		hi, lo := bits.Mul64(n, mult)
 		if hi != 0 || lo > math.MaxInt64 {
 			return 0, fmt.Errorf("invalid size %q: too large", s)
 		}

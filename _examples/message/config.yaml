@@ -1,0 +1,20 @@
+env: local
+app: {name: message-example, version: 1.0.0}
+codec:
+  formats: {enabled: [json]}
+message:
+  enabled: true
+  driver: rabbitmq
+  namespace: nforge-example
+  payload_format: json
+  rabbitmq:
+    url: ${RABBITMQ_URL:-amqp://nforge:nforge@localhost:5672/}
+    connection_name: message-example
+  publisher: {max_payload_bytes: 1mb}
+  consumer: {concurrency: 1, prefetch: 0, ack_mode: automatic}
+  queues:
+    - {name: notifications}
+    - {name: payments, max_priority: 10}
+    - {name: audit, type: quorum, dead_letter: true}
+    - {name: webhooks, dead_letter: true}
+    - {name: emails, dead_letter: true, retry: {delay: 10s, max_attempts: 3}}

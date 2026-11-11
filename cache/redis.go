@@ -131,6 +131,7 @@ func (b *redisBackend) read(ctx context.Context, fn func(context.Context) error)
 		if attempt >= b.retries || !retryable(cerr) || ctx.Err() != nil {
 			return cerr
 		}
+		// #nosec G404 -- jitter desynchronizes retries; it is not a secret or security token.
 		wait := backoff/2 + rand.N(backoff/2+1) //nolint:gosec // retry jitter, not a secret
 		if dl, ok := ctx.Deadline(); ok && time.Until(dl) <= wait {
 			return cerr // no time left for another attempt

@@ -45,7 +45,23 @@ func (q *ListQuery) Validate() error {
 	if q.Page < 1 {
 		return errors.New("page must be greater than 0")
 	}
+	if _, _, ok := pagination(*q); !ok {
+		return errors.New("page is too large")
+	}
 	return nil
+}
+
+func pagination(q ListQuery) (limit, offset uint64, ok bool) {
+	if q.Limit < 1 || q.Limit > 100 || q.Page < 1 {
+		return 0, 0, false
+	}
+	pageOffset := q.Page - 1
+	maxInt := int(^uint(0) >> 1)
+	if pageOffset > maxInt/q.Limit {
+		return 0, 0, false
+	}
+	// #nosec G115 -- positivity and multiplication bounds are checked above.
+	return uint64(q.Limit), uint64(pageOffset * q.Limit), true
 }
 
 // In a real application the schema comes from a migration tool; here it is
@@ -127,13 +143,18 @@ func registerUserRoutes(api *nhttp.TypedRouter, db *database.DB, logger *slog.Lo
 	// curl 'localhost:8080/api/v1/users?limit=10&active=true&name=an'
 	api.TGet("/users", ListQuery{}, []User{}, func(w stdhttp.ResponseWriter, req *stdhttp.Request) {
 		q := nhttp.Query[ListQuery](req)
+		limit, offset, ok := pagination(q)
+		if !ok {
+			_ = nhttp.SendJSON(w, req, stdhttp.StatusBadRequest, "invalid pagination")
+			return
+		}
 
 		builder := db.Query.
 			Select(userColumns...).
 			From("users").
 			OrderBy("id").
-			Limit(uint64(q.Limit)).
-			Offset(uint64((q.Page - 1) * q.Limit))
+			Limit(limit).
+			Offset(offset)
 		// optional filters: each Where is ANDed, values become $N
 		if q.Name != "" {
 			builder = builder.Where(sq.ILike{"name": "%" + q.Name + "%"})

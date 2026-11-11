@@ -1,6 +1,6 @@
 # nForge
 
-> nForge (Nano Forge, module `github.com/ams-soft/nforge`, by AMS Software e Consultoria LTDA, MIT) is a small, opinionated Go 1.27+ application runtime, built first for HTTP APIs: explicitly registered modules wired by typed capabilities and orchestrated by package `app` (HTTP is optional; worker-only and mixed applications share one lifecycle). One `config.yaml` drives layered configuration, `log/slog` logging (terminal and OpenTelemetry), OpenTelemetry tracing with `request_id == trace_id`, a JSON/CBOR/XML codec driven by one struct, an HTTP server on `github.com/ams-soft/go-ams-router` with a standard response envelope, typed routes validated before and after the handler and generated OpenAPI 3.1 docs, PostgreSQL (pgx + Squirrel) with multi-tenancy, JOSE/JWT bearer authentication, and a Redis or in-memory cache. Standalone packages add cryptographic primitives (`ncrypto`) a money helper (`safecalc`) and a QR Code helper (`qrcode`).
+> nForge (Nano Forge, module `github.com/ams-soft/nforge`, by AMS Software e Consultoria LTDA, MIT) is a small, opinionated Go 1.27+ application runtime, built first for HTTP APIs: explicitly registered modules wired by typed capabilities and orchestrated by package `app` (HTTP is optional; worker-only and mixed applications share one lifecycle). One `config.yaml` drives layered configuration, `log/slog` logging (terminal and OpenTelemetry), OpenTelemetry tracing with `request_id == trace_id`, a JSON/CBOR/XML codec driven by one struct, an HTTP server on `github.com/ams-soft/go-ams-router` with a standard response envelope, typed routes validated before and after the handler, generated OpenAPI 3.1 docs and static files / single-page applications served from a directory or `embed.FS`, PostgreSQL (pgx + Squirrel) with multi-tenancy, JOSE/JWT bearer authentication, Redis or in-memory cache, and RabbitMQ messaging with confirmed publishing and ingress consumers. Standalone packages add cryptographic primitives (`ncrypto`) a money helper (`safecalc`) and a QR Code helper (`qrcode`).
 
 Important notes for code generation:
 
@@ -9,8 +9,10 @@ Important notes for code generation:
 - Build an application with `app.New(cfg, app.Modules(logs.Module(), codec.Module(), database.Module(), nhttp.Module(), myModule))` and `a.Run(ctx)`. Registration is explicit: a YAML section of an unregistered module is an error, and `enabled: false` only disables a registered one.
 - Application code is a module: `module.New("api", module.Definition{Requires: []module.Handle{nhttp.Capability, database.Capability}, Init: ...})`; read declared capabilities with `module.Require`/`module.Lookup` (undeclared access panics). A disabled module publishes nothing: `Lookup` returns `ok == false`, `Requires` fails `app.New`.
 - `Init` allocates and registers (routes, handlers) but never accepts work; `Start` returns once active. Stop hooks release only the module's own resources; HTTP and consumers are ingress modules: started last, drained first.
+- RabbitMQ uses `message.Module()` for the connection and `message.Consumers()` for ingress; delivery is at-least-once, queue type/arguments need manual migration, and unacknowledged counts require the Management API (not used by nForge).
 - Register every route and middleware (`Server.Use`) in an Init, **before** the server serves its first request; go-ams-router panics afterwards.
 - Programmer errors detected at startup or route registration panic; request-time errors are returned. Startup failures of enabled modules are returned by `Start`/`Run` after a full rollback; only `main` calls `os.Exit`.
+- Serve a built frontend with `server.SPA("/", dir, nhttp.WithSPAReserved("/api"))` and public files with `server.Static("/assets", dir)` (or the `FS` variants for `embed.FS`) in an Init: they return errors, the root SPA is only the router's last resort (it never shadows a route) and answers just GET/HEAD navigations with `Accept: text/html`; reserve every API prefix.
 - Prefer the generic route functions: `nhttp.Post(api, "/users", func(r *http.Request, u User) (User, error) {...})`, returning `nhttp.Error(404, "...")` for client errors. `TGet`/`TPost` remain for handlers that write the response themselves.
 - Everything in the codebase (comments, logs, errors, API texts, tests) is English.
 - Build with Go 1.27.2+ (the repository pins `toolchain go1.27.3`); lint with golangci-lint v2.15.0+ (older releases cannot read go1.27.2 export data) and the repo's `.golangci.yml`.
@@ -31,23 +33,26 @@ Important notes for code generation:
 - [logs/](logs): `log/slog` setup (tint terminal + OTel), context handler injecting `request_id`, the logger module.
 - [telemetry/](telemetry): OTel resource, TracerProvider, trace-ID generator for `request_id == trace_id`, the tracing module.
 - [codec/](codec): JSON/CBOR/XML `Registry`, struct tags, strict mode, required fields, limits, typed errors, `ByteSize`, the codec module.
-- [http/](http): package `nhttp`: the HTTP module and `Server`, response envelope, typed routes, query strings, OpenAPI docs, auth, tenancy, security headers, CORS, health/readiness, JWKS.
+- [http/](http): package `nhttp`: the HTTP module and `Server`, response envelope, typed routes, query strings, OpenAPI docs, auth, tenancy, security headers, CORS, health/readiness, JWKS, static files and SPAs (`Static`, `SPA`, `StaticFS`, `SPAFS`).
 - [database/](database): PostgreSQL `DB` (pgx pool + Squirrel), transactions, multi-tenancy (RLS or column), the database module.
 - [jose/](jose): JWS/JWE/JWT `Service` with configured profiles, keys, JWKS, reload/rotation, the jose module.
 - [cache/](cache): `*cache.Cache` on Redis or a bounded memory LRU, `GetOrLoad`, tenant namespaces, the cache module.
+- [message/](message): RabbitMQ queues, confirmed publishing, concurrent ACK/NACK consumers, DLQ/retry, reprocessing and lifecycle modules.
 - [crypto/](crypto): package `ncrypto`: XChaCha20-Poly1305, AES-256-GCM, HMAC-SHA256, bcrypt/Argon2id, BLAKE3/SHA-256, secure random, ULID.
 - [helper/safecalc/](helper/safecalc): money as integer cents with exact formatting.
 - [helper/qrcode/](helper/qrcode): QR Code encoder and PNG/SVG/Base64/Data URI renderers with rounded styles and a safe logo.
 
 ## Examples
 
-- [_examples/basic](_examples/basic): opt-in HTTPS + HTTP/3 + 308 redirect (`config.https-http3.yaml`, local-only certificate), bootstrap, plain and typed routes in three formats, typed query strings, docs, health/readiness, a global middleware, a minimal JWT login, memory cache, PostgreSQL notes, an `ncrypto` demo and a `safecalc` test.
+- [_examples/basic](_examples/basic): terminal logging, HTTP, and in-memory typed CRUD.
+- [_examples/complete](_examples/complete): opt-in HTTPS + HTTP/3 + 308 redirect (`config.https-http3.yaml`, local-only certificate), plain and typed routes in three formats, typed query strings, docs, health/readiness, JWT login, memory cache, PostgreSQL notes, RabbitMQ, crypto and observability.
 - [_examples/jose](_examples/jose): JWT login, bearer authentication, scopes, `Principal`, nested tokens, JWS/JWE, JWKS, key files (`cmd/keygen`).
 - [_examples/cache](_examples/cache): the cache module on Redis or memory: objects, TTL, NX, counters, raw bytes, `GetOrLoad`, CBOR, outages.
 - [_examples/database](_examples/database): Squirrel + pgx repositories, transactions, error mapping, tenancy in column or RLS mode.
+- [_examples/message](_examples/message): worker-only RabbitMQ producer, consumers and DLQ reprocessing.
 - [_examples/static](_examples/static): an API, a built SPA and public files on one server (`Server.Static`/`SPA`), from directories or `embed.FS`.
 - [_examples/qrcode](_examples/qrcode): `helper/qrcode` gallery (PNG, SVG, Base64, Data URI, logo) and a QR Code printed in the terminal.
-- [_examples/docker-compose.yml](_examples/docker-compose.yml): PostgreSQL 18, Redis 8, OTel Collector, Tempo, Loki, Grafana.
+- Each example keeps its environment examples locally; examples with Docker dependencies have a per-folder `docker-compose.yml` (JOSE needs no services).
 
 ## Optional
 

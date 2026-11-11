@@ -278,7 +278,8 @@ func registerRaw(server *nhttp.Server, c *cache.Cache, logger *slog.Logger) {
 		}
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("X-Content-Type-Options", "nosniff") // client-stored bytes: never sniffed as HTML
-		_, _ = w.Write(data)                                //nolint:gosec // G705: octet-stream + nosniff, not rendered
+		// #nosec G705 -- caller-stored bytes are served as octet-stream with nosniff.
+		_, _ = w.Write(data) //nolint:gosec // G705: octet-stream + nosniff, not rendered
 	})
 
 	server.AddDocRoute(nhttp.TypedRoute{Method: "PUT", Path: "/raw/{key}", Tag: "cache",

@@ -22,6 +22,7 @@ const maxConfigFileBytes = 8 << 20
 // readYAMLFile parses path into its document root with ${VAR} expanded and the
 // top-level "x-" keys removed. A missing file is nil unless mustExist.
 func readYAMLFile(path string, mustExist bool) (*yaml.Node, error) {
+	// #nosec G304 -- this path is explicitly selected by the operator as configuration input.
 	f, err := os.Open(path) //nolint:gosec // the path is the operator's configuration
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) && !mustExist {

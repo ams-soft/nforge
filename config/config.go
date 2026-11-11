@@ -54,6 +54,7 @@ type PrdExceptions struct {
 	TLSKeyPermissions bool `yaml:"tls_key_permissions"` // TLS private key readable by group or others
 	RedisPlaintext    bool `yaml:"redis_plaintext"`     // Redis without TLS (credentials, or behind HTTPS/HTTP/3)
 	DatabasePlaintext bool `yaml:"database_plaintext"`  // PostgreSQL sslmode that can fall back to clear text
+	MessagePlaintext  bool `yaml:"message_plaintext"`   // RabbitMQ credentials or traffic without TLS
 }
 
 // Allows reports whether the named exception is set.
@@ -65,6 +66,8 @@ func (e PrdExceptions) Allows(name string) bool {
 		return e.RedisPlaintext
 	case "database_plaintext":
 		return e.DatabasePlaintext
+	case "message_plaintext":
+		return e.MessagePlaintext
 	}
 	return false
 }

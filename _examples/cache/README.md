@@ -4,7 +4,8 @@ The cache module with the same code on both drivers (`cache.driver: redis |
 memory`) and both object codecs (`cache.codec: json | cbor`).
 
 ```bash
-docker compose -f _examples/docker-compose.yml up -d redis
+cp _examples/cache/.env.example _examples/cache/.env
+docker compose --env-file _examples/cache/.env -f _examples/cache/docker-compose.yml up -d
 go run ./_examples/cache -config _examples/cache/config.yaml
 # or without Docker, on the in-process memory driver:
 go run ./_examples/cache -config _examples/cache/config.yaml -envfile _examples/cache/standalone.env
@@ -51,7 +52,7 @@ on `cache.ErrUnavailable`.
 **Keys.** Without `cache.prefix` keys are `nforge:<env>:<app.name>:<key>`:
 
 ```bash
-docker exec redis redis-cli --scan --pattern 'nforge:local:cache-example:*'
+docker compose --env-file _examples/cache/.env -f _examples/cache/docker-compose.yml exec redis redis-cli --scan --pattern 'nforge:local:cache-example:*'
 ```
 
 With `database.tenancy.enabled` the tenant is inserted in the key
@@ -69,10 +70,10 @@ go run ./_examples/cache -config _examples/cache/config.yaml -envfile <(echo CAC
 **Outage and recovery.** Readiness pings the cache on every probe:
 
 ```bash
-docker stop redis
+docker compose --env-file _examples/cache/.env -f _examples/cache/docker-compose.yml stop redis
 curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/ready         # 503, "modules":{"cache":"not_ready",...}
 curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/api/v1/products/1   # 503, the loader is not called
-docker start redis
+docker compose --env-file _examples/cache/.env -f _examples/cache/docker-compose.yml start redis
 curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/ready         # 200 again, same process
 ```
 

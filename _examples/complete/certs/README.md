@@ -1,7 +1,7 @@
 # Example certificate (local development only)
 
 `localhost.crt` / `localhost.key` are a **self-signed, intentionally public**
-ECDSA P-256 pair generated for the HTTPS + HTTP/3 demo of the `basic` example.
+ECDSA P-256 pair generated for the HTTPS + HTTP/3 demo of the `complete` example.
 The private key is committed on purpose and is therefore **not a secret**:
 
 - never deploy it, trust it system-wide or reuse it for anything real;

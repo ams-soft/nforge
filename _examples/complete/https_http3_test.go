@@ -52,7 +52,7 @@ func TestHTTPSHTTP3Live(t *testing.T) {
 	if err := os.WriteFile(env, []byte(envText), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := config.LoadFlags("_examples/basic/config.https-http3.yaml", env)
+	cfg, err := config.LoadFlags("_examples/complete/config.https-http3.yaml", env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestHTTPSHTTP3Live(t *testing.T) {
 	}()
 
 	// Trust exactly the example certificate: no InsecureSkipVerify anywhere.
-	pem, err := os.ReadFile("_examples/basic/certs/localhost.crt")
+	pem, err := os.ReadFile("_examples/complete/certs/localhost.crt")
 	if err != nil {
 		t.Fatal(err)
 	}

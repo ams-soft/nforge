@@ -224,6 +224,7 @@ func WriteMermaid(w io.Writer) error {
 		return fmt.Errorf("graph: bundle: %w", err)
 	}
 	defer func() { _ = zr.Close() }()
+	// #nosec G110 -- source is a fixed, embedded gzip bundle, not user-controlled compressed data.
 	if _, err := io.Copy(w, zr); err != nil { //nolint:gosec // the embedded bundle is trusted, fixed-size input
 		return fmt.Errorf("graph: bundle: %w", err)
 	}

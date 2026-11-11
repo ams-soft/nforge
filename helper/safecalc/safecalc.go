@@ -122,6 +122,7 @@ func Round(val float64, places int) float64 {
 // "R$ -1.234,56".
 func (m Money) Format() string {
 	// The magnitude as uint64 is exact even for math.MinInt64.
+	// #nosec G115 -- modulo conversion and negation preserve the magnitude, including MinInt64.
 	abs := uint64(m.Value)
 	if m.Value < 0 {
 		abs = -abs

@@ -1,7 +1,7 @@
 # Cache example: the cache module on Redis (docker compose) or in process memory.
 # No database, no JOSE.
 #
-#   docker compose -f _examples/docker-compose.yml up -d redis
+#   docker compose --env-file _examples/cache/.env -f _examples/cache/docker-compose.yml up -d
 #   go run ./_examples/cache -config _examples/cache/config.yaml
 #   go run ./_examples/cache -config _examples/cache/config.yaml -envfile _examples/cache/standalone.env   # memory, no Docker
 env: local

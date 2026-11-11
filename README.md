@@ -46,6 +46,7 @@ err = a.Run(context.Background()) // start, serve, graceful shutdown on SIGINT/S
 | Database | `database` | PostgreSQL with pgx + Squirrel, transactions, **multi-tenancy** by tenant column or Row-Level Security |
 | JOSE | `jose` | JWT, JWS and JWE through explicit profiles, bearer authentication with scopes, JWKS, key rotation |
 | Cache | `cache` | Redis or a bounded in-process LRU behind one API: objects, bytes, counters, TTLs, NX, cache-aside `GetOrLoad`, tenant namespaces |
+| Messaging | `message` | RabbitMQ confirmed publishing and concurrent consumers, Classic priority, Quorum queues, optional dead-letter/retry handling and DLQ reprocessing |
 | Crypto | `crypto` (`ncrypto`) | Standalone primitives, no config: XChaCha20-Poly1305 and AES-256-GCM encryption, HMAC-SHA256, bcrypt/Argon2id password hashing, BLAKE3/SHA-256, secure random values and ULIDs |
 | Helpers | `helper/safecalc` | Money as integer cents: exact formatting (BRL by default, any separators), float input rounded half-to-even |
 | Helpers | `helper/qrcode` | QR Codes as PNG, SVG, Base64 and Data URI: rounded modules and finders, centered PNG/JPEG/SVG logo, level L/M/Q/H, a terminal-printable matrix |
@@ -71,22 +72,25 @@ pins it with `toolchain go1.27.3`). Import the HTTP package as
 
 ## Examples
 
-[`_examples/`](_examples) has four runnable applications, each with its own
+[`_examples/`](_examples) has six runnable applications, each with its own
 README:
 
 | Example | Shows |
 |---|---|
-| [`basic`](_examples/basic) | opt-in HTTPS + HTTP/3 (`config.https-http3.yaml`), config, codec, plain and typed routes, docs, health, minimal JWT login, memory cache, PostgreSQL (`standalone.env`: no Docker), an `ncrypto` demo and a `safecalc` test |
+| [`basic`](_examples/basic) | terminal logging, HTTP, and an in-memory typed CRUD API |
+| [`complete`](_examples/complete) | opt-in HTTPS + HTTP/3, config, codec, docs, health, JWT login, memory cache, PostgreSQL, RabbitMQ, crypto and observability |
 | [`jose`](_examples/jose) | JWT login, bearer authentication, scopes, nested tokens, JWS/JWE, JWKS |
 | [`cache`](_examples/cache) | the cache module on Redis or memory, `GetOrLoad`, outages |
 | [`database`](_examples/database) | repositories, transactions, multi-tenancy (column and RLS) |
 | [`static`](_examples/static) | an API, a built SPA and public files on one server, from directories or `embed.FS` |
+| [`message`](_examples/message) | worker-only RabbitMQ producer, automatic/manual consumers, DLQ and retry |
 
 ```bash
 go run ./_examples/basic -config _examples/basic/config.yaml
 # then open http://localhost:8080/docs
 
-docker compose -f _examples/docker-compose.yml up -d   # PostgreSQL, Redis, OTel Collector, Tempo, Loki, Grafana
+cp _examples/message/.env.example _examples/message/.env
+docker compose --env-file _examples/message/.env -f _examples/message/docker-compose.yml up -d   # RabbitMQ for the message example
 ```
 
 ## Configuration
@@ -151,7 +155,7 @@ http:
 - 0-RTT is not supported (`allow_0rtt: true` is rejected).
 
 A runnable demo with a local-only certificate is
-[`_examples/basic/config.https-http3.yaml`](_examples/basic/README.md#https--http3).
+[`_examples/complete/config.https-http3.yaml`](_examples/complete/README.md#https--http3).
 Full reference: [AGENTS.md §7.12](AGENTS.md#712-transports-http-https-and-http3-transportgo-configservergo).
 
 ## Documentation

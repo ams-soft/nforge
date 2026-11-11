@@ -5,7 +5,8 @@ The database module on PostgreSQL: repositories that build SQL with Squirrel
 mapping and multi-tenancy.
 
 ```bash
-docker compose -f _examples/docker-compose.yml up -d postgres
+cp _examples/database/.env.example _examples/database/.env
+docker compose --env-file _examples/database/.env -f _examples/database/docker-compose.yml up -d
 go run ./_examples/database -config _examples/database/config.yaml
 ```
 

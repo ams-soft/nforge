@@ -48,6 +48,7 @@ func (a *AES) Encrypt(plaintext, aad []byte) ([]byte, error) {
 		return nil, ErrMessageTooLarge
 	}
 	// Random-nonce AEAD requires a nil nonce and prepends it automatically.
+	// #nosec G407 -- NewGCMWithRandomNonce generates and prepends a fresh nonce when Seal receives nil.
 	return a.aead.Seal(nil, nil, plaintext, aad), nil //nolint:gosec // G407 false positive: nil nonce makes the AEAD draw a random one
 }
 

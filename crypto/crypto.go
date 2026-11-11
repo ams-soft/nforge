@@ -233,6 +233,7 @@ func (h *Hash) VerifyArgon2id(password, encoded string) (bool, error) {
 		return false, ErrHash
 	}
 	threads, err := parse(params[2], "p=", 8)
+	// #nosec G115 -- ParseUint's bit sizes bound each value before these casts.
 	if err != nil || !validArgon(uint32(memory), uint32(passes), uint8(threads)) {
 		return false, ErrHash
 	}
@@ -245,6 +246,7 @@ func (h *Hash) VerifyArgon2id(password, encoded string) (bool, error) {
 	if err != nil || len(want) < 16 || len(want) > 64 {
 		return false, ErrHash
 	}
+	// #nosec G115 -- parsed parameters are bounded above; decoded hash length is at most 64 bytes.
 	got := argon2.IDKey([]byte(password), salt, uint32(passes), uint32(memory), uint8(threads), uint32(len(want)))
 	return subtle.ConstantTimeCompare(got, want) == 1, nil
 }

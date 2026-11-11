@@ -31,7 +31,9 @@ type idGenerator struct{}
 func (idGenerator) NewIDs(ctx context.Context) (trace.TraceID, trace.SpanID) {
 	tid, ok := ctx.Value(traceIDKey{}).(trace.TraceID)
 	for !ok || !tid.IsValid() {
+		// #nosec G404 -- trace IDs need uniqueness, not secrecy (same approach as the OTel SDK).
 		binary.BigEndian.PutUint64(tid[:8], rand.Uint64()) //nolint:gosec // trace IDs need uniqueness, not secrecy (like the OTel SDK generator)
+		// #nosec G404 -- trace IDs need uniqueness, not secrecy (same approach as the OTel SDK).
 		binary.BigEndian.PutUint64(tid[8:], rand.Uint64()) //nolint:gosec // trace IDs need uniqueness, not secrecy (like the OTel SDK generator)
 		ok = true
 	}
@@ -45,6 +47,7 @@ func (idGenerator) NewSpanID(context.Context, trace.TraceID) trace.SpanID {
 func newSpanID() trace.SpanID {
 	var sid trace.SpanID
 	for !sid.IsValid() {
+		// #nosec G404 -- span IDs need uniqueness, not secrecy (same approach as the OTel SDK).
 		binary.BigEndian.PutUint64(sid[:], rand.Uint64()) //nolint:gosec // trace IDs need uniqueness, not secrecy (like the OTel SDK generator)
 	}
 	return sid

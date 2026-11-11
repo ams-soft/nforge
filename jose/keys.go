@@ -114,6 +114,7 @@ func readKeyFile(path string, maxBytes int64) ([]byte, os.FileMode, error) {
 	if !pre.Mode().IsRegular() {
 		return nil, 0, errReason("key source must be a regular file")
 	}
+	// #nosec G304 -- the key path comes from trusted operator configuration; the file is checked and bounded below.
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, 0, errReason("cannot open key source")

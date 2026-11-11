@@ -1,7 +1,7 @@
 # Database example: PostgreSQL through pgx + Squirrel, transactions and
 # multi-tenant scoping (tenant column or Row-Level Security). No JOSE, no cache.
 #
-#   docker compose -f _examples/docker-compose.yml up -d postgres
+#   docker compose --env-file _examples/database/.env -f _examples/database/docker-compose.yml up -d
 #   go run ./_examples/database -config _examples/database/config.yaml
 env: local
 

@@ -55,6 +55,10 @@ package `app`. An application gets, from one `config.yaml`:
   objects, raw bytes, counters, TTLs, NX, cache-aside `GetOrLoad`, tenant
   namespacing through the framework tenant context, readiness and LIFO
   shutdown.
+- **Messaging** (`message/`): RabbitMQ AMQP 0-9-1 with confirmed publishing,
+  Classic and Quorum queues, opt-in DLQ/retry, concurrent consumers and
+  lifecycle-integrated reconnect/readiness. `message.Module()` owns the
+  connection; `message.Consumers()` is ingress and drains before it closes.
 - **Crypto** (`crypto/`, package `ncrypto`): standalone primitives with no
   config or module wiring: AEAD encryption (XChaCha20-Poly1305, AES-256-GCM),
   HMAC-SHA256, password hashing (bcrypt, Argon2id), data hashing (BLAKE3,
@@ -107,6 +111,7 @@ generics, `errors.Join`, `math/rand/v2`, `maps`/`slices` iterators.
 ├── jose/               # JOSE: config, keys/JWK/JWKS, compact JWS/JWE, JWT, Service lifecycle, the jose module
 │   └── internal/strictjson/  # strict protocol JSON: UTF-8, depth, duplicate members, trailing data
 ├── cache/              # cache: Config, Open, Redis + memory drivers, keyspace/tenant, GetOrLoad flights, the cache module
+├── message/            # RabbitMQ transport: queues, confirms, consumers, retry/DLQ, readiness and lifecycle modules
 ├── crypto/             # package ncrypto: AEAD (XChaCha20, AES-GCM), HMAC, password/data hashes, secure random
 ├── helper/
 │   ├── safecalc/       # money in integer cents: New, NewFromFloat (half-even), Format, BRL
@@ -137,12 +142,13 @@ generics, `errors.Join`, `math/rand/v2`, `maps`/`slices` iterators.
 │       ├── jwks/       # JWKS handler (GET/HEAD, ETag, 304)
 │       ├── tracing/    # Tracing middleware + request_id = trace_id
 │       └── accesslog/  # Logger middleware + statusWriter
-├── _examples/          # runnable examples (§14): basic, jose, cache, database + the local stack, static
-│   ├── docker-compose.yml  # PostgreSQL, Redis, OTel Collector, Tempo, Loki, Grafana
-│   └── observability/      # collector/tempo/loki configs + Grafana provisioning
+├── _examples/          # runnable examples (§14): basic, complete, jose, cache, database, message, static
+│   ├── <example>/docker-compose.yml # local dependencies stay with each example
+│   ├── message/        # RabbitMQ worker-only producer/consumer/reprocess example
+│   └── observability/  # collector/tempo/loki configs + Grafana provisioning for complete
 ├── README.md / LICENSE # project overview; MIT, AMS Software e Consultoria LTDA
 ├── llms.txt            # llmstxt.org index for LLMs: notes, links to packages and examples; the reference is this file
-├── .air.toml           # hot reload of _examples/basic (gitignored)
+├── .air.toml           # hot reload of _examples/complete (gitignored)
 └── Makefile            # container-up / dev (gitignored)
 ```
 
@@ -161,9 +167,9 @@ Notes:
   `ncrypto "github.com/ams-soft/nforge/crypto"`.
 - `_examples/` starts with `_`, so `go build ./...` / `go test ./...` ignore it.
   Name the examples explicitly (§15). They are in the same module.
-- `.gitignore` excludes `.air.toml`, `_examples/*/tmp/`,
+- `.gitignore` excludes `.air.toml`, every local `.env`, `_examples/*/tmp/`,
   `_examples/jose/keys/`, `.idea/`, `Makefile`, `sandbox*` and `./basic`
-  (the binary of `go build ./_examples/basic`).
+  (the binary of `go build ./_examples/complete`).
 
 ### Package dependency graph (imports)
 
@@ -175,10 +181,11 @@ codec ──► module
 database ──► module
 jose ──► module (go-jose/v4 behind unexported adapters)
 cache ──► module, codec, database (tenant context only; go-redis/v9 behind unexported adapters)
+message ──► module, codec (RabbitMQ AMQP 0-9-1 driver; no AMQP types in its public API)
 telemetry ──► module
 logs ──► module, telemetry
 ncrypto, helper/*   (no internal deps)
-nhttp ──► nforge (Version), module, codec, database, jose, cache, telemetry, go-ams-router, quic-go (http3)
+nhttp ──► nforge (Version), module, codec, database, jose, cache, message, telemetry, go-ams-router, quic-go (http3)
 internal/apptest ──► app, config, module (tests only)
 ```
 
@@ -193,7 +200,7 @@ fails for a package without a rule.
 
 ## 3. Runtime lifecycle (how an app boots and stops)
 
-Canonical `main` (see `_examples/basic/main.go`):
+Canonical `main` (see `_examples/complete/main.go`):
 
 ```go
 cfg, err := config.Load()                 // 1. flags -config / -envfile; one logical YAML, read once
@@ -257,7 +264,7 @@ configuration (§4) and calls `module.Build`, which runs three pure steps with
    cross-section rules live: `cache.codec` must be in `codec.formats.enabled`,
    `http.auth.default_profile` must be a consuming jwt profile of the jose
    module, the JWKS path must not collide with a built-in route, HTTPS in
-   front of a database or Redis without TLS warns.
+   front of a database, Redis or RabbitMQ without TLS warns.
 
 `Source.Warn(exception, msg)` / `View.Warn` record valid settings that weaken
 the deployment: outside `prd` they are `Application.Warnings()` (logged at
@@ -269,7 +276,7 @@ identity. `module.Logger` (`*slog.Logger`, ID `logger`) is defined in
 `module` so every module can declare it without importing `logs`. Each
 infrastructure package exports its own: `codec.Capability`,
 `database.Capability`, `jose.Capability`, `cache.Capability`,
-`telemetry.Capability` (`*telemetry.Tracing`), `nhttp.Capability`
+`message.Capability`, `telemetry.Capability` (`*telemetry.Tracing`), `nhttp.Capability`
 (`*nhttp.Server`). Capabilities are singletons **per application**: two
 applications in one process share nothing.
 
@@ -469,7 +476,7 @@ nothing consumed (`config.Binding.Finish`); registration is authoritative.
    or the database does not use TLS (http `Check`; a Unix socket is exempt).
    Outside `prd` they are `Application.Warnings()`; with `env: prd` each one
    is an **error of `app.New`** unless its `prd_exceptions` key is true
-   (`tls_key_permissions`, `redis_plaintext`, `database_plaintext`), in which
+   (`tls_key_permissions`, `redis_plaintext`, `database_plaintext`, `message_plaintext`), in which
    case it stays a warning. In `prd`, `http.docs`, `http.routes.health`,
    `http.routes.readiness` or `http.routes.graph` enabled is only a warning
    (unauthenticated endpoints), silenced by `app.internal_use: true`. The app
@@ -617,6 +624,7 @@ prd_exceptions:               # insecure settings env prd accepts on purpose (de
   tls_key_permissions: false  # TLS key readable by group or others
   redis_plaintext: false      # Redis without TLS (credentials, or behind HTTPS/HTTP/3)
   database_plaintext: false   # PostgreSQL sslmode that can fall back to clear text
+  message_plaintext: false    # RabbitMQ credentials or traffic without TLS
 
 cache:                        # cache.Config — see §11; validated only when enabled, and only the selected driver
   enabled: false              # false: nothing is opened, the cache module publishes nothing
@@ -637,14 +645,45 @@ cache:                        # cache.Config — see §11; validated only when e
     timeouts: { dial: 1s, read: 1s, write: 1s, pool: 500ms, operation: 2s }
     retry: { read_retries: 1, min_backoff: 50ms, max_backoff: 500ms }   # *int, 0..3; reads only
   memory: { max_entries: 10000, max_bytes: 64mb, cleanup_interval: 30s }  # max_bytes ≥ max_key + max_value
+
+message:                      # message.Config — RabbitMQ only; disabled by default
+  enabled: false              # no connection or worker unless enabled
+  driver: rabbitmq             # only supported driver
+  namespace: nforge            # managed dead-letter exchange prefix
+  payload_format: json         # must be in codec.formats.enabled
+  rabbitmq:
+    url: ${RABBITMQ_URL}       # amqp:// or amqps://; redacted in output
+    connection_name: ""       # defaults to app.name
+    dial_timeout: 10s
+    heartbeat: 30s
+    tls: {ca_file: ""}         # optional CA; TLS 1.2+ with hostname verification
+    reconnect: {initial_delay: 1s, max_delay: 30s, multiplier: 2, jitter: true}
+  publisher: {confirm_timeout: 10s, max_payload_bytes: 1mb} # cannot exceed codec limit
+  consumer: {concurrency: 1, prefetch: 0, timeout: 30s, ack_mode: automatic} # 0 prefetch = concurrency
+  queues:
+    - {name: notifications} # Classic durable
+    - {name: payments, max_priority: 10} # Classic priority 1..10
+    - {name: audit, type: quorum, dead_letter: true}
+    - {name: emails, dead_letter: true, retry: {delay: 10s, max_attempts: 3}}
 ```
 
 Owners of the sections: `logging` → `logs.Module` (ID `logger`), `tracing` →
 `telemetry.Module`, `codec` → `codec.Module`, `database` →
-`database.Module`, `jose` → `jose.Module`, `cache` → `cache.Module`, `http`
+`database.Module`, `jose` → `jose.Module`, `cache` → `cache.Module`,
+`message` → `message.Module`, `http`
 → `nhttp.Module`; `env`, `app` and `prd_exceptions` are reserved (package
 `config`). A section of a module the application did not register is an
 error, not ignored.
+
+`message` owns the RabbitMQ connection and requires `codec.Capability`; queue
+declarations from YAML and `message.WithQueues` merge by name and must be
+identical when duplicated. The separate `message.Consumers()` ingress starts
+after all module Init hooks and drains before `message.Module()` closes the
+connection. RabbitMQ confirm publishing is at-least-once; no exactly-once
+guarantee exists. Queue type and arguments cannot be migrated automatically.
+The message module warns on plaintext remote credentials, and HTTP adds the
+same `message_plaintext` warning when HTTPS/HTTP3 fronts a non-TLS RabbitMQ
+connection.
 
 `jose` defaults and structural validation are `jose.ApplyDefaults` /
 `jose.ValidateConfig` (applied only when enabled); key files are read later,
@@ -1284,7 +1323,7 @@ unquoted `1.3`, but `1.30` or `1.1` fail.
 - **Env file keys:** `HTTP_SERVER_TLS_ENABLED`, `HTTP_SERVER_TLS_PORT`,
   `HTTP_SERVER_HTTP3_ENABLED`, `HTTP_SERVER_HTTP3_PORT`,
   `HTTP_SERVER_HTTP3_ADVERTISE=false`, … (`*bool` keeps an explicit false).
-- Runnable demo: `_examples/basic/config.https-http3.yaml` (§14).
+- Runnable demo: `_examples/complete/config.https-http3.yaml` (§14).
 
 ### 7.13 Module graph page (`graph.go`, `internal/graph`)
 
@@ -2063,6 +2102,100 @@ HTTP; readiness owns its 503 (§7.6) and the cache example maps the rest
 
 ---
 
+## 11A. Messaging (`message/`)
+
+RabbitMQ AMQP 0-9-1 only, behind the `message` module (`message.Module()`,
+section `message`, capability `message.Capability` = `*message.Client`). It
+imports `module` and `codec` (payloads go through the application's Registry in
+`message.payload_format`) and no AMQP type appears in its public API. Disabled
+(`message.enabled: false`, the default), it publishes nothing and never
+connects; a module that `Requires` it fails `app.New` (`ErrDisabledDependency`),
+one that declares it `Optional` gets `ok == false` from `module.Lookup`.
+
+```
+message/
+├── doc.go       # package doc
+├── config.go    # Config, RabbitMQConfig, queues/retry config, defaults, validation, redaction
+├── queue.go     # QueueSpec builder: Queue, QuorumQueue, MaxPriority, DeadLetter, WithRetry
+├── module.go    # Module (connection resource), Consumers (ingress), consumer options, Delivery
+├── client.go    # Client: connect/supervise/reconnect, confirmed Publish, Total, Reprocess, Status
+└── errors.go    # sentinels and the sanitized *Error
+```
+
+```go
+message.Module(message.WithQueues(message.Queue("audit").QuorumQueue().DeadLetter()))   // the connection
+message.Consumers()                                                                      // ingress: consumers start last, drain first
+cl := module.Require(scope, message.Capability)
+cl.AddConsumer("notifications", func(ctx context.Context, d *message.Delivery) error {
+    var n Notification
+    if err := d.Decode(&n); err != nil { return err }
+    return handle(ctx, n)                       // nil = ack; error = nack (retry/DLQ when configured)
+}, message.WithConcurrency(4), message.WithPrefetch(8), message.WithTimeout(30*time.Second))
+res, err := cl.Publish(ctx, "notifications", n, message.WithPriority(5), message.WithMessageID(id),
+    message.WithHeaders(map[string]string{"tenant": t}), message.WithContentType("application/json"))
+total, err := cl.Total(ctx, "emails")                      // pending / retrying / failed (+ Known flags, IsEstimate)
+out, err := cl.Reprocess(ctx, "emails", 100)               // DLQ -> main queue, bounded
+st := cl.Status()                                         // sanitized local connection snapshot
+```
+
+- **Two modules, one lifecycle rule.** `message.Module()` owns the connection
+  (Init opens it within `dial_timeout`; a failure is fatal; Ready = the
+  connection and publisher channel are usable; Stop closes it). `message.Consumers()`
+  is an **ingress** module (`Optional` on the capability): its Start begins
+  consuming after every Init and Start, and its Stop stops fetching and waits for
+  running handlers, so the broker connection is never closed under a handler
+  (§3.4). Register consumers with `Client.AddConsumer` **in an Init** (after
+  start it is `ErrStarted`); one consumer per queue; the queue must be declared.
+- **Queues** come from YAML (`message.queues`) and `message.WithQueues`; the two
+  merge by name and must be identical when duplicated (`ErrQueueConflict`).
+  Defaults: durable **Classic**; `type: quorum` / `QuorumQueue()`; `max_priority`
+  1..10 is Classic-only (`ErrInvalidPriority`); `dead_letter: true` declares the
+  managed `<name>_dlq` queue and the `<namespace>.dlx` exchange; `retry:
+  {delay, max_attempts}` (needs `dead_letter`) declares `<name>_retry` (TTL =
+  `delay`, dead-lettering back to the queue). Names ending in `_dlq`/`_retry`,
+  starting with `amq.` or longer than 255 bytes are invalid. Declarations are
+  **immutable**: type, priority and dead-letter arguments must match an existing
+  queue, nForge never deletes or converts one.
+- **Publishing** is confirmed (`publisher.confirm_timeout`), persistent and
+  `mandatory`. Errors: `ErrUnroutable` (returned by the broker), `ErrNacked`,
+  `ErrPublishUncertain` (the reply was lost: the message may or may not be
+  queued; do not blindly retry non-idempotent work), `ErrTransportUnavailable`,
+  `ErrPayloadTooLarge` (`publisher.max_payload_bytes`, at most the codec limit).
+  A `[]byte` payload is sent as is (`application/octet-stream`), anything else
+  is encoded with `payload_format`; `WithPriority` needs a queue with
+  `max_priority` (`ErrInvalidPriority`). The message ID defaults to a UUIDv7. User headers are validated (a bounded
+  token syntax, string values, no `x-` prefix); nForge's own headers
+  (`x-nforge-format`, `x-nforge-attempt`, `x-nforge-reprocessed`) are never
+  visible in `Delivery.Headers`. At-least-once: **no exactly-once guarantee**.
+- **Consuming.** `consumer.concurrency` workers (1..1024), `prefetch` (0 = the
+  concurrency), a per-delivery `timeout` and `ack_mode: automatic|manual`
+  (`WithManualAck`: the handler calls `Delivery.Ack`/`Nack(requeue)`; a second
+  settle is `ErrAlreadySettled`, a delivery of an older connection
+  `ErrStaleDelivery`). Automatic mode acks on a nil return and nacks on an
+  error; with `dead_letter`/`retry` a failing message goes to the retry queue
+  until `max_attempts`, then to the DLQ. `Delivery.Attempt` comes from a
+  producer-writable header: best effort, not a business retry counter.
+  Recovery: the supervisor reconnects with `reconnect` (initial delay,
+  multiplier, jitter, cap) and restarts the consumers; readiness is `not_ready`
+  meanwhile and `Generation` increments.
+- **Totals and reprocessing.** `Total` uses passive AMQP declarations: `Pending`,
+  `Retrying` and `Failed` are ready counts of the main, retry and DLQ queues;
+  `Processing` (unacknowledged) is **unknown** (`nil`: no Management API is
+  called), and `IsEstimate` is always true. `Reprocess(queue, limit)` moves up to
+  `limit` DLQ messages back (republished with a confirm, then acked from the
+  DLQ); one run at a time per client (`ErrReprocessRunning`); a queue without
+  `dead_letter` is `ErrUnsupportedFeature`.
+- **Security.** `message.Config` redacts the URL in every `fmt` verb, slog and
+  JSON; `amqps://` verifies the hostname (TLS 1.2+, optional `tls.ca_file`); a
+  remote `amqp://` URL with credentials warns (`prd_exceptions.message_plaintext`,
+  an error in `prd` otherwise) and so does HTTPS/HTTP3 in front of it. Errors
+  never carry the URL, credentials or broker text.
+- Runnable demos: `_examples/message` (worker-only producer/consumer/reprocess)
+  and the optional events of `_examples/complete` (§14). Integration tests need
+  RabbitMQ (`NFORGE_TEST_RABBITMQ_URL`, §15).
+
+---
+
 ## 12. Crypto (`crypto/`, package `ncrypto`)
 
 Standalone toolbox (no internal imports, no globals, no config section, not
@@ -2262,7 +2395,7 @@ m := qr.Modules()                                       // [][]bool, no quiet zo
 
 ## 14. Examples and local stack (`_examples/`)
 
-Six independent `package main` applications, each focused on one part of
+Eight independent `package main` applications, each focused on one part of
 the framework, each with its own `config.yaml` (only the keys it uses,
 commented), `README.md` and tests. They share one pattern: `main` loads the
 config, calls a `newApp(cfg, opts...)` that registers the built-in modules it
@@ -2275,32 +2408,37 @@ names are `<name>-example`.
 
 | Example | Modules | Files | Tests |
 |---|---|---|---|
-| `basic` | HTTPS + HTTP/3 opt-in (`config.https-http3.yaml`, `certs/`), jose (one HS256 `access` profile, demo secret inline in its config.yaml), cache (memory driver), database (PostgreSQL on; `standalone.env` turns it off, no Docker); `http.security` + `http.cors` on | `main.go` (`newApp`: explicit registration, the `api` application module, `clacksOverhead` through `Server.Use`), `auth.go` (demo login `admin@admin.com`/`admin123` → `IssueJWT`, private typed `/auth/me`), `cache.go` (`/cache/{key}` Set/Get/Delete), `config.yaml` has OTel on, for the local collector (`standalone.env` turns it off), `database.go` (`/db/notes` CRUD on table `basic_notes`, not registered when the database module is disabled), `https_http3_test.go` (starts the example on free ports with the committed certificate and talks real HTTPS, HTTP/3 and the 308), `certs/` (**local-development-only, intentionally public** ECDSA pair, SAN localhost/127.0.0.1/::1; never reused by anything else, regenerate with `certs/generate.sh`), `plain.go` (`ParseJSON/XML/CBOR` + `Send*` echo routes, `AddDocRoute`), `users.go` (typed CRUD over an in-memory store, `ListQuery` typed query with default/required/`Validate`, an XML-codec route), `crypto.go` (`runCrypto` ncrypto demo: XChaCha20, HMAC, bcrypt/Argon2id, BLAKE3, random; disabled in `main.go`), `safecalc_test.go` (cents arithmetic + `Format`, `ExampleMoney_Format`) | formats, status mapping 400/415/422, typed CRUD + paging, docs/health/ready, security headers + docs CSP + CORS preflight, login 400/401 + `/auth/me` 401/200, cache hit/miss/delete, the crypto demo, safecalc; `/db/notes` CRUD + 404 (integration) |
+| `basic` | HTTPS + HTTP/3 opt-in (`config.https-http3.yaml`, `certs/`), jose (one HS256 `access` profile, demo secret inline in its config.yaml), cache (memory driver), database (PostgreSQL on; `standalone.env` turns it off), optional RabbitMQ events (`rabbitmq.env`); `http.security` + `http.cors` on | `docker-compose.yml` + `.env.example` own PostgreSQL, RabbitMQ and observability; `main.go` registers the `message` and `message-consumers` modules; `message.go` logs `user.created` and Quorum `audit` events; `POST /api/v1/users` publishes both only when enabled | previous basic coverage plus the optional RabbitMQ-enabled startup |
 | `jose` | jose | `auth.go` (demo login `admin`/`admin` with `profile` + `scope`, `/public`, typed `/me`, raw `/raw/wallets` + `/raw/wallets-slice` with variadic/slice `WithScopes`, typed `/api/v1/wallets`, nested-only `/api/v1/confidential`, `/api/v1/jose/demo` JWS/JWE round trip; `protectedCalls` counter), `cmd/keygen` (key files for the commented asymmetric setup; 0700/0600, `-force`) | 200/401/403 matrix, handlers not invoked on failure, nested vs access, missing secret fails at load |
-| `cache` | cache (redis; `standalone.env` → memory) | `routes.go` (`/api/v1/items/{key}` Set/Get/claim=SetIfAbsent/ttl/expire/Delete, `/api/v1/counters/{key}`, raw `/raw/{key}` bytes, `/api/v1/products/{id}` `GetOrLoad` over a slow `catalog`; `sendCacheError`) | shared scenarios run on memory (`main_test.go`) and on Redis (`redis_integration_test.go`, unique prefix, deletes its keys); CBOR; readiness |
-| `database` | database (+ tenancy column, `http.tenant.source: header`) | `users.go` (Squirrel/pgx CRUD, filters, batch in `Transaction`, `sendDBError`), `notes.go` (typed `Opts{Tenant}` routes and raw `server.TenantMiddleware()`, `ForContext`/`TenantEq`/tenant `Transaction`; `ensureNotesSchema` builds RLS when `mode: rls`), `rls.env` + `rls-setup.sql` (role `app_tenant`) | config + rls overlay load (unit); CRUD and tenant isolation 403/400/404 (integration) |
+| `cache` | cache (redis; `standalone.env` → memory) | `docker-compose.yml` + `.env.example` own Redis; `routes.go` (`/api/v1/items/{key}` Set/Get/claim=SetIfAbsent/ttl/expire/Delete, `/api/v1/counters/{key}`, raw `/raw/{key}` bytes, `/api/v1/products/{id}` `GetOrLoad` over a slow `catalog`; `sendCacheError`) | shared scenarios run on memory (`main_test.go`) and on Redis (`redis_integration_test.go`, unique prefix, deletes its keys); CBOR; readiness |
+| `database` | database (+ tenancy column, `http.tenant.source: header`) | `docker-compose.yml` + `.env.example` own PostgreSQL; `users.go` (Squirrel/pgx CRUD, filters, batch in `Transaction`, `sendDBError`), `notes.go` (typed `Opts{Tenant}` routes and raw `server.TenantMiddleware()`, `ForContext`/`TenantEq`/tenant `Transaction`; `ensureNotesSchema` builds RLS when `mode: rls`), `rls.env` + `rls-setup.sql` (role `app_tenant`) | config + rls overlay load (unit); CRUD and tenant isolation 403/400/404 (integration) |
 | `qrcode` | none (`helper/qrcode` only; not an `app`) | `main.go` flags (`-payload` default `teste123`, `-out`, `-size`, `-logo`, `-terminal`, `-terminal-only`, `-invert`), `terminal.go` (half-block text QR, 4-module quiet zone, no ANSI), `gallery.go` (PNG, SVG, `base64.txt`, `datauri.txt`, static `index.html`), `assets/logo.svg` | terminal geometry and decode round trip, `-terminal-only` writes no files, empty payload fails, gallery PNGs decode |
 | `static` | http (`Static`, `SPA`, `StaticFS`, `SPAFS`), codec, logs | `main.go` (`-embed`, `-dist`, `-public`; `frontend` module: typed `/api/health`, `Static("/assets")`, `SPA("/")` with `WithSPAReserved("/api")` and `WithSPAImmutableDir("build")`), `frontend/dist` (a tiny hand-written build, no Node), `public/` | `/`, `/dashboard`, `/assets`, `/api/health`, 404s, cache headers, directory and embed modes, a missing entry point fails the start |
+| `message` | message (RabbitMQ, worker-only) | `docker-compose.yml` + `.env.example` own RabbitMQ; `-mode producer|consumer|reprocess`; Classic priority, Quorum, automatic/manual ACK, DLQ and retry | unit validation plus RabbitMQ integration tests |
 
-Local stack — `_examples/docker-compose.yml` (project `nforge-examples`):
-PostgreSQL 18 (5432, `app`/`app`/`app`), Redis 8 (6379), OTel Collector
-(4317 gRPC, 4318 HTTP), Tempo (3200), Loki (3100), Grafana (3000, anonymous
-admin, provisioned datasources and the *nForge · Logs* dashboard with a
-`service` variable defaulting to `basic-example`). Configs live in
+Each example keeps its environment examples locally; examples with Docker
+dependencies have a per-folder Compose file (JOSE needs no services). Local
+`.env` files are ignored. The complete example defines PostgreSQL, RabbitMQ and
+the local observability stack; cache defines Redis; database defines
+PostgreSQL; message defines RabbitMQ. Observability configs live in
 `_examples/observability/`.
 
 Commands (repository root):
 ```bash
-docker compose -f _examples/docker-compose.yml up -d     # or: make container-up
-go run ./_examples/basic -config _examples/basic/config.yaml [-envfile _examples/basic/standalone.env]
+cp _examples/complete/.env.example _examples/complete/.env
+docker compose --env-file _examples/complete/.env -f _examples/complete/docker-compose.yml up -d
+go run ./_examples/complete -config _examples/complete/config.yaml [-envfile _examples/complete/standalone.env]
 # HTTPS :8443/tcp + HTTP/3 :8443/udp + 308 redirect from :8080 (run from the repo root: cert paths are relative to the CWD)
-go run ./_examples/basic -config _examples/basic/config.https-http3.yaml -envfile _examples/basic/standalone.env
+go run ./_examples/complete -config _examples/complete/config.https-http3.yaml -envfile _examples/complete/standalone.env
 export JWT_SECRET=$(openssl rand -hex 32) JWT_ENCRYPTION_SECRET=$(openssl rand -hex 16)
 go run ./_examples/jose -config _examples/jose/config.yaml
 go run ./_examples/cache -config _examples/cache/config.yaml [-envfile _examples/cache/standalone.env]
 go run ./_examples/database -config _examples/database/config.yaml [-envfile _examples/database/rls.env]
-make dev                                                  # air: hot reload of _examples/basic (needs PostgreSQL)
-make run-graph                                            # basic with -tags nforge_graph and /graph on (needs PostgreSQL)
+cp _examples/message/.env.example _examples/message/.env
+docker compose --env-file _examples/message/.env -f _examples/message/docker-compose.yml up -d
+go run ./_examples/message -config _examples/message/config.yaml -mode consumer|producer|reprocess
+make dev                                                  # air: hot reload of _examples/complete (needs PostgreSQL)
+make run-graph                                            # complete with -tags nforge_graph and /graph on (needs PostgreSQL)
 make run-graph-standalone                                 # the same without Docker
 go run ./_examples/static -config _examples/static/config.yaml [-embed]   # API + SPA + public files on :8080
 go run ./_examples/qrcode [-terminal-only] [-payload https://example.com]   # QR in the terminal + gallery in ./qrcode-output
@@ -2319,7 +2457,7 @@ go test ./...                    # unit tests (app, cache, codec, config, crypto
 go test -race ./...
 
 # the examples (`./...` skips `_` directories, so name each one):
-EXAMPLES='./_examples/basic/... ./_examples/jose/... ./_examples/cache/... ./_examples/database/... ./_examples/qrcode/... ./_examples/static/...'
+EXAMPLES='./_examples/basic/... ./_examples/complete/... ./_examples/jose/... ./_examples/cache/... ./_examples/database/... ./_examples/message/... ./_examples/qrcode/... ./_examples/static/...'
 go vet $EXAMPLES
 go test -race $EXAMPLES
 
@@ -2355,6 +2493,9 @@ NFORGE_TEST_DATABASE_URL=... NFORGE_TEST_REDIS_URL=... go test -race -tags integ
 # cache integration tests against a DISPOSABLE Redis (unique prefixes, only
 # their own keys are deleted, never FLUSHDB):
 NFORGE_TEST_REDIS_URL='redis://localhost:6379/15' go test -race -tags integration ./cache/
+
+# RabbitMQ integration tests use a dedicated local prefix and delete only their own queues:
+NFORGE_TEST_RABBITMQ_URL='amqp://nforge:nforge@localhost:5672/' go test -race -tags integration ./message/ ./_examples/message/...
 
 # the examples against the compose stack (§14):
 NFORGE_TEST_DATABASE_URL='postgres://app:app@localhost:5432/app?sslmode=disable' \
@@ -2505,7 +2646,7 @@ algorithm/kid/typ, boundaries), not only round trips.
     spans unless `tracing.otel.enabled: false` (default true), whatever
     `logging.output.otel.enabled` says (that switch is the OTel *log* export
     now). An app that runs without a collector disables both
-    (`standalone.env` in the basic example).
+    (`standalone.env` in the complete example).
 13. **`IsPrivate` is enforced** on typed routes: registering one with jose
     disabled, without `AuthProfile`/`http.auth.default_profile`, or with
     `http.docs.auth: none` panics at startup. On `AddDocRoute` it is still
@@ -2561,7 +2702,7 @@ algorithm/kid/typ, boundaries), not only round trips.
     (clients fall back to HTTPS through `Alt-Svc`). An HTTP/3-only server is
     not discoverable by browsers. `curl --http3-only` needs a curl build with
     HTTP/3; `-k` is for the demo certificate only.
-30. **The example certificate is public**: `_examples/basic/certs/localhost.key`
+30. **The example certificate is public**: `_examples/complete/certs/localhost.key`
     is committed on purpose. Never deploy or trust it; the framework has no
     default certificate.
 31. **A module that needs a disabled one fails `app.New`** with
@@ -2585,3 +2726,34 @@ algorithm/kid/typ, boundaries), not only round trips.
     `encoding/json/jsontext` (the presence walker). Go 1.27 enables it by
     default; `GOEXPERIMENT=nojsonv2` makes `go build ./codec` fail with
     "build constraints exclude all Go files".
+36. **RabbitMQ confirms do not mean exactly-once**: publisher confirms and
+    consumer ACKs provide at-least-once behavior; consumers of side effects
+    must be idempotent. A confirmed publish may still duplicate if a process
+    loses the reply before it records the outcome (`ErrPublishUncertain`).
+37. **RabbitMQ queue declarations are immutable**: Classic/Quorum type,
+    priority and dead-letter arguments must match the existing queue. nForge
+    never deletes or converts a queue; perform a manual migration before
+    changing its declaration.
+38. **Priority is Classic-only and does not guarantee ordering**: priorities
+    are 1..10, do not preempt already delivered messages, and consumer
+    concurrency/prefetch changes observed order. Quorum queues reject priority.
+39. **`message.Total().Processing` is unknown**: AMQP passive declarations
+    report ready counts only. nForge does not call RabbitMQ's Management API.
+40. **Message transport retry is best effort**: `Delivery.Attempt` comes from
+    a producer-writable header and is not a durable business retry count. A
+    failure after confirm but before ACK can duplicate a retry delivery.
+41. **Message startup needs a live broker only when enabled**:
+    `message.enabled: false` publishes nothing and does not connect; enabled
+    modules fail startup if RabbitMQ or topology declaration is unavailable.
+42. **Shutdown shares the app deadline**: a slow consumer handler can consume
+    the default 15 s global shutdown window; increase the app shutdown timeout
+    when handlers legitimately need longer to finish.
+43. **The root SPA owns the router's `NotFound`**: `Server.SPA("/", ...)` (or
+    `Static("/", ...)`) replaces the NotFound handler, once per server, and
+    answers only GET/HEAD navigations (`Accept: text/html`, no file extension).
+    Reserve every API prefix with `WithSPAReserved` (the built-in routes are
+    reserved for you): an unmatched `GET /api/x` with `Accept: text/html` gets the
+    entry point otherwise. `Static`/`SPA` return errors (bad prefix, missing
+    directory or `index.html`, an overlapping mount or route) and, like routes,
+    must run before the server serves; a route added under a mounted prefix after
+    the mount fails `Start` (§7.14).

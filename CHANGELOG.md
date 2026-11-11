@@ -37,6 +37,15 @@ All notable changes to nForge are documented here. The format follows
 - `_examples/static`: an API, a built SPA fixture (no Node) and public files,
   from directories or `-embed`.
 
+- Package `message`: RabbitMQ AMQP 0-9-1 connection and topology module,
+  confirmed `mandatory` publishing, Classic/Quorum queues, priority, automatic
+  and manual ACK/NACK consumers, optional DLQ/retry, reprocessing, honest
+  queue totals and lifecycle-integrated reconnect/readiness. The connection
+  resource (`message.Module`) and consumer ingress (`message.Consumers`) are
+  separate so ingress drains before the broker connection closes.
+- RabbitMQ worker-only example, optional event publishing/consuming in `basic`,
+  a local management-enabled broker in Compose, and RabbitMQ in CI integration.
+
 ## [v0.4.0] - 2026-11-07
 
 nForge becomes a general application runtime. This release contains breaking

@@ -16,6 +16,7 @@ require (
 	github.com/makiuchi-d/gozxing v0.1.1
 	github.com/oklog/ulid/v2 v2.1.2
 	github.com/quic-go/quic-go v0.64.1
+	github.com/rabbitmq/amqp091-go v1.16.0
 	github.com/redis/go-redis/v9 v9.23.0
 	github.com/zeebo/blake3 v0.2.4
 	go.opentelemetry.io/contrib/bridges/otelslog v0.21.0
@@ -56,7 +57,7 @@ require (
 	go.uber.org/atomic v1.12.0 // indirect
 	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20261026165753-2ffab32bce7e // indirect

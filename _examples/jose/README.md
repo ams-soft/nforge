@@ -9,8 +9,11 @@ The example uses the **simple mode**: symmetric secrets given as strings and
 read from the environment (never commit them):
 
 ```bash
-export JWT_SECRET=$(openssl rand -hex 32)             # HS256 signing secret, at least 32 bytes
-export JWT_ENCRYPTION_SECRET=$(openssl rand -hex 16)  # dir/A256GCM key, exactly 32 bytes
+cp _examples/jose/.env.example _examples/jose/.env
+# Put the output of these commands into the matching lines in .env:
+openssl rand -hex 32             # HS256 signing secret, at least 32 bytes
+openssl rand -hex 16             # dir/A256GCM key, exactly 32 bytes
+set -a; . _examples/jose/.env; set +a
 go run ./_examples/jose -config _examples/jose/config.yaml
 ```
 

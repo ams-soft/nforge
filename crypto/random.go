@@ -85,11 +85,13 @@ func Int64(max, min int64) (int64, error) {
 	}
 	// XOR maps signed ordering to unsigned ordering, including MinInt64.
 	const sign uint64 = 1 << 63
+	// #nosec G115 -- modulo conversion plus sign-bit XOR is the order-preserving int64 mapping.
 	lo, hi := uint64(min)^sign, uint64(max)^sign
 	x, err := Uint64(hi, lo)
 	if err != nil {
 		return 0, err
 	}
+	// #nosec G115 -- inverse sign-bit XOR intentionally maps the full uint64 range to int64.
 	return int64(x ^ sign), nil
 }
 

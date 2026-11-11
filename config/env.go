@@ -28,6 +28,7 @@ func readEnvFile(path string) (map[string]string, error) {
 	if info.Size() > maxConfigFileBytes {
 		return nil, fmt.Errorf("the file is larger than %d bytes", maxConfigFileBytes)
 	}
+	// #nosec G304 -- this path is explicitly selected by the operator as configuration input.
 	raw, err := os.ReadFile(path) //nolint:gosec // the path is the operator's configuration
 	if err != nil {
 		return nil, err

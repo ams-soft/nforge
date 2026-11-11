@@ -14,7 +14,7 @@ import (
 // TestDatabaseRoutes runs the /db/notes routes against a real PostgreSQL:
 //
 //	NFORGE_TEST_DATABASE_URL=postgres://app:app@localhost:5432/app?sslmode=disable \
-//	  go test -tags integration ./_examples/basic
+//	  go test -tags integration ./_examples/complete
 func TestDatabaseRoutes(t *testing.T) {
 	dsn := os.Getenv("NFORGE_TEST_DATABASE_URL")
 	if dsn == "" {

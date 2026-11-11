@@ -5,38 +5,42 @@ the framework. Start with `basic`, then pick the module you need.
 
 | Example | Shows | Needs |
 |---|---|---|
-| [`basic`](basic) | opt-in HTTPS + HTTP/3 with a 308 redirect (`config.https-http3.yaml`, local-only certificate), config, logging, JSON/XML/CBOR from one struct, plain and typed routes, typed query strings, OpenAPI docs, health/readiness, a global middleware, plus a minimal JWT login, memory cache, PostgreSQL notes, an `ncrypto` demo and a `safecalc` test | PostgreSQL (or `standalone.env`: nothing) |
+| [`basic`](basic) | terminal logging, HTTP, and an in-memory typed CRUD API | none |
+| [`complete`](complete) | HTTPS + HTTP/3, typed routes, docs, JWT, cache, PostgreSQL, RabbitMQ, crypto and observability | PostgreSQL; RabbitMQ optional |
 | [`jose`](jose) | JWT login, bearer authentication, scopes, `Principal`, nested (signed + encrypted) tokens, generic JWS/JWE, JWKS and key files | two secrets in the environment |
 | [`cache`](cache) | the cache module on Redis or memory: objects, TTL, NX, counters, raw bytes, `GetOrLoad`, CBOR, outages | Redis (or `standalone.env`) |
 | [`database`](database) | the database module: Squirrel + pgx repositories, transactions, error mapping, multi-tenancy in column or Row-Level Security mode | PostgreSQL |
 | [`static`](static) | static files and a built single-page application next to the API: `Static`, `SPA`, directories and `embed.FS`, cache headers, reserved prefixes | nothing |
+| [`message`](message) | worker-only RabbitMQ publisher and consumers, Classic priority, Quorum queues, ACK/NACK, DLQ, retry and reprocessing | RabbitMQ (`rabbitmq` service in Compose) |
 
 All commands run from the **repository root**. Every example reads its own
-`config.yaml` (pass it with `-config`) and listens on `127.0.0.1:8080`, with
-the interactive API docs at <http://localhost:8080/docs>.
+`config.yaml` (pass it with `-config`). The HTTP examples listen on
+`127.0.0.1:8080`, with API docs at <http://localhost:8080/docs>; the message
+example is a worker-only application with no HTTP listener.
 
-## Local stack
+## Local dependencies
 
-[`docker-compose.yml`](docker-compose.yml) starts everything the examples can
-use:
-
-| Service | Port | Used by |
-|---|---|---|
-| PostgreSQL 18 (`app`/`app`, database `app`) | 5432 | basic, database |
-| Redis 8 | 6379 | cache |
-| OpenTelemetry Collector (OTLP gRPC / HTTP) | 4317 / 4318 | any example with `logging.output.otel.enabled` (`basic` is preconfigured: flip it to `true`) |
-| Tempo (traces) | 3200 | via Grafana |
-| Loki (logs) | 3100 | via Grafana |
-| Grafana (anonymous admin) | 3000 | dashboard *nForge · Logs*, Explore → Tempo |
+Each example keeps its environment examples in its own folder. Examples that
+need Docker services have a local Compose file; JOSE has no external service
+dependency. Copy a `.env.example` to `.env` in that same folder before using
+Compose. The `.env` files are ignored by Git. The complete example also includes
+the optional observability stack, configured in [`observability/`](observability).
 
 ```bash
-docker compose -f _examples/docker-compose.yml up -d            # everything
-docker compose -f _examples/docker-compose.yml up -d postgres   # or only what you need
-docker compose -f _examples/docker-compose.yml down             # stop (add -v to drop the data)
+cp _examples/complete/.env.example _examples/complete/.env
+docker compose --env-file _examples/complete/.env -f _examples/complete/docker-compose.yml up -d
+
+cp _examples/cache/.env.example _examples/cache/.env
+docker compose --env-file _examples/cache/.env -f _examples/cache/docker-compose.yml up -d
+
+cp _examples/database/.env.example _examples/database/.env
+docker compose --env-file _examples/database/.env -f _examples/database/docker-compose.yml up -d
+
+cp _examples/message/.env.example _examples/message/.env
+docker compose --env-file _examples/message/.env -f _examples/message/docker-compose.yml up -d
 ```
 
-The collector, Tempo, Loki and Grafana configuration lives in
-[`observability/`](observability).
+Stop a stack with `docker compose --env-file <example>/.env -f <example>/docker-compose.yml down`.
 
 ## Build and test
 
@@ -44,7 +48,7 @@ Go wildcards skip directories that start with `_`, so name the examples
 explicitly:
 
 ```bash
-EXAMPLES='./_examples/basic/... ./_examples/jose/... ./_examples/cache/... ./_examples/database/...'
+EXAMPLES='./_examples/basic/... ./_examples/complete/... ./_examples/jose/... ./_examples/cache/... ./_examples/database/... ./_examples/message/...'
 go vet $EXAMPLES
 GOTOOLCHAIN=local golangci-lint run $EXAMPLES
 go test -race $EXAMPLES
@@ -53,4 +57,6 @@ go test -race $EXAMPLES
 NFORGE_TEST_DATABASE_URL='postgres://app:app@localhost:5432/app?sslmode=disable' \
 NFORGE_TEST_REDIS_URL='redis://localhost:6379/15' \
   go test -race -tags integration $EXAMPLES
+NFORGE_TEST_RABBITMQ_URL='amqp://nforge:nforge@localhost:5672/' \
+  go test -race -tags integration ./message/ ./_examples/message/...
 ```

@@ -9,6 +9,7 @@ import (
 	"github.com/ams-soft/nforge/codec"
 	"github.com/ams-soft/nforge/database"
 	"github.com/ams-soft/nforge/jose"
+	"github.com/ams-soft/nforge/message"
 	"github.com/ams-soft/nforge/module"
 	"github.com/ams-soft/nforge/telemetry"
 )
@@ -49,7 +50,7 @@ func Module() module.Descriptor {
 		return module.Definition{
 			Provides: []module.Handle{Capability},
 			Requires: requires,
-			Optional: []module.Handle{module.Logger, telemetry.Capability, jose.Capability, database.Capability, cache.Capability},
+			Optional: []module.Handle{module.Logger, telemetry.Capability, jose.Capability, database.Capability, cache.Capability, message.Capability},
 			Ingress:  true,
 			Config:   cfg,
 			Check:    func(v *module.View) error { return check(v, &cfg) },
@@ -97,6 +98,15 @@ func check(v *module.View, cfg *Config) error {
 	}
 	if err := ValidateGraphRoute(cfg, jwks); err != nil {
 		return err
+	}
+	if cfg.Server.TLS.Enabled || cfg.Server.HTTP3.Enabled {
+		mc, enabled, _, err := module.ConfigOf[message.Config](v, message.Capability)
+		if err != nil {
+			return err
+		}
+		if enabled && !mc.UsesTLS() {
+			v.Warn("message_plaintext", "the server uses HTTPS or HTTP/3 but RabbitMQ is reached without TLS; use an amqps:// URL")
+		}
 	}
 
 	var c *cache.Config

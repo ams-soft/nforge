@@ -65,8 +65,9 @@ func RenderPage(p Page) (page []byte, csp string, err error) {
 		SpecURL:  p.SpecURL,
 		YAMLURL:  p.YAMLURL,
 		NumRoute: p.Routes,
-		Accent:   template.CSS(p.Accent), //nolint:gosec // validated as hex in nhttp.Config.Validate
-		Nonce:    nonce,
+		// #nosec G203 -- p.Accent is validated as a hex color in nhttp.Config.Validate.
+		Accent: template.CSS(p.Accent), //nolint:gosec // validated as hex in nhttp.Config.Validate
+		Nonce:  nonce,
 	})
 	if err != nil {
 		return nil, "", err

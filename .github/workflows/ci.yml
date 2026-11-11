@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  EXAMPLES: ./_examples/basic/... ./_examples/jose/... ./_examples/cache/... ./_examples/database/...
+  EXAMPLES: ./_examples/basic/... ./_examples/complete/... ./_examples/jose/... ./_examples/cache/... ./_examples/database/... ./_examples/message/...
 
 jobs:
   check:
@@ -67,9 +67,21 @@ jobs:
           --health-interval 2s
           --health-timeout 5s
           --health-retries 30
+      rabbitmq:
+        image: rabbitmq:4.2.3-management
+        env:
+          RABBITMQ_DEFAULT_USER: nforge
+          RABBITMQ_DEFAULT_PASS: nforge
+        ports: ["5672:5672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
     env:
       NFORGE_TEST_DATABASE_URL: postgres://app:app@localhost:5432/app?sslmode=disable
       NFORGE_TEST_REDIS_URL: redis://localhost:6379/15
+      NFORGE_TEST_RABBITMQ_URL: amqp://nforge:nforge@localhost:5672/
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0

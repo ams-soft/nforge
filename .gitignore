@@ -7,6 +7,8 @@ _examples/*/tmp/
 .idea/
 
 Makefile
+# Per-example local Compose/runtime environment files; commit only .env.example.
+.env
 
 sandbox*
 
@@ -14,6 +16,7 @@ sandbox*
 _examples/jose/keys/
 
 ./basic
+./complete
 
 # output of go run ./_examples/qrcode
 qrcode-output/

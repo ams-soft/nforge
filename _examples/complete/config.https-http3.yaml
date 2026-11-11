@@ -1,8 +1,8 @@
-# Basic example, opt-in HTTPS + HTTP/3 variant of config.yaml (same app, same
+# Complete example, opt-in HTTPS + HTTP/3 variant of config.yaml (same app, same
 # routes). Run it from the REPOSITORY ROOT: the certificate paths are relative
 # to the working directory.
 #
-#   go run ./_examples/basic -config _examples/basic/config.https-http3.yaml -envfile _examples/basic/standalone.env
+#   go run ./_examples/complete -config _examples/complete/config.https-http3.yaml -envfile _examples/complete/standalone.env
 #
 # HTTP :8080/tcp only redirects (308) to HTTPS :8443/tcp; HTTP/3 listens on
 # :8443/udp. The certificate is the committed, local-development-only pair in
@@ -13,7 +13,7 @@
 env: local # local (default) | dev | stg | prd — drives the log level and the overlay file
 
 app:
-  name: basic-example
+  name: complete-example
   version: 1.0.0
 
 http:
@@ -23,8 +23,8 @@ http:
     tls: # HTTPS over tcp; off by default
       enabled: true
       port: 8443 # optional, default: 8443
-      cert_file: _examples/basic/certs/localhost.crt # relative to the working directory
-      key_file: _examples/basic/certs/localhost.key
+      cert_file: _examples/complete/certs/localhost.crt # relative to the working directory
+      key_file: _examples/complete/certs/localhost.key
       min_version: "1.3" # default "1.3"; "1.2" is the only other value
       disable_insecure_http: false # true closes the :8080 listener entirely
       redirect_http: true # :8080 only answers 308 to https://127.0.0.1:8443 (host is loopback, so redirect_host is optional)
@@ -110,8 +110,8 @@ jose: # see the jose example for asymmetric keys, scopes, nested tokens and JWKS
       signing_key: jwt-signing
       verification_keys: [jwt-signing]
       jwt:
-        issuer: https://auth.basic-example.local
-        audiences: [basic-example-api]
+        issuer: https://auth.complete-example.local
+        audiences: [complete-example-api]
         ttl: 15m # optional, default: 15m
 
 cache: # see the cache example for Redis, counters, NX and GetOrLoad

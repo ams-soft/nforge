@@ -194,6 +194,7 @@ func write(w stdhttp.ResponseWriter, r *stdhttp.Request, status int, format stri
 	w.Header().Set("Content-Type", responseContentType(c.ContentType()))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
+	// #nosec G705 -- data is codec-encoded and served with a non-HTML Content-Type plus nosniff.
 	_, err = w.Write(data) //nolint:gosec // G705: encoded envelope with an explicit non-HTML Content-Type
 	return err
 }
