@@ -1,6 +1,6 @@
 # nForge
 
-> nForge (Nano Forge, module `github.com/ams-soft/nforge`, by AMS Software e Consultoria LTDA, MIT) is a small, opinionated Go 1.27+ application runtime, built first for HTTP APIs: explicitly registered modules wired by typed capabilities and orchestrated by package `app` (HTTP is optional; worker-only and mixed applications share one lifecycle). One `config.yaml` drives layered configuration, `log/slog` logging (terminal and OpenTelemetry), OpenTelemetry tracing with `request_id == trace_id`, a JSON/CBOR/XML codec driven by one struct, an HTTP server on `github.com/ams-soft/go-ams-router` with a standard response envelope, typed routes validated before and after the handler and generated OpenAPI 3.1 docs, PostgreSQL (pgx + Squirrel) with multi-tenancy, JOSE/JWT bearer authentication, and a Redis or in-memory cache. Standalone packages add cryptographic primitives (`ncrypto`) and a money helper (`safecalc`).
+> nForge (Nano Forge, module `github.com/ams-soft/nforge`, by AMS Software e Consultoria LTDA, MIT) is a small, opinionated Go 1.27+ application runtime, built first for HTTP APIs: explicitly registered modules wired by typed capabilities and orchestrated by package `app` (HTTP is optional; worker-only and mixed applications share one lifecycle). One `config.yaml` drives layered configuration, `log/slog` logging (terminal and OpenTelemetry), OpenTelemetry tracing with `request_id == trace_id`, a JSON/CBOR/XML codec driven by one struct, an HTTP server on `github.com/ams-soft/go-ams-router` with a standard response envelope, typed routes validated before and after the handler and generated OpenAPI 3.1 docs, PostgreSQL (pgx + Squirrel) with multi-tenancy, JOSE/JWT bearer authentication, and a Redis or in-memory cache. Standalone packages add cryptographic primitives (`ncrypto`) a money helper (`safecalc`) and a QR Code helper (`qrcode`).
 
 Important notes for code generation:
 
@@ -37,6 +37,7 @@ Important notes for code generation:
 - [cache/](cache): `*cache.Cache` on Redis or a bounded memory LRU, `GetOrLoad`, tenant namespaces, the cache module.
 - [crypto/](crypto): package `ncrypto`: XChaCha20-Poly1305, AES-256-GCM, HMAC-SHA256, bcrypt/Argon2id, BLAKE3/SHA-256, secure random, ULID.
 - [helper/safecalc/](helper/safecalc): money as integer cents with exact formatting.
+- [helper/qrcode/](helper/qrcode): QR Code encoder and PNG/SVG/Base64/Data URI renderers with rounded styles and a safe logo.
 
 ## Examples
 
@@ -44,6 +45,7 @@ Important notes for code generation:
 - [_examples/jose](_examples/jose): JWT login, bearer authentication, scopes, `Principal`, nested tokens, JWS/JWE, JWKS, key files (`cmd/keygen`).
 - [_examples/cache](_examples/cache): the cache module on Redis or memory: objects, TTL, NX, counters, raw bytes, `GetOrLoad`, CBOR, outages.
 - [_examples/database](_examples/database): Squirrel + pgx repositories, transactions, error mapping, tenancy in column or RLS mode.
+- [_examples/qrcode](_examples/qrcode): `helper/qrcode` gallery (PNG, SVG, Base64, Data URI, logo) and a QR Code printed in the terminal.
 - [_examples/docker-compose.yml](_examples/docker-compose.yml): PostgreSQL 18, Redis 8, OTel Collector, Tempo, Loki, Grafana.
 
 ## Optional

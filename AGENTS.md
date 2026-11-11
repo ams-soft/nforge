@@ -60,8 +60,9 @@ package `app`. An application gets, from one `config.yaml`:
   (`:8080`), opt-in HTTPS over TCP (`:8443`, TLS 1.3 minimum) and HTTP/3 over
   QUIC/UDP (`:8443`), one shared router, an optional redirect-only HTTP
   listener (§7.12).
-- **Helpers** (`helper/`): small standalone utilities; today `safecalc`,
-  monetary amounts in integer cents with exact display formatting.
+- **Helpers** (`helper/`): small standalone utilities; today `safecalc`
+  (monetary amounts in integer cents with exact display formatting) and
+  `qrcode` (QR Codes as PNG, SVG, Base64 and Data URI, rounded styles, logo).
 
 Framework version: `version` in the **module root** `config.yaml`
 (currently `0.4.0`), embedded at build time and exposed as `nforge.Version`
@@ -105,7 +106,8 @@ generics, `errors.Join`, `math/rand/v2`, `maps`/`slices` iterators.
 ├── cache/              # cache: Config, Open, Redis + memory drivers, keyspace/tenant, GetOrLoad flights, the cache module
 ├── crypto/             # package ncrypto: AEAD (XChaCha20, AES-GCM), HMAC, password/data hashes, secure random
 ├── helper/
-│   └── safecalc/       # money in integer cents: New, NewFromFloat (half-even), Format, BRL
+│   ├── safecalc/       # money in integer cents: New, NewFromFloat (half-even), Format, BRL
+│   └── qrcode/         # QR Code encoder + PNG/SVG renderers, rounded styles, logo (§13.2)
 ├── internal/apptest/   # test support: applications from inline YAML (Load, New, Start, Quiet)
 ├── http/               # package nhttp: only the public surface at the root
 │   ├── module.go       # Module (section http, ingress), Capability, cross-module Check
@@ -2103,11 +2105,78 @@ safecalc.Round(0.125, 2)                             // 0.12 (float display help
   percentages) yet: callers add and multiply the int64 cents themselves and
   own overflow at their magnitudes.
 
+### 13.2 `qrcode` (QR Codes)
+
+```go
+qr, err := qrcode.New("https://example.com/pay",       // UTF-8 text; NewBytes for binary
+    qrcode.WithSize(512), qrcode.WithMargin(4),         // defaults 512 px, 4 modules
+    qrcode.WithErrorCorrection(qrcode.High),            // default Medium; High when a logo is set
+    qrcode.WithColors(fg, bg),                          // default black on white
+    qrcode.WithRoundedModules(0.25), qrcode.WithRoundedFinders(0.15),
+    qrcode.WithLogo(logoBytes, qrcode.LogoSize(0.15), qrcode.LogoPadding(1),
+        qrcode.LogoBorderRadius(0.2), qrcode.LogoBackgroundRadius(0.2), qrcode.LogoBackground(true)))
+png, err := qr.PNG(); svg, err := qr.SVG()
+b64, err := qr.Base64(qrcode.FormatPNG); uri, err := qr.DataURI(qrcode.FormatSVG)
+m := qr.Modules()                                       // [][]bool, no quiet zone: what the terminal example draws
+```
+
+- **Standalone**: no config, no module, no `app`/`nhttp`; no files, network or
+  globals; bytes in, bytes out. An immutable `*QRCode` is safe for concurrent
+  use; the logo bytes are copied once. Third-party imports: `golang.org/x/image`
+  (CatmullRom scaling and the `vector` rasterizer of SVG logos). Test-only:
+  `github.com/makiuchi-d/gozxing` (an independent decoder) and
+  `github.com/boombuler/barcode` (a reference encoder the matrices are compared
+  with).
+- **Pipeline** (`encode.go` → `qrcode.go` layout → `render.go`): payload → own
+  Model 2 encoder (numeric/alphanumeric/byte, versions 1-40, L/M/Q/H, 8 masks,
+  `tables.go` block table) → `symbol{dark, fn}` (the function-module mask is
+  the single source of truth for both renderers) → layout in **pixels** →
+  PNG or SVG. SVG uses the same pixel units as the PNG (`viewBox="0 0 W W"`),
+  so both share geometry. PNG side = `scale * (modules + 2*margin)`, `scale`
+  an integer ≥ 1 (the largest that fits `WithSize`); the quiet zone defaults to
+  4 modules (fewer is accepted but documented as risky).
+- **Mode**: single segment (numeric if all digits, alphanumeric if the QR
+  charset, else byte); no mixed-mode optimization and no ECI (UTF-8 in byte
+  mode, the de facto convention).
+- **Rounding** applies to data/EC modules only (`WithRoundedModules` 0..0.5, a
+  fraction of the module; 0.5 is a circle). Finders are drawn as shapes with
+  their exact ring / gap / core proportions (`WithRoundedFinders` 0..0.2 of the
+  7-module side, capped so every finder module keeps a dark center); timing,
+  alignment, format and version modules stay square. PNG draws rounded
+  shapes with a signed-distance edge (one antialiased pixel, no blur inside);
+  SVG uses arcs, not raster.
+- **Logo**: PNG/JPEG/SVG detected by content, size ≤ 1 MiB, ≤ 4096 px per side
+  and 4 Mpx; raster logos are decoded, downscaled to 512 px and re-encoded as
+  PNG (EXIF orientation is **not** applied). **SVG logos** use a strict allowlist
+  parser (`parseSVGLogo`): elements `svg/g/path/rect/circle/ellipse/polygon`,
+  fills only (hex or basic names, `fill-opacity`/`opacity` multiplied), no
+  stroke, transform, style, class, use, image, text, gradients, arcs, DOCTYPE
+  or namespaced attributes; limits on elements, depth, segments and
+  coordinates. The result is a shape model that both renderers redraw: **the
+  source text never reaches the output**. Anything else is `ErrUnsupportedLogo`
+  (errors never echo the input). The plate is drawn in the background color
+  (so it needs an opaque one). The logo is laid out in pixels, centered, aspect
+  preserved, `LogoSize` ≤ 0.20 of the module width, and **never covers a
+  function module**: when it would, `New` moves to the next larger version (the
+  alignment pattern at the center of versions 7-13, 21-27… makes this
+  frequent), and returns `ErrLogoOverlap` only past version 40. Setting a logo
+  selects level H unless `WithErrorCorrection` was used; a fixed level is
+  never lowered (`ErrTooLarge`).
+- **Tests**: `TestEncoderAllVersions` compares the matrix of every
+  version/level with boombuler's and decodes samples with gozxing; style
+  matrices decode at 256/512/1024 px; fuzzers `FuzzPayload` and `FuzzLogo`;
+  `go test ./helper/qrcode -run '^$' -bench . -benchmem`. gozxing occasionally
+  fails to *find* a valid symbol (the reference matrix fails the same way):
+  treat a decoder miss as inconclusive, a wrong decoded text as a bug.
+- A QR Code styled or carrying a logo is **not guaranteed to scan** everywhere:
+  H recovers ~30% of codewords under ideal conditions, not 30% of the image.
+  Test what you publish. No Pix/BR Code logic belongs here.
+
 ---
 
 ## 14. Examples and local stack (`_examples/`)
 
-Four independent `package main` applications, each focused on one part of
+Five independent `package main` applications, each focused on one part of
 the framework, each with its own `config.yaml` (only the keys it uses,
 commented), `README.md` and tests. They share one pattern: `main` loads the
 config, calls a `newApp(cfg, opts...)` that registers the built-in modules it
@@ -2124,6 +2193,7 @@ names are `<name>-example`.
 | `jose` | jose | `auth.go` (demo login `admin`/`admin` with `profile` + `scope`, `/public`, typed `/me`, raw `/raw/wallets` + `/raw/wallets-slice` with variadic/slice `WithScopes`, typed `/api/v1/wallets`, nested-only `/api/v1/confidential`, `/api/v1/jose/demo` JWS/JWE round trip; `protectedCalls` counter), `cmd/keygen` (key files for the commented asymmetric setup; 0700/0600, `-force`) | 200/401/403 matrix, handlers not invoked on failure, nested vs access, missing secret fails at load |
 | `cache` | cache (redis; `standalone.env` → memory) | `routes.go` (`/api/v1/items/{key}` Set/Get/claim=SetIfAbsent/ttl/expire/Delete, `/api/v1/counters/{key}`, raw `/raw/{key}` bytes, `/api/v1/products/{id}` `GetOrLoad` over a slow `catalog`; `sendCacheError`) | shared scenarios run on memory (`main_test.go`) and on Redis (`redis_integration_test.go`, unique prefix, deletes its keys); CBOR; readiness |
 | `database` | database (+ tenancy column, `http.tenant.source: header`) | `users.go` (Squirrel/pgx CRUD, filters, batch in `Transaction`, `sendDBError`), `notes.go` (typed `Opts{Tenant}` routes and raw `server.TenantMiddleware()`, `ForContext`/`TenantEq`/tenant `Transaction`; `ensureNotesSchema` builds RLS when `mode: rls`), `rls.env` + `rls-setup.sql` (role `app_tenant`) | config + rls overlay load (unit); CRUD and tenant isolation 403/400/404 (integration) |
+| `qrcode` | none (`helper/qrcode` only; not an `app`) | `main.go` flags (`-payload` default `teste123`, `-out`, `-size`, `-logo`, `-terminal`, `-terminal-only`, `-invert`), `terminal.go` (half-block text QR, 4-module quiet zone, no ANSI), `gallery.go` (PNG, SVG, `base64.txt`, `datauri.txt`, static `index.html`), `assets/logo.svg` | terminal geometry and decode round trip, `-terminal-only` writes no files, empty payload fails, gallery PNGs decode |
 
 Local stack — `_examples/docker-compose.yml` (project `nforge-examples`):
 PostgreSQL 18 (5432, `app`/`app`/`app`), Redis 8 (6379), OTel Collector
@@ -2145,6 +2215,7 @@ go run ./_examples/database -config _examples/database/config.yaml [-envfile _ex
 make dev                                                  # air: hot reload of _examples/basic (needs PostgreSQL)
 make run-graph                                            # basic with -tags nforge_graph and /graph on (needs PostgreSQL)
 make run-graph-standalone                                 # the same without Docker
+go run ./_examples/qrcode [-terminal-only] [-payload https://example.com]   # QR in the terminal + gallery in ./qrcode-output
 ```
 Then `http://localhost:8080/docs`; Grafana at `http://localhost:3000`.
 
@@ -2156,11 +2227,11 @@ Then `http://localhost:8080/docs`; Grafana at `http://localhost:3000`.
 go build ./...
 go vet ./...
 go test -tags nforge_graph ./http/...   # the module graph page, compiled only with this tag
-go test ./...                    # unit tests (app, cache, codec, config, crypto, database, helper, http, jose, logs, module, telemetry, architecture)
+go test ./...                    # unit tests (app, cache, codec, config, crypto, database, helper (safecalc, qrcode), http, jose, logs, module, telemetry, architecture)
 go test -race ./...
 
 # the examples (`./...` skips `_` directories, so name each one):
-EXAMPLES='./_examples/basic/... ./_examples/jose/... ./_examples/cache/... ./_examples/database/...'
+EXAMPLES='./_examples/basic/... ./_examples/jose/... ./_examples/cache/... ./_examples/database/... ./_examples/qrcode/...'
 go vet $EXAMPLES
 go test -race $EXAMPLES
 

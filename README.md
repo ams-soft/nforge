@@ -48,6 +48,7 @@ err = a.Run(context.Background()) // start, serve, graceful shutdown on SIGINT/S
 | Cache | `cache` | Redis or a bounded in-process LRU behind one API: objects, bytes, counters, TTLs, NX, cache-aside `GetOrLoad`, tenant namespaces |
 | Crypto | `crypto` (`ncrypto`) | Standalone primitives, no config: XChaCha20-Poly1305 and AES-256-GCM encryption, HMAC-SHA256, bcrypt/Argon2id password hashing, BLAKE3/SHA-256, secure random values and ULIDs |
 | Helpers | `helper/safecalc` | Money as integer cents: exact formatting (BRL by default, any separators), float input rounded half-to-even |
+| Helpers | `helper/qrcode` | QR Codes as PNG, SVG, Base64 and Data URI: rounded modules and finders, centered PNG/JPEG/SVG logo, level L/M/Q/H, a terminal-printable matrix |
 
 Security defaults stay on: HTTP server timeouts (no Slowloris), DTD/XXE
 blocked, payload limits, a restricted

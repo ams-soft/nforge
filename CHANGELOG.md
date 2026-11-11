@@ -6,6 +6,20 @@ All notable changes to nForge are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `helper/qrcode`: standalone QR Code generation. A self-contained Model 2
+  encoder (versions 1-40, L/M/Q/H) renders PNG and SVG from one matrix, with
+  Base64 and Data URI output, colors, rounded data modules and finder patterns
+  (function patterns stay square), and a centered PNG, JPEG or SVG logo with an
+  optional plate. A logo never covers a function pattern (the version grows
+  instead); SVG logos go through a strict allowlist and are rebuilt, never
+  copied. Includes fuzz targets, benchmarks and tests against an independent
+  decoder. New dependencies: `golang.org/x/image`; test-only
+  `github.com/makiuchi-d/gozxing` and `github.com/boombuler/barcode`.
+- `_examples/qrcode`: a gallery (PNG, SVG, Base64, Data URI, `index.html`) and a
+  QR Code printed in the terminal (`-terminal-only`).
+
 ## [v0.4.0] - 2026-11-07
 
 nForge becomes a general application runtime. This release contains breaking

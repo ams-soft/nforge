@@ -29,6 +29,7 @@ var importRules = map[string][]string{
 	"logs":             {"module", "telemetry"},
 	"crypto":           {},
 	"helper/safecalc":  {},
+	"helper/qrcode":    {},
 	"http":             {"", "module", "codec", "database", "jose", "cache", "telemetry"},
 	"internal/apptest": {"app", "config", "module"},
 }

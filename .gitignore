@@ -15,6 +15,9 @@ _examples/jose/keys/
 
 ./basic
 
+# output of go run ./_examples/qrcode
+qrcode-output/
+
 
 # local specs
 NFORGE_SPEC*
