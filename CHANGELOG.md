@@ -6,6 +6,8 @@ All notable changes to nForge are documented here. The format follows
 
 ## [Unreleased]
 
+## [v0.5.0] - 2026-11-11
+
 ### Security
 
 - The toolchain pin moves to `go1.27.4`, which fixes GO-2026-6859 (an HTTP/1 server
@@ -579,6 +581,7 @@ tracing, the JSON/CBOR/XML codec, the HTTP server with typed routes and
 OpenAPI 3.1 docs, PostgreSQL with multi-tenancy, JOSE/JWT authentication,
 the Redis/memory cache, `ncrypto` and `safecalc`.
 
+[v0.5.0]: https://github.com/ams-soft/nforge/compare/v0.4.0...v0.5.0
 [v0.4.0]: https://github.com/ams-soft/nforge/compare/v0.3.0...v0.4.0
 [v0.3.0]: https://github.com/ams-soft/nforge/compare/v0.2.0...v0.3.0
 [v0.2.0]: https://github.com/ams-soft/nforge/compare/v0.1.2...v0.2.0
