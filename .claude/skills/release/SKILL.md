@@ -33,7 +33,15 @@ Run from the repository root and check each point:
 - The last CI run of `origin/main` succeeded:
   `gh run list --branch main --limit 1 --json conclusion,headSha` shows
   `success` for the current HEAD. If it is still running, wait for it
-  (`gh run watch <id> --exit-status`); if it failed, stop.
+  (`gh run watch <id> --exit-status`). If it failed, find out why
+  (`gh run view <id> --log-failed`) before anything else: a failure that a
+  small fix cures (a vulnerable toolchain or dependency reported by
+  `govulncheck`, a lint rule) is fixed in its own commit **before** the bump,
+  with its changelog entry; anything else stops the release.
+- Commits that are not on `origin/main` yet (the release often carries them)
+  are allowed, but nothing is pushed until step 5 and the local gates of
+  step 3 stand in for CI until then. Uncommitted work is never swept into the
+  release: stop and ask how to commit it.
 - Semver sanity: compare `$VERSION` with the current `version` in
   `config.yaml`. A version with breaking changes (`BREAKING CHANGE`, `feat!`
   or `### Removed` in the Unreleased notes) needs a MINOR bump while the
@@ -63,7 +71,8 @@ must only hit CHANGELOG.md history. Fix any other hit (and mention it).
 ## 3. Quality gates (all must pass; report each one)
 
 ```bash
-EXAMPLES='./_examples/basic/... ./_examples/jose/... ./_examples/cache/... ./_examples/database/...'
+# every example (`./...` skips `_` directories); keep this list equal to AGENTS.md §15
+EXAMPLES='./_examples/basic/... ./_examples/complete/... ./_examples/jose/... ./_examples/cache/... ./_examples/database/... ./_examples/message/... ./_examples/qrcode/... ./_examples/static/...'
 test -z "$(gofmt -l .)"
 go build ./... && go build -tags nforge_graph ./...
 go vet ./... $EXAMPLES && go vet -tags nforge_graph ./http/...
@@ -71,17 +80,22 @@ golangci-lint run ./... $EXAMPLES
 golangci-lint run --build-tags nforge_graph ./http/...
 go test -race ./... $EXAMPLES          # includes docs_test.go: AGENTS.md must cite nforge.Version
 go test -race -tags nforge_graph ./http/...
-govulncheck ./...
+govulncheck ./...          # with the toolchain pinned in go.mod: a stdlib fix needs a newer pin
 ```
 
-Integration tests need PostgreSQL and Redis. If `docker compose -f
-_examples/docker-compose.yml ps` shows them healthy (or the user agrees to
-start them with `up -d postgres redis`), run:
+`go version` must print the toolchain pinned in `go.mod` (`GOTOOLCHAIN=auto`
+downloads it); `govulncheck` must say `No vulnerabilities found`.
+
+Integration tests need PostgreSQL, Redis and RabbitMQ. Each example owns its
+Compose file (`_examples/database`, `_examples/cache`, `_examples/message`, and
+`_examples/complete` for the three; copy `.env.example` to `.env` first). If
+the services are healthy (or the user agrees to start them), run:
 
 ```bash
 NFORGE_TEST_DATABASE_URL='postgres://app:app@localhost:5432/app?sslmode=disable' \
 NFORGE_TEST_REDIS_URL='redis://localhost:6379/15' \
-  go test -race -p 1 -tags integration ./database/... ./cache/ ./app/ $EXAMPLES
+NFORGE_TEST_RABBITMQ_URL='amqp://nforge:nforge@localhost:5672/' \
+  go test -race -p 1 -tags integration ./database/... ./cache/ ./app/ ./message/ $EXAMPLES
 ```
 
 Otherwise say plainly that they did not run locally (CI runs them after the
@@ -100,25 +114,33 @@ Show `git show --stat HEAD` and `git tag -n1 "$VERSION"`.
 
 ## 5. Confirm, then publish
 
-Ask the user, with AskUserQuestion, whether to push `main` and the tag
-`$VERSION` now, stating that the tag becomes permanent on the Go module
-proxy. If they decline, leave the commit and the tag local and tell them how
-to undo (`git tag -d $VERSION && git reset --hard HEAD~1`) or publish later
-(`git push origin main && git push origin $VERSION`).
+Ask the user, with AskUserQuestion, whether to push now, stating that the tag
+becomes permanent on the Go module proxy. Recommend the safe order: push
+`main` first, wait for its CI, and push the tag only when it is green (a red
+CI after the tag cannot be undone, only fixed forward). If they decline, leave
+the commit and the tag local and tell them how to undo (`git tag -d $VERSION
+&& git reset --hard <the commit before the release commit>`) or publish later.
 
-On confirmation, re-check that `origin/main` did not move (`git fetch origin`
-and compare with `HEAD~1`), then:
+On confirmation, re-check that `origin/main` did not move (`git fetch origin`;
+its tip must be an ancestor of HEAD), then:
 
 ```bash
 git push origin main
-git push origin "$VERSION"
+gh run list --branch main --limit 1     # then: gh run watch <id> --exit-status
+git push origin "$VERSION"              # only after the CI of main succeeded
 ```
+
+If the user chose to push both at once, push `main` and the tag together and
+watch the CI as in step 6.
 
 ## 6. Verify
 
 - Watch the CI run of the release commit to the end
   (`gh run list --branch main --limit 1`, then `gh run watch <id> --exit-status`).
-  If it fails, do **not** touch the tag: report it; the fix is a new patch release.
+  If it fails before the tag was pushed, fix forward with a new commit and
+  re-run the gates; the release commit may be amended only while the tag is
+  still local. If it fails after the tag was pushed, do **not** touch the tag:
+  report it; the fix is a new patch release.
 - The module proxy serves the version:
   `GOPROXY=https://proxy.golang.org GOFLAGS=-mod=mod go list -m github.com/ams-soft/nforge@$VERSION`
   (it can take a minute; retry a few times).
