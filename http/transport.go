@@ -39,6 +39,10 @@ func (s *Server) Start(ctx context.Context) error {
 	if s.run != nil {
 		return errors.New("nhttp: server already started")
 	}
+	if err := s.checkFileMounts(); err != nil {
+		s.logger.ErrorContext(ctx, "[HTTPModule] Failed to start server", "err", err)
+		return err
+	}
 	cfg := s.cfg.Server
 	ApplyServerDefaults(&cfg)
 	run, err := s.prepare(ctx, cfg)
@@ -69,6 +73,7 @@ func (s *Server) Start(ctx context.Context) error {
 func (s *Server) Stop(ctx context.Context) error {
 	var err error
 	s.stop.Do(func() {
+		defer s.closeFiles()
 		s.mu.Lock()
 		run := s.run
 		s.mu.Unlock()

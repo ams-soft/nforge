@@ -45,6 +45,7 @@ Important notes for code generation:
 - [_examples/jose](_examples/jose): JWT login, bearer authentication, scopes, `Principal`, nested tokens, JWS/JWE, JWKS, key files (`cmd/keygen`).
 - [_examples/cache](_examples/cache): the cache module on Redis or memory: objects, TTL, NX, counters, raw bytes, `GetOrLoad`, CBOR, outages.
 - [_examples/database](_examples/database): Squirrel + pgx repositories, transactions, error mapping, tenancy in column or RLS mode.
+- [_examples/static](_examples/static): an API, a built SPA and public files on one server (`Server.Static`/`SPA`), from directories or `embed.FS`.
 - [_examples/qrcode](_examples/qrcode): `helper/qrcode` gallery (PNG, SVG, Base64, Data URI, logo) and a QR Code printed in the terminal.
 - [_examples/docker-compose.yml](_examples/docker-compose.yml): PostgreSQL 18, Redis 8, OTel Collector, Tempo, Loki, Grafana.
 

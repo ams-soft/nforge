@@ -1,0 +1,28 @@
+# Static files and SPA example: one process serves an API (/api/*), a built
+# single-page application (/) and a directory of public files (/assets). No
+# database, cache or Docker; no Node/npm either: frontend/dist is a tiny
+# hand-written build fixture. Routes are registered in Go (main.go), never here.
+env: local
+
+app:
+  name: static-example
+  version: 1.0.0
+
+http:
+  server:
+    host: 127.0.0.1
+    port: 8080
+    header: true
+  routes:
+    health:
+      enabled: true # /health (liveness) is reserved automatically: the SPA never answers under it
+
+logging:
+  output:
+    terminal:
+      enabled: true
+
+codec:
+  formats:
+    enabled: [json]
+  default: json

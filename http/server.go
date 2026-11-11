@@ -41,6 +41,7 @@ type Server struct {
 	failed   func(error)
 	accessed bool // request logging is on
 
+	files fileMounts // Static/SPA mounts (static.go)
 	specs specCache
 	graph graphPage //nolint:unused // used by graph.go, which only the nforge_graph build compiles
 

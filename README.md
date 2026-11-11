@@ -42,7 +42,7 @@ err = a.Run(context.Background()) // start, serve, graceful shutdown on SIGINT/S
 | Logging | `logs` | `log/slog` to the terminal (tint) and/or OpenTelemetry (OTLP), `request_id` on every record |
 | Tracing | `telemetry` | OpenTelemetry spans per request, with `request_id == trace_id` |
 | Codec | `codec` | JSON, CBOR and XML from **one struct**: required fields, strict mode, payload limits, XXE protection, `Validate()` |
-| HTTP | `http` (`nhttp`) | Plain HTTP, opt-in **HTTPS** (TLS 1.3) and **HTTP/3**, a standard response envelope, **typed routes** checked by the compiler and validated before and after the handler, typed query strings, **OpenAPI 3.1** docs, health/readiness, an optional module graph page |
+| HTTP | `http` (`nhttp`) | Plain HTTP, opt-in **HTTPS** (TLS 1.3) and **HTTP/3**, a standard response envelope, **typed routes** checked by the compiler and validated before and after the handler, typed query strings, **OpenAPI 3.1** docs, health/readiness, an optional module graph page, **static files and SPAs** (`Static`, `SPA`, from a directory or `embed.FS`) |
 | Database | `database` | PostgreSQL with pgx + Squirrel, transactions, **multi-tenancy** by tenant column or Row-Level Security |
 | JOSE | `jose` | JWT, JWS and JWE through explicit profiles, bearer authentication with scopes, JWKS, key rotation |
 | Cache | `cache` | Redis or a bounded in-process LRU behind one API: objects, bytes, counters, TTLs, NX, cache-aside `GetOrLoad`, tenant namespaces |
@@ -80,6 +80,7 @@ README:
 | [`jose`](_examples/jose) | JWT login, bearer authentication, scopes, nested tokens, JWS/JWE, JWKS |
 | [`cache`](_examples/cache) | the cache module on Redis or memory, `GetOrLoad`, outages |
 | [`database`](_examples/database) | repositories, transactions, multi-tenancy (column and RLS) |
+| [`static`](_examples/static) | an API, a built SPA and public files on one server, from directories or `embed.FS` |
 
 ```bash
 go run ./_examples/basic -config _examples/basic/config.yaml

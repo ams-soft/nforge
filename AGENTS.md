@@ -39,7 +39,10 @@ package `app`. An application gets, from one `config.yaml`:
     *after* it;
   - **auto-generated OpenAPI 3.1 docs** (HTML page + `swagger.json` +
     `swagger.yaml`) built from the typed routes;
-  - built-in health/readiness routes and graceful shutdown.
+  - built-in health/readiness routes and graceful shutdown;
+  - **static files and single-page applications** (`Server.Static`/`SPA`, from a
+    directory or an `fs.FS` such as `embed.FS`) registered in Go, with a SPA
+    fallback that never shadows the API (§7.14).
 - **PostgreSQL access** via `pgx/v5` pool + Squirrel query builder, with a
   transaction helper and optional **multi-tenant scoping** (Row-Level
   Security or tenant column) plus tenant middlewares in `nhttp`.
@@ -117,6 +120,7 @@ generics, `errors.Join`, `math/rand/v2`, `maps`/`slices` iterators.
 │   ├── certs.go        # certReloader: certificate rotation on file change and on Reload
 │   ├── routes.go       # built-in routes: health/readiness, docs + OpenAPI spec, JWKS (collision check)
 │   ├── graph.go        # module graph page and its Mermaid script (build tag nforge_graph; graph_off.go without it)
+│   ├── static.go       # Static/StaticFS/SPA/SPAFS: file mounts, SPA fallback, os.Root directories (§7.14)
 │   ├── response.go     # Send*/Parse*/ParseStatus, Envelope, ErrorTitle, SuccessResponse/ErrorResponse (aliases)
 │   ├── middleware.go   # Tracing, Logger (thin wrappers)
 │   ├── typed_route.go  # Opts, TypedRoute, TypedRouter, T*, Body/Query, request flow (wrap)
@@ -133,7 +137,7 @@ generics, `errors.Join`, `math/rand/v2`, `maps`/`slices` iterators.
 │       ├── jwks/       # JWKS handler (GET/HEAD, ETag, 304)
 │       ├── tracing/    # Tracing middleware + request_id = trace_id
 │       └── accesslog/  # Logger middleware + statusWriter
-├── _examples/          # runnable examples (§14): basic, jose, cache, database + the local stack
+├── _examples/          # runnable examples (§14): basic, jose, cache, database + the local stack, static
 │   ├── docker-compose.yml  # PostgreSQL, Redis, OTel Collector, Tempo, Loki, Grafana
 │   └── observability/      # collector/tempo/loki configs + Grafana provisioning
 ├── README.md / LICENSE # project overview; MIT, AMS Software e Consultoria LTDA
@@ -1342,6 +1346,88 @@ An arrow points from a consumer to its dependency; dotted means optional.
   only, no collision with docs, health, readiness or JWKS. A collision with an
   application route is the router's registration panic.
 
+### 7.14 Static files and single-page applications (`static.go`)
+
+`Server.Static`, `StaticFS`, `SPA` and `SPAFS` serve files from the same router
+as the API, through the same middleware chain (tracing, logging, recovery,
+body/timeouts, security headers, CORS, `Use`), on every transport. Routes are
+registered **in Go, during a module's Init**; there is no `http.static` YAML
+(one source of truth for routing). Each returns an `error`, so an invalid setup
+fails `app.Start` before any listener opens.
+
+```go
+server := module.Require(scope, nhttp.Capability)
+err := server.Static("/assets", "./public")                       // GET /assets/logo.svg -> ./public/logo.svg
+err = server.SPA("/", "./frontend/dist",
+    nhttp.WithSPAReserved("/api"),                                // an unknown /api/... is a 404, never HTML
+    nhttp.WithSPAImmutableDir("assets"))                          // hashed bundle files: immutable for a year
+sub, _ := fs.Sub(bundle, "frontend/dist")                         // //go:embed frontend/dist
+err = server.SPAFS("/", sub)                                      // the same over an fs.FS (embed.FS)
+```
+
+- **Mounting.** `Static`/`SPA` under a prefix register `GET`/`HEAD` on
+  `{prefix}` and `{prefix}/*` (segment boundary: `/assetsx` is not `/assets`;
+  other methods get the router's 405 with `Allow`). The **root** mount (`"/"`)
+  is the router's `NotFound` handler: it runs only when no registered route
+  matches, so it can never shadow an API, docs, health, readiness, graph or JWKS
+  route, in any registration order. Only one root mount per server; it owns
+  `NotFound`. When the router answers 405 (the path exists for another method)
+  the SPA is not consulted. Note that the router itself answers 404 (not 405)
+  for an unknown method on a path under a root `Mount`, which the built-in
+  health/readiness group is (that is the router, not the SPA).
+- **Conflicts fail** (never silently overridden): two overlapping prefixes, a
+  second root mount, a route (literal, parameter or catch-all) under a mounted
+  prefix. It is checked at registration and again in `Start`, so a route added
+  later by another module is caught. The root SPA coexists with every route.
+- **SPA fallback.** A file that exists is served. Otherwise the entry point
+  (`index.html`, `WithSPAIndex`) is served only for GET/HEAD navigations: the
+  client lists `text/html` in `Accept` (a wildcard does not count, so `curl`
+  and scripts get 404), the last path segment has **no extension**, there is no
+  dotfile segment and the path is not reserved. Missing `.js`/`.css`/images and
+  every non-navigation are 404. `/` serves the entry point without the `Accept`
+  test. Reserved automatically: the docs, health, readiness, graph and JWKS
+  paths; everything else (`/api`) is `WithSPAReserved` (an unmatched GET with
+  `Accept: text/html` under an API prefix would otherwise get HTML). The
+  entry point must exist and be a readable regular file at registration; if it
+  disappears later it is a generic 500 (logged), never another file. Frontend
+  visibility is not authorization: protect data in the API.
+- **Paths and files.** The URL path is decoded by net/http, then refused (404)
+  when it has control characters, NUL, a backslash, invalid UTF-8, an empty,
+  `.` or `..` segment (decoded traversal included), a trailing dot or space, or
+  is over 2 KiB. Dotfiles and dot directories, `*.pem|key|p12|pfx|jks|env`,
+  `config.yaml|yml|toml|ini` and `id_*` keys are never served (404, not 403).
+  No directory listing and no directory index (`Static` answers a directory with
+  404; the SPA serves its entry point only). Read-only: GET/HEAD, no uploads or
+  templates.
+- **Directories** (`Static`, `SPA`) are opened once with `os.OpenRoot` (the
+  kernel refuses any path that leaves the root) and `Open` additionally
+  **rejects every symbolic link** on the path (`Lstat` per component), so a link
+  inside the tree cannot expose a dotfile, a key or another directory. The check
+  and the open are not atomic: the static root must not be writable by untrusted
+  users. Relative directories resolve against the working directory when the
+  route is registered. The handles are closed by `Server.Stop`. `os.DirFS` is
+  **not** a sandbox, so `StaticFS`/`SPAFS` trust the `fs.FS` you pass (embed has
+  no links); they still validate the request path and refuse dotfiles and
+  non-regular files.
+- **Headers.** Content-Type from the extension (`application/octet-stream` when
+  unknown, never sniffed), `X-Content-Type-Options: nosniff` unless already set,
+  and whatever `http.security` sent stays. Serving uses `http.ServeContent`:
+  conditional requests (`If-Modified-Since`, `If-None-Match`), ranges and HEAD
+  behave as in net/http. **Validators depend on the file's modification time**:
+  a weak `ETag` (size + mtime) and `Last-Modified` exist for directory files;
+  `embed.FS` files have no mtime, hence no validators (use cache lifetimes,
+  hashed names or a gateway). No compression (a proxy can); no `Vary`.
+  Cache-Control defaults to `no-cache` everywhere (`WithStaticCacheControl`,
+  `WithSPAHTMLCacheControl` - `immutable` is refused, `WithSPAAssetCacheControl`);
+  `WithSPAImmutableDir("assets")` pins only the files of that directory
+  (`nhttp.ImmutableCacheControl`), so unhashed files (service workers,
+  manifests) are never immutable. Error responses carry no cache policy and no
+  filesystem path.
+- Not in OpenAPI (documented separately). Non-seekable `fs.File`s are buffered
+  (at most 32 MiB). Out of scope: directory listings, dotfile opt-in,
+  compression, a custom 404 page, SSR, dev proxies, file watching.
+- Runnable demo: `_examples/static` (§14).
+
 ---
 
 ## 8. Codec (`codec/`)
@@ -2176,7 +2262,7 @@ m := qr.Modules()                                       // [][]bool, no quiet zo
 
 ## 14. Examples and local stack (`_examples/`)
 
-Five independent `package main` applications, each focused on one part of
+Six independent `package main` applications, each focused on one part of
 the framework, each with its own `config.yaml` (only the keys it uses,
 commented), `README.md` and tests. They share one pattern: `main` loads the
 config, calls a `newApp(cfg, opts...)` that registers the built-in modules it
@@ -2194,6 +2280,7 @@ names are `<name>-example`.
 | `cache` | cache (redis; `standalone.env` → memory) | `routes.go` (`/api/v1/items/{key}` Set/Get/claim=SetIfAbsent/ttl/expire/Delete, `/api/v1/counters/{key}`, raw `/raw/{key}` bytes, `/api/v1/products/{id}` `GetOrLoad` over a slow `catalog`; `sendCacheError`) | shared scenarios run on memory (`main_test.go`) and on Redis (`redis_integration_test.go`, unique prefix, deletes its keys); CBOR; readiness |
 | `database` | database (+ tenancy column, `http.tenant.source: header`) | `users.go` (Squirrel/pgx CRUD, filters, batch in `Transaction`, `sendDBError`), `notes.go` (typed `Opts{Tenant}` routes and raw `server.TenantMiddleware()`, `ForContext`/`TenantEq`/tenant `Transaction`; `ensureNotesSchema` builds RLS when `mode: rls`), `rls.env` + `rls-setup.sql` (role `app_tenant`) | config + rls overlay load (unit); CRUD and tenant isolation 403/400/404 (integration) |
 | `qrcode` | none (`helper/qrcode` only; not an `app`) | `main.go` flags (`-payload` default `teste123`, `-out`, `-size`, `-logo`, `-terminal`, `-terminal-only`, `-invert`), `terminal.go` (half-block text QR, 4-module quiet zone, no ANSI), `gallery.go` (PNG, SVG, `base64.txt`, `datauri.txt`, static `index.html`), `assets/logo.svg` | terminal geometry and decode round trip, `-terminal-only` writes no files, empty payload fails, gallery PNGs decode |
+| `static` | http (`Static`, `SPA`, `StaticFS`, `SPAFS`), codec, logs | `main.go` (`-embed`, `-dist`, `-public`; `frontend` module: typed `/api/health`, `Static("/assets")`, `SPA("/")` with `WithSPAReserved("/api")` and `WithSPAImmutableDir("build")`), `frontend/dist` (a tiny hand-written build, no Node), `public/` | `/`, `/dashboard`, `/assets`, `/api/health`, 404s, cache headers, directory and embed modes, a missing entry point fails the start |
 
 Local stack — `_examples/docker-compose.yml` (project `nforge-examples`):
 PostgreSQL 18 (5432, `app`/`app`/`app`), Redis 8 (6379), OTel Collector
@@ -2215,6 +2302,7 @@ go run ./_examples/database -config _examples/database/config.yaml [-envfile _ex
 make dev                                                  # air: hot reload of _examples/basic (needs PostgreSQL)
 make run-graph                                            # basic with -tags nforge_graph and /graph on (needs PostgreSQL)
 make run-graph-standalone                                 # the same without Docker
+go run ./_examples/static -config _examples/static/config.yaml [-embed]   # API + SPA + public files on :8080
 go run ./_examples/qrcode [-terminal-only] [-payload https://example.com]   # QR in the terminal + gallery in ./qrcode-output
 ```
 Then `http://localhost:8080/docs`; Grafana at `http://localhost:3000`.
@@ -2231,7 +2319,7 @@ go test ./...                    # unit tests (app, cache, codec, config, crypto
 go test -race ./...
 
 # the examples (`./...` skips `_` directories, so name each one):
-EXAMPLES='./_examples/basic/... ./_examples/jose/... ./_examples/cache/... ./_examples/database/... ./_examples/qrcode/...'
+EXAMPLES='./_examples/basic/... ./_examples/jose/... ./_examples/cache/... ./_examples/database/... ./_examples/qrcode/... ./_examples/static/...'
 go vet $EXAMPLES
 go test -race $EXAMPLES
 

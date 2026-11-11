@@ -9,6 +9,7 @@ the framework. Start with `basic`, then pick the module you need.
 | [`jose`](jose) | JWT login, bearer authentication, scopes, `Principal`, nested (signed + encrypted) tokens, generic JWS/JWE, JWKS and key files | two secrets in the environment |
 | [`cache`](cache) | the cache module on Redis or memory: objects, TTL, NX, counters, raw bytes, `GetOrLoad`, CBOR, outages | Redis (or `standalone.env`) |
 | [`database`](database) | the database module: Squirrel + pgx repositories, transactions, error mapping, multi-tenancy in column or Row-Level Security mode | PostgreSQL |
+| [`static`](static) | static files and a built single-page application next to the API: `Static`, `SPA`, directories and `embed.FS`, cache headers, reserved prefixes | nothing |
 
 All commands run from the **repository root**. Every example reads its own
 `config.yaml` (pass it with `-config`) and listens on `127.0.0.1:8080`, with

@@ -20,6 +20,23 @@ All notable changes to nForge are documented here. The format follows
 - `_examples/qrcode`: a gallery (PNG, SVG, Base64, Data URI, `index.html`) and a
   QR Code printed in the terminal (`-terminal-only`).
 
+- `nhttp`: static files and single-page applications on the API's server.
+  `Server.Static`/`StaticFS` and `Server.SPA`/`SPAFS` (directory or `fs.FS`,
+  `embed.FS` included) are registered in Go and return an error, so an invalid
+  setup fails the start. The root SPA is the router's last resort: it never
+  shadows an API, docs, health or any registered route, and answers only GET/HEAD
+  navigations (`Accept: text/html`, no file extension, not under a reserved
+  prefix); a missing script, stylesheet or image is a 404. Directories are opened
+  with `os.OpenRoot` and symbolic links are refused; dotfiles, private keys and
+  configuration files are never served, with no directory listing. Conditional
+  and range requests follow `http.ServeContent`; `Cache-Control` defaults to
+  `no-cache`, with explicit options (and an immutable directory for hashed
+  bundles). Overlapping mounts and routes fail at registration or `Start`.
+  Options: `WithStaticCacheControl`, `WithSPAIndex`, `WithSPAHTMLCacheControl`,
+  `WithSPAAssetCacheControl`, `WithSPAImmutableDir`, `WithSPAReserved`.
+- `_examples/static`: an API, a built SPA fixture (no Node) and public files,
+  from directories or `-embed`.
+
 ## [v0.4.0] - 2026-11-07
 
 nForge becomes a general application runtime. This release contains breaking
