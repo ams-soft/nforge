@@ -15,7 +15,7 @@ Important notes for code generation:
 - Serve a built frontend with `server.SPA("/", dir, nhttp.WithSPAReserved("/api"))` and public files with `server.Static("/assets", dir)` (or the `FS` variants for `embed.FS`) in an Init: they return errors, the root SPA is only the router's last resort (it never shadows a route) and answers just GET/HEAD navigations with `Accept: text/html`; reserve every API prefix.
 - Prefer the generic route functions: `nhttp.Post(api, "/users", func(r *http.Request, u User) (User, error) {...})`, returning `nhttp.Error(404, "...")` for client errors. `TGet`/`TPost` remain for handlers that write the response themselves.
 - Everything in the codebase (comments, logs, errors, API texts, tests) is English.
-- Build with Go 1.27.2+ (the repository pins `toolchain go1.27.3`); lint with golangci-lint v2.15.0+ (older releases cannot read go1.27.2 export data) and the repo's `.golangci.yml`.
+- Build with Go 1.27.2+ (the repository pins `toolchain go1.27.4`); lint with golangci-lint v2.15.0+ (older releases cannot read go1.27.2 export data) and the repo's `.golangci.yml`.
 
 ## Docs
 

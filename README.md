@@ -66,7 +66,7 @@ go get github.com/ams-soft/nforge
 
 nForge needs **Go 1.27** or newer; build with **1.27.2+**, which fixes
 `net/http`, `crypto/tls` and `html/template` vulnerabilities (this repository
-pins it with `toolchain go1.27.3`). Import the HTTP package as
+pins it with `toolchain go1.27.4`). Import the HTTP package as
 `nhttp "github.com/ams-soft/nforge/http"` and the crypto package as
 `ncrypto "github.com/ams-soft/nforge/crypto"`.
 

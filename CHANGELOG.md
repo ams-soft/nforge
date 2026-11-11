@@ -6,6 +6,12 @@ All notable changes to nForge are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- The toolchain pin moves to `go1.27.4`, which fixes GO-2026-6859 (an HTTP/1 server
+  crash from a `MaxBytesReader` header race in `net/http`) that `govulncheck`
+  reports as reachable through `nhttp`. Build with Go 1.27.4 or newer.
+
 ### Added
 
 - `helper/qrcode`: standalone QR Code generation. A self-contained Model 2

@@ -80,7 +80,7 @@ proxy); bump this `version` in the commit that gets tagged, so
 Never move or recreate a published tag: the module proxy keeps the first
 content it saw for a version forever; fix forward with a new patch release.
 
-Toolchain: **Go 1.27**, pinned to `toolchain go1.27.3` in `go.mod` (stdlib
+Toolchain: **Go 1.27**, pinned to `toolchain go1.27.4` in `go.mod` (stdlib
 security fixes; `GOTOOLCHAIN=auto` downloads it; go-ams-router itself
 needs 1.24+). The code uses
 modern Go freely: `range` over ints, `strings.SplitSeq`, `reflect.TypeFor`,
