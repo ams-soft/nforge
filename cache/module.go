@@ -10,6 +10,7 @@ import (
 
 	"github.com/ams-soft/nforge/codec"
 	"github.com/ams-soft/nforge/database"
+	"github.com/ams-soft/nforge/metrics"
 	"github.com/ams-soft/nforge/module"
 )
 
@@ -85,7 +86,7 @@ func Module() module.Descriptor {
 			Requires: []module.Handle{codec.Capability},
 			// The database is optional: it only orders the two (the cache closes
 			// first) and tells whether keys are isolated per tenant.
-			Optional: []module.Handle{module.Logger, database.Capability},
+			Optional: []module.Handle{module.Logger, database.Capability, metrics.Capability},
 			Config:   cfg,
 			Check: func(v *module.View) error {
 				settings, _, _, err := module.ConfigOf[codec.Settings](v, codec.Capability)
@@ -129,6 +130,9 @@ func Module() module.Descriptor {
 					return module.Hooks{}, fmt.Errorf("unable to setup cache: %w", err)
 				}
 				module.Provide(sc, Capability, c)
+				if reg, ok := module.Lookup(sc, metrics.Capability); ok {
+					c.registerMetrics(reg)
+				}
 				if hasLogger {
 					logger.InfoContext(ctx, "[CacheModule] Cache setup completed", "cache", cfg, "tenant_isolation", tenants)
 				}
@@ -139,7 +143,7 @@ func Module() module.Descriptor {
 }
 
 // tenantFromContext adapts database.TenantFromContext (the framework's tenant
-// context, already validated as a UUID v4) to the cache resolver.
+// context, already validated as a UUID) to the cache resolver.
 func tenantFromContext(ctx context.Context) (string, error) {
 	if id, ok := database.TenantFromContext(ctx); ok {
 		return id, nil

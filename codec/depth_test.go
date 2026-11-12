@@ -64,7 +64,7 @@ func TestXMLNestingWithinTheLimitStillDecodes(t *testing.T) {
 
 // Skipping unknown deep content must not recurse or build paths either.
 func TestXMLUnknownDeepContentIsSkippedCheaply(t *testing.T) {
-	r, _ := New(Config{Formats: []string{"xml"}, Default: "xml"})
+	r, _ := New(Config{Formats: []string{"xml"}, Default: "xml", MaxPayloadBytes: 8 << 20, MaxElements: 1_000_000})
 	const depth = 200_000
 	payload := "<a><zzz>" + strings.Repeat("<x>", depth) + strings.Repeat("</x>", depth) + "</zzz></a>"
 	var got error
@@ -80,22 +80,29 @@ func TestXMLUnknownDeepContentIsSkippedCheaply(t *testing.T) {
 	}
 }
 
-// The JSON presence fallback (a duplicate member forces the tree walk) must
-// not build a path string per level (131 KB used 337 MB).
-func TestJSONPresenceFallbackIsNotQuadratic(t *testing.T) {
+// A duplicate member is refused by a linear pre-scan, however deep the
+// document, without building paths or trees (the old fallback used 337 MB for a
+// 131 KB payload).
+func TestJSONDuplicateMemberIsRefusedCheaplyOnDeepPayloads(t *testing.T) {
 	r, _ := New(Config{Formats: []string{"json"}, StrictUnknownFields: true})
 	const depth = 9000
-	payload := `{"v":1,"v":2,"next":` + strings.Repeat(`{"v":1,"next":`, depth) + `null` + strings.Repeat(`}`, depth) + `}`
+	deep := func(head string) string {
+		return head + `"next":` + strings.Repeat(`{"v":1,"next":`, depth) + `null` + strings.Repeat(`}`, depth) + `}`
+	}
 	var got error
 	bytes := allocated(func() {
 		var v deepNode
-		got = r.DecodeAs("json", []byte(payload), &v)
+		got = r.DecodeAs("json", []byte(deep(`{"v":1,"v":2,`)), &v)
 	})
-	if got != nil {
-		t.Fatalf("decode: %v", got)
+	if !errors.Is(got, ErrDuplicateField) {
+		t.Fatalf("duplicate member: %v", got)
 	}
-	if bytes > 128<<20 {
-		t.Errorf("fallback allocated %d MB for a %d KB payload", bytes>>20, len(payload)>>10)
+	if bytes > 64<<20 {
+		t.Errorf("refusing allocated %d MB", bytes>>20)
+	}
+	var v deepNode
+	if err := r.DecodeAs("json", []byte(deep(`{"v":1,`)), &v); err != nil {
+		t.Fatalf("the same document without a duplicate must decode: %v", err)
 	}
 }
 

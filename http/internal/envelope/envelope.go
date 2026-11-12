@@ -42,6 +42,9 @@ func New(r *stdhttp.Request, status int, message any) Response {
 // Title describes the error status, e.g. 404 -> "404 ERROR NOT FOUND".
 func Title(status int) string {
 	text := stdhttp.StatusText(status)
+	if status == 499 { // nginx's "client closed request", used by nhttp for aborted requests
+		text = "Client Closed Request"
+	}
 	if text == "" {
 		text = "Unknown"
 	}

@@ -42,18 +42,19 @@ err = a.Run(context.Background()) // start, serve, graceful shutdown on SIGINT/S
 | Logging | `logs` | `log/slog` to the terminal (tint) and/or OpenTelemetry (OTLP), `request_id` on every record |
 | Tracing | `telemetry` | OpenTelemetry spans per request, with `request_id == trace_id` |
 | Codec | `codec` | JSON, CBOR and XML from **one struct**: required fields, strict mode, payload limits, XXE protection, `Validate()` |
-| HTTP | `http` (`nhttp`) | Plain HTTP, opt-in **HTTPS** (TLS 1.3) and **HTTP/3**, a standard response envelope, **typed routes** checked by the compiler and validated before and after the handler, typed query strings, **OpenAPI 3.1** docs, health/readiness, an optional module graph page, **static files and SPAs** (`Static`, `SPA`, from a directory or `embed.FS`) |
+| HTTP | `http` (`nhttp`) | Plain HTTP, opt-in **HTTPS** (TLS 1.3) and **HTTP/3**, a standard response envelope, **typed routes** checked by the compiler and validated before and after the handler, typed query strings, **OpenAPI 3.1** docs, health/readiness, **rate limiting** and load shedding, a graceful-shutdown delay, an optional module graph page, **static files and SPAs** (`Static`, `SPA`, from a directory or `embed.FS`) |
 | Database | `database` | PostgreSQL with pgx + Squirrel, transactions, **multi-tenancy** by tenant column or Row-Level Security |
 | JOSE | `jose` | JWT, JWS and JWE through explicit profiles, bearer authentication with scopes, JWKS, key rotation |
 | Cache | `cache` | Redis or a bounded in-process LRU behind one API: objects, bytes, counters, TTLs, NX, cache-aside `GetOrLoad`, tenant namespaces |
-| Messaging | `message` | RabbitMQ confirmed publishing and concurrent consumers, Classic priority, Quorum queues, optional dead-letter/retry handling and DLQ reprocessing |
+| Messaging | `message` | RabbitMQ publishing confirmed **per message** and pipelined, concurrent consumers, Classic priority, Quorum queues, optional dead-letter/retry handling and DLQ reprocessing, W3C trace context across the broker |
+| Metrics | `metrics` | A dependency-free registry in the Prometheus text format, with ready-made instruments for HTTP, SSE, Messaging, the database pool and the cache |
 | Server-Sent Events | `sse` | Explicit module with **user-targeted** delivery only: authenticated streams (the validated JWT subject), `PublishToUser`, memory or RabbitMQ driver (a fanout exchange, one ephemeral queue per instance), heartbeats, bounded queues and limits, graceful shutdown; best effort, no replay |
 | Crypto | `crypto` (`ncrypto`) | Standalone primitives, no config: XChaCha20-Poly1305 and AES-256-GCM encryption, HMAC-SHA256, bcrypt/Argon2id password hashing, BLAKE3/SHA-256, secure random values and ULIDs |
 | Helpers | `helper/safecalc` | Money as integer cents: exact formatting (BRL by default, any separators), float input rounded half-to-even |
 | Helpers | `helper/qrcode` | QR Codes as PNG, SVG, Base64 and Data URI: rounded modules and finders, centered PNG/JPEG/SVG logo, level L/M/Q/H, a terminal-printable matrix |
 
 Security defaults stay on: HTTP transport timeouts (no Slowloris; the per-request handler timeout is opt-in), DTD/XXE
-blocked, payload limits, a restricted
+blocked, payload and element limits (1 MiB, 250k values), duplicate JSON members refused, CORS that must name its origins, a restricted
 JOSE suite (never `none`, algorithms only from config, mandatory `kid`/`typ`),
 sanitized errors that never leak tokens, keys, SQL or Redis details,
 transaction-local tenant settings, and in `ncrypto` AEAD-only encryption with

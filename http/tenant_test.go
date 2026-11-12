@@ -59,7 +59,8 @@ func TestTenantFromClaim(t *testing.T) {
 	}{
 		{"missing claim", "", 403, detailTenantRequired},
 		{"not a uuid", "acme", 400, detailTenantInvalid},
-		{"uuid v1", "6ba7b810-9dad-11d1-80b4-00c04fd430c8", 400, detailTenantInvalid},
+		{"uuid version 9", "6ba7b810-9dad-91d1-80b4-00c04fd430c8", 400, detailTenantInvalid},
+		{"nil uuid", "00000000-0000-0000-0000-000000000000", 400, detailTenantInvalid},
 	}
 	for _, c := range cases {
 		rec := serve(h, "Authorization", bearer(c.tenant))

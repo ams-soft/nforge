@@ -8,6 +8,7 @@ import (
 	stdhttp "net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/ams-soft/nforge/codec"
 	"github.com/ams-soft/nforge/http/internal/authn"
@@ -41,6 +42,10 @@ type Principal struct {
 	TenantID string
 	Roles    []string
 	Scopes   []string
+	// ExpiresAt is the token's exp claim; long-lived responses (Server-Sent
+	// Events) end no later than it. Always set by Authenticate, from the
+	// validated registered claims, never by a PrincipalMapper.
+	ExpiresAt time.Time
 }
 
 // HasScopes reports whether the principal holds every scope (exact,
@@ -91,9 +96,20 @@ type PrincipalMapper func(ctx context.Context, registered jose.RegisteredClaims,
 type AuthOption func(*authOptions)
 
 type authOptions struct {
-	realm  string
-	scopes []string
-	mapper PrincipalMapper
+	realm       string
+	scopes      []string
+	mapper      PrincipalMapper
+	scopeClaims []string
+}
+
+// WithScopeClaims makes the default mapping read the scopes from these custom
+// claims, in order, instead of only "scope". Each claim may be a
+// space-separated string (RFC 8693 "scope") or an array of strings (the "scp"
+// of Azure AD and Okta, "permissions" of Auth0); the values of every listed
+// claim are merged. It is ignored when WithPrincipalMapper is also given.
+func WithScopeClaims(names ...string) AuthOption {
+	copied := slices.Clone(names)
+	return func(o *authOptions) { o.scopeClaims = copied }
 }
 
 // WithRealm sets the WWW-Authenticate realm (default "nforge-api"). It
@@ -141,6 +157,10 @@ func Authenticate(service *jose.Service, profile string, opts ...AuthOption) fun
 	if err != nil {
 		panic("nhttp: Authenticate: " + err.Error())
 	}
+	return authMiddleware(a)
+}
+
+func authMiddleware(a *authenticator) func(stdhttp.Handler) stdhttp.Handler {
 	return func(next stdhttp.Handler) stdhttp.Handler {
 		return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 			r, ok := a.authenticate(w, r, codec.FromContext(r.Context()).DefaultFormat())
@@ -149,6 +169,19 @@ func Authenticate(service *jose.Service, profile string, opts ...AuthOption) fun
 			}
 		})
 	}
+}
+
+// Authenticate is the middleware of the package-level Authenticate bound to this
+// server: failures are logged through the application's logger (the free
+// function logs through slog.Default, which is not the configured logger unless
+// the application opted in to process globals). It panics at construction when
+// the jose module is disabled or the profile is unusable.
+func (s *Server) Authenticate(profile string, opts ...AuthOption) func(stdhttp.Handler) stdhttp.Handler {
+	a, err := newAuthenticator(s.jose, profile, opts, func() *slog.Logger { return s.logger })
+	if err != nil {
+		panic("nhttp: Server.Authenticate: " + err.Error())
+	}
+	return authMiddleware(a)
 }
 
 // RequireScopes returns a middleware that requires every listed scope from
@@ -208,6 +241,12 @@ func newAuthenticator(service *jose.Service, profile string, opts []AuthOption, 
 	mapper := o.mapper
 	if mapper == nil {
 		mapper = defaultPrincipalMapper
+		if len(o.scopeClaims) > 0 {
+			claims := slices.Clone(o.scopeClaims)
+			mapper = func(ctx context.Context, reg jose.RegisteredClaims, custom any) (Principal, error) {
+				return mapPrincipal(custom, claims, true)
+			}
+		}
 	}
 	return &authenticator{service: service, profile: profile, realm: o.realm, scopes: scopes, mapper: mapper, logger: logger}, nil
 }
@@ -254,6 +293,10 @@ func (a *authenticator) authenticate(w stdhttp.ResponseWriter, r *stdhttp.Reques
 	}
 	reg := validated.Registered
 	p.Issuer, p.Subject, p.Audience, p.TokenID = reg.Issuer, reg.Subject, slices.Clone(reg.Audience), reg.ID
+	p.ExpiresAt = time.Time{}
+	if reg.ExpiresAt != nil {
+		p.ExpiresAt = time.Unix(int64(*reg.ExpiresAt), 0)
+	}
 
 	if !p.HasScopes(a.scopes...) {
 		a.logger().DebugContext(ctx, "[HTTPModule] authorization failed", "reason", "insufficient_scope", "profile", a.profile)
@@ -300,6 +343,12 @@ func fail(w stdhttp.ResponseWriter, r *stdhttp.Request, format, realm string, st
 // (string), roles (array of strings) and scope (space-separated string).
 // Wrong types reject the token.
 func defaultPrincipalMapper(_ context.Context, _ jose.RegisteredClaims, custom any) (Principal, error) {
+	return mapPrincipal(custom, []string{"scope"}, false)
+}
+
+// mapPrincipal reads tenant_id, roles and the scope claims from the custom claims.
+// Array-valued scope claims are accepted only when WithScopeClaims asked for them.
+func mapPrincipal(custom any, scopeClaims []string, allowArray bool) (Principal, error) {
 	var p Principal
 	m, _ := custom.(map[string]any)
 	reject := func(field string) error {
@@ -325,15 +374,33 @@ func defaultPrincipalMapper(_ context.Context, _ jose.RegisteredClaims, custom a
 			p.Roles = append(p.Roles, s)
 		}
 	}
-	if v, ok := m["scope"]; ok {
-		s, ok := v.(string)
+	for _, name := range scopeClaims {
+		v, ok := m[name]
 		if !ok {
-			return p, reject("scope")
+			continue
 		}
-		for scope := range strings.SplitSeq(s, " ") {
-			if scope != "" {
-				p.Scopes = append(p.Scopes, scope)
+		switch x := v.(type) {
+		case string:
+			for scope := range strings.SplitSeq(x, " ") {
+				if scope != "" {
+					p.Scopes = append(p.Scopes, scope)
+				}
 			}
+		case []any:
+			if !allowArray {
+				return p, reject(name)
+			}
+			for _, item := range x {
+				s, ok := item.(string)
+				if !ok {
+					return p, reject(name)
+				}
+				if s != "" {
+					p.Scopes = append(p.Scopes, s)
+				}
+			}
+		default:
+			return p, reject(name)
 		}
 	}
 	return p, nil

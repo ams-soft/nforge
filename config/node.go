@@ -40,6 +40,11 @@ func readYAMLFile(path string, mustExist bool) (*yaml.Node, error) {
 	}
 	var root yaml.Node
 	if err := yaml.Unmarshal(data, &root); err != nil {
+		if bytes.Contains(data, []byte("${")) && strings.Contains(err.Error(), "did not find expected") {
+			// The braces of a ${VAR} placeholder end a flow mapping ({a: ${B}}) before
+			// expansion runs, and quoting would make a number a string.
+			err = fmt.Errorf("%w (a ${VAR} placeholder inside a flow mapping or sequence breaks YAML syntax: write that section in block style, one key per line)", err)
+		}
 		return nil, err
 	}
 	if err := expandEnvNodes(&root); err != nil {

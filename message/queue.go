@@ -15,13 +15,14 @@ const (
 
 // QueueSpec declares an immutable RabbitMQ queue and its optional failure policy.
 type QueueSpec struct {
-	name        string
-	kind        queueType
-	priority    uint8
-	prioritySet bool
-	deadLetter  bool
-	retryDelay  time.Duration
-	maxAttempts uint32
+	name          string
+	kind          queueType
+	priority      uint8
+	prioritySet   bool
+	deadLetter    bool
+	retryDelay    time.Duration
+	maxAttempts   uint32
+	dropOnFailure bool
 }
 
 // Queue creates a durable Classic queue.
@@ -36,6 +37,11 @@ func (q QueueSpec) MaxPriority(max uint8) QueueSpec { q.priority = max; q.priori
 // DeadLetter enables a managed dead-letter queue.
 func (q QueueSpec) DeadLetter() QueueSpec { q.deadLetter = true; return q }
 
+// DropOnFailure states that a message whose consumer fails (error, panic or
+// timeout) is discarded: without a dead-letter queue there is nowhere else for
+// it to go. It records the decision so the module does not warn about it.
+func (q QueueSpec) DropOnFailure() QueueSpec { q.dropOnFailure = true; return q }
+
 // WithRetry enables bounded transport retry and requires DeadLetter.
 func (q QueueSpec) WithRetry(delay time.Duration, maxAttempts uint32) QueueSpec {
 	q.retryDelay = delay
@@ -45,6 +51,9 @@ func (q QueueSpec) WithRetry(delay time.Duration, maxAttempts uint32) QueueSpec 
 func (q QueueSpec) validate() error {
 	if len(q.name) < 1 || len(q.name) > 255 || strings.HasPrefix(q.name, "amq.") || strings.HasSuffix(q.name, "_dlq") || strings.HasSuffix(q.name, "_retry") {
 		return fmt.Errorf("%w: invalid or reserved name", ErrInvalidQueue)
+	}
+	if q.dropOnFailure && q.deadLetter {
+		return fmt.Errorf("%w: on_failure drop contradicts dead_letter", ErrInvalidQueue)
 	}
 	if q.kind == "" {
 		q.kind = classic
@@ -61,5 +70,5 @@ func (q QueueSpec) validate() error {
 	return nil
 }
 func equalQueue(a, b QueueSpec) bool {
-	return a.name == b.name && a.kind == b.kind && a.priority == b.priority && a.prioritySet == b.prioritySet && a.deadLetter == b.deadLetter && a.retryDelay == b.retryDelay && a.maxAttempts == b.maxAttempts
+	return a.name == b.name && a.kind == b.kind && a.priority == b.priority && a.prioritySet == b.prioritySet && a.deadLetter == b.deadLetter && a.retryDelay == b.retryDelay && a.maxAttempts == b.maxAttempts && a.dropOnFailure == b.dropOnFailure
 }

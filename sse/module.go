@@ -9,6 +9,7 @@ import (
 	"github.com/ams-soft/nforge/codec"
 	nhttp "github.com/ams-soft/nforge/http"
 	"github.com/ams-soft/nforge/message"
+	"github.com/ams-soft/nforge/metrics"
 	"github.com/ams-soft/nforge/module"
 )
 
@@ -52,7 +53,7 @@ func Module() module.Descriptor {
 		return module.Definition{
 			Provides: []module.Handle{Capability},
 			Requires: requires,
-			Optional: []module.Handle{module.Logger},
+			Optional: []module.Handle{module.Logger, metrics.Capability},
 			Ingress:  true,
 			Config:   cfg,
 			Check: func(v *module.View) error {
@@ -81,7 +82,14 @@ func Module() module.Descriptor {
 					drv = &rabbitDriver{client: module.Require(sc, message.Capability), exchange: cfg.RabbitMQ.Exchange, prefetch: cfg.RabbitMQ.Prefetch}
 				}
 				m := newManager(cfg, module.Require(sc, codec.Capability), logger, drv)
+				if cfg.SendBufferBytes > 0 {
+					srv := module.Require(sc, nhttp.Capability).Srv // before the server starts
+					srv.ConnContext = ConnContext(srv.ConnContext)
+				}
 				module.Provide(sc, Capability, m)
+				if reg, ok := module.Lookup(sc, metrics.Capability); ok {
+					m.registerMetrics(reg)
+				}
 				if logger != nil {
 					logger.InfoContext(ctx, "[SSEModule] Server-Sent Events ready", "driver", cfg.Driver)
 				}

@@ -59,7 +59,7 @@ func TestModuleDisabledByDefault(t *testing.T) {
 func TestModuleYAMLWithEnvExpansion(t *testing.T) {
 	t.Setenv("TEST_REDIS_PASSWORD", "s3cr3t")
 	yaml := `
-codec: {formats: {enabled: [json, cbor]}}
+codec: {formats: {enabled: [json, cbor]}, max_payload_bytes: 4mb}
 cache:
   enabled: true
   driver: redis

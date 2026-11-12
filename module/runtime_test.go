@@ -779,3 +779,38 @@ func TestLifetimeContextEndsAfterShutdown(t *testing.T) {
 		t.Fatal("the lifetime context outlived the shutdown")
 	}
 }
+
+// G26: a Ready hook that blocks ignoring its context is not started again by
+// the next samples, so probes cannot pile up goroutines behind it.
+func TestBlockedReadyHookIsNotProbedAgainWhileRunning(t *testing.T) {
+	var started atomic.Int32
+	release := make(chan struct{})
+	m := New("stuck", Definition{Init: func(context.Context, *Scope) (Hooks, error) {
+		return Hooks{Ready: func(context.Context) error {
+			started.Add(1)
+			<-release // ignores ctx
+			return nil
+		}}, nil
+	}})
+	rt, err := run(t, Options{ProbeInterval: time.Nanosecond, ProbeTimeout: 20 * time.Millisecond}, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 30 {
+		if rt.Status(context.Background()).Ready {
+			t.Fatal("a blocked probe must read as not ready")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if n := started.Load(); n != 1 {
+		t.Fatalf("the hook was started %d times while it was still running", n)
+	}
+	close(release)
+	deadline := time.Now().Add(2 * time.Second)
+	for !rt.Status(context.Background()).Ready {
+		if time.Now().After(deadline) {
+			t.Fatal("the module never became ready after the hook returned")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}

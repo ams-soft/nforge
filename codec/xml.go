@@ -33,15 +33,16 @@ import (
 // error (ErrNamespace).
 
 type xmlCodec struct {
-	strict   bool
-	allowDTD bool
+	strict      bool
+	allowDTD    bool
+	maxElements int
 }
 
 // NewXML creates the XML codec. Output always starts with xml.Header
 // (<?xml version="1.0" encoding="UTF-8"?>). By default any <!DOCTYPE> is
 // rejected (ErrDTDNotAllowed); external entities are never resolved.
 func NewXML(opts Options) StreamCodec {
-	return &xmlCodec{strict: opts.StrictUnknownFields, allowDTD: opts.AllowDTD}
+	return &xmlCodec{strict: opts.StrictUnknownFields, allowDTD: opts.AllowDTD, maxElements: opts.MaxElements}
 }
 
 func (c *xmlCodec) ContentType() string { return XML }
@@ -93,7 +94,7 @@ func (c *xmlCodec) DecodeFrom(r io.Reader, v any) error {
 	raw := xml.NewDecoder(r)
 	d := &xmlDecoder{
 		raw:    raw,
-		d:      xml.NewTokenDecoder(&xmlGuard{d: raw, allowDTD: c.allowDTD}),
+		d:      xml.NewTokenDecoder(&xmlGuard{d: raw, allowDTD: c.allowDTD, max: c.maxElements}),
 		strict: c.strict,
 	}
 	return d.decodeDocument(rv)
@@ -440,6 +441,8 @@ func xmlEncodeErr(err error) error {
 type xmlGuard struct {
 	d        *xml.Decoder
 	allowDTD bool
+	max      int // elements and attributes allowed; 0 = unlimited
+	n        int
 }
 
 func (g *xmlGuard) Token() (xml.Token, error) {
@@ -447,8 +450,16 @@ func (g *xmlGuard) Token() (xml.Token, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, ok := tok.(xml.Directive); ok && !g.allowDTD {
-		return nil, ErrDTDNotAllowed
+	switch t := tok.(type) {
+	case xml.Directive:
+		if !g.allowDTD {
+			return nil, ErrDTDNotAllowed
+		}
+	case xml.StartElement:
+		g.n += 1 + len(t.Attr)
+		if g.max > 0 && g.n > g.max {
+			return nil, &ComplexityError{Format: "xml", Limit: g.max}
+		}
 	}
 	return tok, nil
 }
@@ -488,7 +499,7 @@ func (d *xmlDecoder) token() (xml.Token, error) {
 func (d *xmlDecoder) mapErr(err error) error {
 	var syn *xml.SyntaxError
 	switch {
-	case errors.Is(err, ErrPayloadTooLarge), errors.Is(err, ErrDTDNotAllowed):
+	case errors.Is(err, ErrPayloadTooLarge), errors.Is(err, ErrDTDNotAllowed), errors.Is(err, ErrTooComplex):
 		return err
 	case errors.As(err, &syn):
 		return &SyntaxError{Format: "xml", Offset: d.raw.InputOffset(), Msg: syn.Error()}

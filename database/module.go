@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ams-soft/nforge/metrics"
 	"github.com/ams-soft/nforge/module"
 )
 
@@ -129,7 +130,7 @@ func Module() module.Descriptor {
 		return module.Definition{
 			Disabled: !cfg.Enabled,
 			Provides: []module.Handle{Capability},
-			Optional: []module.Handle{module.Logger},
+			Optional: []module.Handle{module.Logger, metrics.Capability},
 			Config:   cfg,
 			Init: func(ctx context.Context, sc *module.Scope) (module.Hooks, error) {
 				openCtx, cancel := context.WithTimeout(ctx, startupTimeout)
@@ -139,6 +140,9 @@ func Module() module.Descriptor {
 					return module.Hooks{}, fmt.Errorf("unable to setup database: %w", err)
 				}
 				module.Provide(sc, Capability, db)
+				if reg, ok := module.Lookup(sc, metrics.Capability); ok {
+					db.registerMetrics(reg)
+				}
 				if logger, ok := module.Lookup(sc, module.Logger); ok {
 					logger.InfoContext(ctx, "[DatabaseModule] Database setup completed", "database", cfg)
 				}

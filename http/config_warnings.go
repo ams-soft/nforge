@@ -65,6 +65,9 @@ func docsWarnings(cfg *Config, app module.App) []finding {
 	if cfg.Routes.Readiness.Enabled {
 		on = append(on, "http.routes.readiness")
 	}
+	if cfg.Routes.Metrics.Enabled {
+		on = append(on, "http.routes.metrics")
+	}
 	if len(on) == 0 {
 		return nil
 	}

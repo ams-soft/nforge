@@ -72,12 +72,16 @@ type QueueConfig struct {
 	MaxPriority *uint8      `yaml:"max_priority"` // Classic only; 1..10
 	DeadLetter  bool        `yaml:"dead_letter"`  // default: false
 	Retry       RetryConfig `yaml:"retry"`        // requires dead_letter
+	// OnFailure documents what happens to a message whose consumer fails:
+	// "dead_letter" (needs dead_letter: true) or "drop" (the message is
+	// discarded; the explicit form silences the startup warning).
+	OnFailure string `yaml:"on_failure"` // default: unset
 }
 
 // RetryConfig enables a fixed-TTL retry bucket when dead_letter is enabled.
 type RetryConfig struct {
 	Delay       time.Duration `yaml:"delay"`        // minimum: 1ms
-	MaxAttempts uint32        `yaml:"max_attempts"` // positive bounded transport retries
+	MaxAttempts uint32        `yaml:"max_attempts"` // total handler invocations before the DLQ (1 = no retry); positive
 }
 
 func (q QueueConfig) spec() QueueSpec {
@@ -90,6 +94,9 @@ func (q QueueConfig) spec() QueueSpec {
 	}
 	if q.DeadLetter {
 		s = s.DeadLetter()
+	}
+	if q.OnFailure == "drop" {
+		s = s.DropOnFailure()
 	}
 	if q.Retry.Delay != 0 || q.Retry.MaxAttempts != 0 {
 		s = s.WithRetry(q.Retry.Delay, q.Retry.MaxAttempts)
@@ -165,6 +172,15 @@ func (c Config) validate() error {
 	for _, qc := range c.Queues {
 		if qc.Type != "" && qc.Type != "classic" && qc.Type != "quorum" {
 			return fmt.Errorf("%w: queue %s has invalid type", ErrInvalidQueue, qc.Name)
+		}
+		switch qc.OnFailure {
+		case "", "drop":
+		case "dead_letter":
+			if !qc.DeadLetter {
+				return fmt.Errorf("%w: queue %s: on_failure dead_letter requires dead_letter: true", ErrInvalidQueue, qc.Name)
+			}
+		default:
+			return fmt.Errorf("%w: queue %s: on_failure must be drop or dead_letter", ErrInvalidQueue, qc.Name)
 		}
 		s := qc.spec()
 		if err := s.validate(); err != nil {

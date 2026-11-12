@@ -103,7 +103,7 @@ func ParseStatus(err error) int {
 		return stdhttp.StatusOK
 	case errors.Is(err, ErrUnsupportedMediaType), errors.Is(err, codec.ErrUnsupportedFormat):
 		return stdhttp.StatusUnsupportedMediaType
-	case errors.Is(err, codec.ErrPayloadTooLarge):
+	case errors.Is(err, codec.ErrPayloadTooLarge), errors.Is(err, codec.ErrTooComplex):
 		return stdhttp.StatusRequestEntityTooLarge
 	case isMaxBytes(err):
 		return stdhttp.StatusRequestEntityTooLarge

@@ -43,7 +43,14 @@ type Config struct {
 	// reconnects and authenticates again. Revocation is therefore only
 	// effective at the next reconnection.
 	MaxLifetime time.Duration `yaml:"max_lifetime"` // default: 15m
-	Limits      LimitsConfig  `yaml:"limits"`
+	// SendBufferBytes caps the kernel send buffer (SO_SNDBUF) of HTTP/1.1
+	// stream connections. Without a cap the kernel auto-tunes it to megabytes
+	// and absorbs everything sent to a client that never reads, so write_timeout
+	// and the queue never trigger; with a small cap such a client is cut as soon
+	// as the buffers fill. Zero keeps the operating system default. HTTP/2 and
+	// HTTP/3 multiplex streams on one connection and are not affected.
+	SendBufferBytes int          `yaml:"send_buffer_bytes"` // default: 0 (OS default); else 4096..16mb
+	Limits          LimitsConfig `yaml:"limits"`
 	// AllowedOrigins are the exact origins that may open a stream with an
 	// Origin header. Empty accepts only the request's own origin. "*" is not accepted.
 	AllowedOrigins []string       `yaml:"allowed_origins"`
@@ -53,7 +60,7 @@ type Config struct {
 // LimitsConfig bounds what a publication may carry.
 type LimitsConfig struct {
 	MaxPayloadBytes  codec.ByteSize `yaml:"max_payload_bytes"`   // default: 64kb; at most 1mb
-	MaxUserIDBytes   int            `yaml:"max_user_id_bytes"`   // default: 256
+	MaxUserIDBytes   int            `yaml:"max_user_id_bytes"`   // default: 512 (the key holds issuer, tenant and subject)
 	MaxEventNameSize int            `yaml:"max_event_name_size"` // default: 64
 	MaxEventIDBytes  int            `yaml:"max_event_id_bytes"`  // default: 128
 }
@@ -93,7 +100,7 @@ func (c *Config) ApplyDefaults() {
 	num(&c.MaxConnections, 10000)
 	num(&c.MaxConnectionsPerUser, 5)
 	num(&c.MaxConnectsPerSecond, 100)
-	num(&c.Limits.MaxUserIDBytes, 256)
+	num(&c.Limits.MaxUserIDBytes, 512)
 	num(&c.Limits.MaxEventNameSize, 64)
 	num(&c.Limits.MaxEventIDBytes, 128)
 	num(&c.RabbitMQ.Prefetch, 64)
@@ -144,6 +151,9 @@ func (c Config) Validate() error {
 	}
 	if c.Limits.MaxPayloadBytes < 1 || c.Limits.MaxPayloadBytes > codec.MB {
 		return fmt.Errorf("sse.limits.max_payload_bytes must be between 1b and 1mb, got %d", int64(c.Limits.MaxPayloadBytes))
+	}
+	if c.SendBufferBytes != 0 && (c.SendBufferBytes < 4096 || c.SendBufferBytes > 16<<20) {
+		return fmt.Errorf("sse.send_buffer_bytes must be 0 or between 4096 and 16777216, got %d", c.SendBufferBytes)
 	}
 	for _, o := range c.AllowedOrigins {
 		httpOrigin := strings.HasPrefix(o, "https://") || strings.HasPrefix(o, "http://")

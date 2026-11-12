@@ -154,6 +154,10 @@ type entry struct {
 	hooks       Hooks
 	initialized bool
 	started     bool
+	// probing is true while this module's Ready hook is running, abandoned or
+	// not: a hook that blocks ignoring its context is not started again by the
+	// next sample, so it cannot pile up one goroutine per probe.
+	probing atomic.Bool
 }
 
 func (e *entry) load() State { s, _ := e.state.Load().(State); return s }
@@ -623,7 +627,13 @@ func (rt *Runtime) probe() Report {
 			continue
 		}
 		e := rt.entries[st.ID]
-		wg.Go(func() { st.Availability = probe(ctx, e.hooks.Ready) })
+		wg.Go(func() {
+			if e.hooks.Ready != nil && !e.probing.CompareAndSwap(false, true) {
+				st.Availability = NotReady // the previous probe of this module has not returned
+				return
+			}
+			st.Availability = probe(ctx, e.hooks.Ready, func() { e.probing.Store(false) })
+		})
 	}
 	wg.Wait()
 	r.Ready = r.Phase == PhaseStarted && rt.Err() == nil
@@ -639,12 +649,16 @@ func (rt *Runtime) probe() Report {
 	return r
 }
 
-func probe(ctx context.Context, ready func(context.Context) error) Availability {
+func probe(ctx context.Context, ready func(context.Context) error, finished func()) Availability {
 	if ready == nil {
 		return Ready
 	}
 	done := make(chan error, 1) // buffered: a probe ignoring ctx must not leak forever on send
-	go func() { done <- call(ctx, "ready", ready) }()
+	go func() {
+		err := call(ctx, "ready", ready)
+		finished()
+		done <- err
+	}()
 	select {
 	case err := <-done:
 		if err != nil {

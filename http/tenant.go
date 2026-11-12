@@ -23,7 +23,7 @@ var errNoPrincipal = errors.New("nhttp: no authenticated principal")
 
 // TenantResolver extracts the raw tenant ID of a request. It returns "" (or
 // an error matching database.ErrNoTenant) when the request carries none; the
-// middleware validates the ID as a UUID v4. Any other error is an internal
+// middleware validates the ID as an RFC 9562 UUID (version 1 to 8). Any other error is an internal
 // failure (500).
 type TenantResolver func(r *stdhttp.Request) (string, error)
 
@@ -84,7 +84,7 @@ func WithTenantOptional() TenantOption {
 // tenant for database.DB.ForContext. A tenant already stored by an earlier
 // middleware is kept; otherwise it is resolved (by default from the JWT
 // tenant_id claim, so mount it after Authenticate) and stored. Missing
-// tenant → 403, invalid (not a UUID v4) → 400, no Principal for the claim
+// tenant → 403, invalid (not a UUID) → 400, no Principal for the claim
 // resolver → 401. Responses use the default codec.
 func Tenant(opts ...TenantOption) func(stdhttp.Handler) stdhttp.Handler {
 	g := &tenantGuard{resolve: TenantFromClaim(), realm: DefaultRealm, logger: slog.Default}

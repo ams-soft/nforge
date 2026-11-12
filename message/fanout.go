@@ -44,65 +44,26 @@ func (c *Client) PublishFanout(ctx context.Context, exchange string, body []byte
 		return err
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if err := c.usableLocked(); err != nil {
+		c.mu.Unlock()
 		return err
 	}
-	if c.fanoutDeclared == nil || c.fanoutGeneration != c.generation.Load() {
+	conn, gen := c.conn, c.generation.Load()
+	c.mu.Unlock()
+	c.fanoutMu.Lock()
+	if c.fanoutDeclared == nil || c.fanoutGeneration != gen {
 		c.fanoutDeclared = map[string]bool{}
-		c.fanoutGeneration = c.generation.Load()
+		c.fanoutGeneration = gen
 	}
 	if !c.fanoutDeclared[exchange] {
-		if err := declareFanout(c.conn, exchange); err != nil {
+		if err := declareFanout(conn, exchange); err != nil {
+			c.fanoutMu.Unlock()
 			return fmt.Errorf("%w: fanout exchange unavailable", ErrTransportUnavailable)
 		}
 		c.fanoutDeclared[exchange] = true
 	}
-	// Drop any confirmation left by an earlier publish that timed out, so this
-	// call cannot read it as its own.
-	for drained := false; !drained; {
-		select {
-		case <-c.confirm:
-		default:
-			drained = true
-		}
-	}
-	if err := c.pub.PublishWithContext(ctx, exchange, "", false, false, amqp.Publishing{
-		ContentType: "application/octet-stream", DeliveryMode: amqp.Transient, Timestamp: time.Now(), Body: body,
-	}); err != nil {
-		c.recoverPublisherLocked()
-		return fmt.Errorf("%w: publish interrupted", ErrTransportUnavailable)
-	}
-	t := time.NewTimer(c.cfg.Publisher.ConfirmTimeout)
-	defer t.Stop()
-	select {
-	case ack, ok := <-c.confirm:
-		if !ok {
-			c.recoverPublisherLocked()
-			return ErrPublishUncertain
-		}
-		if !ack.Ack {
-			return ErrNacked
-		}
-		return nil
-	case <-ctx.Done():
-		return fmt.Errorf("%w: caller stopped waiting", ErrPublishUncertain)
-	case <-t.C:
-		c.recoverPublisherLocked()
-		return ErrPublishUncertain
-	}
-}
-
-// recoverPublisherLocked handles a publisher channel the broker closed (a
-// channel-level error such as a deleted exchange): the supervisor only watches
-// the connection, so without this the client would stay unusable until the
-// connection happened to drop. Closing the connection makes it rebuild the
-// channel and the topology, with its usual backoff. c.mu must be held.
-func (c *Client) recoverPublisherLocked() {
-	if c.pub != nil && c.pub.IsClosed() && c.conn != nil && !c.conn.IsClosed() {
-		c.fanoutDeclared = nil // the exchange may be the cause: declare it again
-		go func(conn *amqp.Connection) { _ = conn.Close() }(c.conn)
-	}
+	c.fanoutMu.Unlock()
+	return c.publishConfirmed(ctx, exchange, "", false, amqp.Publishing{ContentType: "application/octet-stream", DeliveryMode: amqp.Transient, Timestamp: time.Now(), Body: body})
 }
 
 func declareFanout(conn *amqp.Connection, exchange string) error {

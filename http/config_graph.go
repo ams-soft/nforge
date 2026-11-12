@@ -70,6 +70,9 @@ func builtinPaths(cfg *Config, jwksPath string) []builtinPath {
 	if cfg.Routes.Readiness.Enabled {
 		taken = append(taken, builtinPath{cfg.Routes.Readiness.Path, "http.routes.readiness"})
 	}
+	if cfg.Routes.Metrics.Enabled {
+		taken = append(taken, builtinPath{cfg.Routes.Metrics.Path, "http.routes.metrics"})
+	}
 	if jwksPath != "" {
 		taken = append(taken, builtinPath{jwksPath, "jose.jwks"})
 	}

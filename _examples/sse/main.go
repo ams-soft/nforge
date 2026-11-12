@@ -120,7 +120,10 @@ func notificationsModule() module.Descriptor {
 					_ = nhttp.SendJSON(w, req, nhttp.ParseStatus(err), err.Error())
 					return
 				}
-				res, err := manager.PublishToUser(req.Context(), in.User, sse.Event{Name: "notification", Data: map[string]string{"message": in.Message}})
+				// The stream key is issuer + tenant + subject: build the target's from the
+				// caller's principal (same issuer and tenant), never from client input alone.
+				caller, _ := nhttp.PrincipalFromContext(req.Context())
+				res, err := manager.PublishToUser(req.Context(), sse.UserKeyOf(caller.Issuer, caller.TenantID, in.User), sse.Event{Name: "notification", Data: map[string]string{"message": in.Message}})
 				switch {
 				case errors.Is(err, sse.ErrTransportUnavailable):
 					_ = nhttp.SendJSON(w, req, http.StatusServiceUnavailable, "notifications are temporarily unavailable")

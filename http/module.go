@@ -10,6 +10,7 @@ import (
 	"github.com/ams-soft/nforge/database"
 	"github.com/ams-soft/nforge/jose"
 	"github.com/ams-soft/nforge/message"
+	"github.com/ams-soft/nforge/metrics"
 	"github.com/ams-soft/nforge/module"
 	"github.com/ams-soft/nforge/telemetry"
 )
@@ -50,7 +51,7 @@ func Module() module.Descriptor {
 		return module.Definition{
 			Provides: []module.Handle{Capability},
 			Requires: requires,
-			Optional: []module.Handle{module.Logger, telemetry.Capability, jose.Capability, database.Capability, cache.Capability, message.Capability},
+			Optional: []module.Handle{module.Logger, telemetry.Capability, jose.Capability, database.Capability, cache.Capability, message.Capability, metrics.Capability},
 			Ingress:  true,
 			Config:   cfg,
 			Check:    func(v *module.View) error { return check(v, &cfg) },
@@ -61,6 +62,7 @@ func Module() module.Descriptor {
 				d.AccessLog = d.Logger != nil && d.Logger.Handler().Enabled(ctx, slog.LevelError)
 				d.Tracing, _ = module.Lookup(sc, telemetry.Capability)
 				d.JOSE, _ = module.Lookup(sc, jose.Capability)
+				d.Metrics, _ = module.Lookup(sc, metrics.Capability)
 				s := New(cfg, d)
 				if cfg.Server.Header {
 					s.banner(ctx)
@@ -87,6 +89,15 @@ func check(v *module.View, cfg *Config) error {
 		}
 		if err := checkProfile(jcfg, name); err != nil {
 			return err
+		}
+	}
+	if cfg.Routes.Metrics.Enabled {
+		_, on, _, err := module.ConfigOf[metrics.Config](v, metrics.Capability)
+		if err != nil {
+			return err
+		}
+		if !on {
+			return fmt.Errorf("http.routes.metrics requires the metrics module (register metrics.Module and do not disable it)")
 		}
 	}
 	jwks := ""

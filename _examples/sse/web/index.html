@@ -35,6 +35,15 @@ function connect() {
   if (source) source.close();
   source = new EventSource('/notifications/stream'); // same-origin: cookies are sent
   source.onopen = () => state('connected');
+  // The server ends every stream at the token's expiry (or sse.max_lifetime) with this
+  // event, so the page can refresh its credential and reconnect instead of retrying with
+  // one the server will refuse for good (a 401 stops EventSource permanently).
+  source.addEventListener('reauth', async (e) => {
+    log('stream ended (' + e.data + '): signing in again');
+    source.close();
+    state('re-authenticating…');
+    await login();
+  });
   source.addEventListener('notification', (e) => log('notification ' + (e.lastEventId || '') + ': ' + e.data));
   // EventSource reconnects by itself after a network error or a server-side close
   // (the server ends each stream after sse.max_lifetime). Events published while
@@ -48,11 +57,12 @@ function connect() {
   };
 }
 
-document.getElementById('login').onclick = async () => {
+async function login() {
   const user = document.getElementById('user').value;
   const r = await fetch('/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user }) });
   if (r.ok) { log('signed in as ' + user); connect(); } else { log('login failed: ' + r.status); }
-};
+}
+document.getElementById('login').onclick = login;
 document.getElementById('send').onclick = async () => {
   const r = await fetch('/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user: document.getElementById('to').value, message: document.getElementById('msg').value }) });

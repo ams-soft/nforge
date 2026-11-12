@@ -32,7 +32,7 @@ other database error is logged and answered as a generic 500.
 ## Notes: multi-tenancy (`notes.go`)
 
 `database.tenancy` is on in **column** mode and `http.tenant.source: header`:
-the tenant is the `X-Tenant-ID` header (a UUID v4). (The `jose` example's
+the tenant is the `X-Tenant-ID` header (a UUID). (The `jose` example's
 tokens can carry it as the `tenant_id` claim instead: `source: claim`.)
 
 | Route | How the tenant gets there |
@@ -51,7 +51,7 @@ curl -s -X POST localhost:8080/api/v1/notes/batch -H "X-Tenant-ID: $B" "${H[@]}"
 curl -s localhost:8080/api/v1/notes -H "X-Tenant-ID: $A" | jq '.data[].text'   # only "from A"
 curl -s localhost:8080/raw/notes    -H "X-Tenant-ID: $B" | jq '.data[].text'   # only b1, b2
 curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/api/v1/notes                      # 403: no tenant
-curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/api/v1/notes -H 'X-Tenant-ID: acme' # 400: not a UUID v4
+curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/api/v1/notes -H 'X-Tenant-ID: acme' # 400: not a UUID
 ```
 
 A header is client-controlled: only trust it behind a gateway that sets it,

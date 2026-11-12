@@ -62,4 +62,6 @@ type Options struct {
 	// AllowDTD allows <!DOCTYPE ...> declarations in XML. Even when allowed,
 	// external entities are never expanded (the parser does not resolve them).
 	AllowDTD bool
+	// MaxElements bounds the values of one document (zero: DefaultMaxElements).
+	MaxElements int
 }

@@ -13,12 +13,14 @@ import (
 	"time"
 
 	"github.com/ams-soft/nforge/app"
+	"github.com/ams-soft/nforge/cache"
 	"github.com/ams-soft/nforge/codec"
 	nhttp "github.com/ams-soft/nforge/http"
 	"github.com/ams-soft/nforge/internal/apptest"
 	"github.com/ams-soft/nforge/jose"
 	"github.com/ams-soft/nforge/logs"
 	"github.com/ams-soft/nforge/message"
+	"github.com/ams-soft/nforge/metrics"
 	"github.com/ams-soft/nforge/module"
 	"github.com/ams-soft/nforge/sse"
 )
@@ -127,8 +129,8 @@ func TestAuthenticatedStreamThroughTheRealChain(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	// the identity is the validated subject: a client cannot pick another user
-	if _, err := e.mgr.PublishToUser(t.Context(), "user-1", sse.Event{ID: "n1", Name: "note", Data: map[string]int{"n": 1}}); err != nil {
+	// the identity is the validated principal (issuer, tenant, subject): a client cannot pick another user
+	if _, err := e.mgr.PublishToUser(t.Context(), sse.UserKeyOf("https://issuer.test", "", "user-1"), sse.Event{ID: "n1", Name: "note", Data: map[string]int{"n": 1}}); err != nil {
 		t.Fatal(err)
 	}
 	got := readEvent(t, sc)
@@ -335,5 +337,70 @@ func TestModuleGraphRules(t *testing.T) {
 	// a module with no codec json fails the cross-section check
 	if _, err := apptest.New(t, "codec: {formats: {enabled: [cbor]}, default: cbor}\n", logs.Module(), codec.Module(), nhttp.Module(), sse.Module()); err == nil {
 		t.Fatal("sse needs json in codec.formats.enabled")
+	}
+}
+
+// G20: the metrics module collects the framework's own instruments and nhttp serves them.
+func TestMetricsEndpointExposesTheFrameworkInstruments(t *testing.T) {
+	port := freePort(t)
+	yaml := fmt.Sprintf("http:\n  server:\n    host: 127.0.0.1\n    port: %d\n  routes:\n    metrics: {enabled: true}\ncache: {enabled: true, driver: memory}\nsse: {heartbeat: 1s}\n%s", port, joseYAML)
+	a := apptest.Start(t, yaml, logs.Module(), codec.Module(), jose.Module(), metrics.Module(), cache.Module(), nhttp.Module(), sse.Module(), streamModule())
+	e := &env{app: a, base: fmt.Sprintf("http://127.0.0.1:%d", port), mgr: value(a, sse.Capability), jose: value(a, jose.Capability)}
+
+	resp, _ := e.open(t, e.token(t, "u1"))
+	if resp.StatusCode != 200 {
+		t.Fatal(resp.StatusCode)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for e.mgr.Stats().ActiveConnections != 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := e.mgr.PublishToUser(t.Context(), "nobody", sse.Event{Data: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	c := value(a, cache.Capability)
+	_ = c.Set(t.Context(), "k", "v", 0)
+	var got string
+	_ = c.Get(t.Context(), "k", &got)
+	_ = c.Get(t.Context(), "missing", &got)
+
+	warm, err := http.Get(e.base + "/metrics") // a request is counted when it completes
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, warm.Body)
+	warm.Body.Close()
+	r, err := http.Get(e.base + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(r.Body)
+	r.Body.Close()
+	out := string(b)
+	for _, want := range []string{
+		`nforge_http_requests_total{`,
+		`nforge_http_request_duration_seconds_bucket{`,
+		"nforge_sse_connections 1\n",
+		"nforge_sse_events_published_total 1\n",
+		"nforge_sse_connections_accepted_total 1\n",
+		`nforge_cache_hits_total{driver="memory"} 1`,
+		`nforge_cache_misses_total{driver="memory"} 1`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in /metrics", want)
+		}
+	}
+	if strings.Contains(out, "u1") || strings.Contains(out, "nobody") {
+		t.Error("user IDs must never appear in the metrics")
+	}
+}
+
+func TestMetricsRouteRequiresTheMetricsModule(t *testing.T) {
+	yaml := "http:\n  server: {host: 127.0.0.1, port: 8080}\n  routes: {metrics: {enabled: true}}\n"
+	if _, err := apptest.New(t, yaml, logs.Module(), codec.Module(), nhttp.Module()); err == nil || !strings.Contains(err.Error(), "metrics module") {
+		t.Fatalf("err = %v, want a clear message about the metrics module", err)
+	}
+	if _, err := apptest.New(t, yaml, logs.Module(), codec.Module(), metrics.Module(), nhttp.Module()); err != nil {
+		t.Fatalf("with the module registered: %v", err)
 	}
 }

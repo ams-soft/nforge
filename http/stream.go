@@ -2,10 +2,8 @@ package nhttp
 
 import (
 	"context"
-	"errors"
 	stdhttp "net/http"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -79,52 +77,99 @@ func Timeout(d time.Duration) func(stdhttp.Handler) stdhttp.Handler {
 	}
 	return func(next stdhttp.Handler) stdhttp.Handler {
 		return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-			// Own timer, not context.WithTimeout: that one relies on the parent's
-			// earlier deadline when there is one, which BeginStream may release.
-			rd, cancel := newReleasableDeadline(r.Context(), d)
+			dc, cancel := newDeadlineCtx(r.Context(), d)
 			defer cancel()
-			next.ServeHTTP(w, r.WithContext(rd))
+			next.ServeHTTP(w, r.WithContext(dc))
 		})
 	}
 }
 
-// releasableDeadline is a context whose deadline can be released: until then
-// it behaves as context.WithTimeout (Deadline, Err == DeadlineExceeded); after
-// release the timer is stopped and the request is bound only by its parent.
-type releasableDeadline struct {
-	context.Context
-	cancel   context.CancelCauseFunc
+// deadlineCtx is a context with a deadline that can be released. Until then it
+// behaves exactly like context.WithTimeout: Deadline reports the instant, Err
+// is context.DeadlineExceeded after it, and contexts derived from it (every
+// database driver and HTTP client derives one) observe DeadlineExceeded too.
+//
+// It deliberately does not embed a stdlib cancel context. Children of an
+// embedding wrapper find the embedded cancelCtx through Value and register on
+// it directly, so they would see context.Canceled and never call Err here.
+// With its own Done channel they take the generic propagation path and read
+// Err of this context. After release the timer is stopped and the request is
+// bound only by its parent.
+type deadlineCtx struct {
+	parent   context.Context
+	done     chan struct{}
 	deadline time.Time
+
+	mu       sync.Mutex
+	err      error
+	released bool
 	timer    *time.Timer
-	released atomic.Bool
+	unhook   func() bool
 }
 
-func newReleasableDeadline(parent context.Context, d time.Duration) (*releasableDeadline, context.CancelFunc) {
-	inner, cancel := context.WithCancelCause(parent)
-	c := &releasableDeadline{Context: inner, cancel: cancel, deadline: time.Now().Add(d)}
-	c.timer = time.AfterFunc(d, func() { cancel(context.DeadlineExceeded) })
-	return c, func() { c.timer.Stop(); cancel(context.Canceled) }
+func newDeadlineCtx(parent context.Context, d time.Duration) (*deadlineCtx, context.CancelFunc) {
+	c := &deadlineCtx{parent: parent, done: make(chan struct{}), deadline: time.Now().Add(d)}
+	if err := parent.Err(); err != nil {
+		c.err = err
+		close(c.done)
+		return c, func() {}
+	}
+	c.mu.Lock()
+	c.timer = time.AfterFunc(d, func() { c.finish(context.DeadlineExceeded) })
+	c.unhook = context.AfterFunc(parent, func() { c.finish(parent.Err()) })
+	c.mu.Unlock()
+	return c, func() { c.finish(context.Canceled) }
 }
 
-func (c *releasableDeadline) Deadline() (time.Time, bool) {
-	if c.released.Load() {
-		return c.Context.Deadline()
+// finish ends the context once, with the first error that arrives.
+func (c *deadlineCtx) finish(err error) {
+	c.mu.Lock()
+	if c.err != nil {
+		c.mu.Unlock()
+		return
+	}
+	c.err = err
+	close(c.done)
+	timer, unhook := c.timer, c.unhook
+	c.mu.Unlock()
+	if timer != nil {
+		timer.Stop()
+	}
+	if unhook != nil {
+		unhook()
+	}
+}
+
+func (c *deadlineCtx) Deadline() (time.Time, bool) {
+	c.mu.Lock()
+	released := c.released
+	c.mu.Unlock()
+	pd, pok := c.parent.Deadline()
+	switch {
+	case released:
+		return pd, pok
+	case pok && pd.Before(c.deadline):
+		return pd, true
 	}
 	return c.deadline, true
 }
 
-func (c *releasableDeadline) Err() error {
-	err := c.Context.Err()
-	if err != nil && errors.Is(context.Cause(c.Context), context.DeadlineExceeded) {
-		return context.DeadlineExceeded
-	}
-	return err
+func (c *deadlineCtx) Done() <-chan struct{} { return c.done }
+
+func (c *deadlineCtx) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.err
 }
 
+func (c *deadlineCtx) Value(key any) any { return c.parent.Value(key) }
+
 // release stops the timer; a deadline that already fired stays fired.
-func (c *releasableDeadline) release() {
-	if c.timer.Stop() {
-		c.released.Store(true)
+func (c *deadlineCtx) release() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.err == nil && c.timer != nil && c.timer.Stop() {
+		c.released = true
 	}
 }
 
@@ -136,10 +181,10 @@ func handlerTimeout(d time.Duration) func(stdhttp.Handler) stdhttp.Handler {
 	return func(next stdhttp.Handler) stdhttp.Handler {
 		return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 			ctx, ex := withExemptions(r.Context())
-			rd, cancel := newReleasableDeadline(ctx, d)
+			dc, cancel := newDeadlineCtx(ctx, d)
 			defer cancel()
-			ex.add(rd.release)
-			next.ServeHTTP(w, r.WithContext(rd))
+			ex.add(dc.release)
+			next.ServeHTTP(w, r.WithContext(dc))
 		})
 	}
 }

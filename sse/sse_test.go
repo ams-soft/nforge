@@ -64,7 +64,7 @@ func TestEventValidation(t *testing.T) {
 		"unencodable":      {"u", Event{Data: make(chan int)}, ErrInvalidEvent},
 		"empty user":       {"", Event{}, ErrInvalidUser},
 		"user with LF":     {"a\nb", Event{}, ErrInvalidUser},
-		"user too long":    {strings.Repeat("u", 257), Event{}, ErrInvalidUser},
+		"user too long":    {strings.Repeat("u", 513), Event{}, ErrInvalidUser},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := m.PublishToUser(t.Context(), tc.user, tc.ev); !errors.Is(err, tc.want) {

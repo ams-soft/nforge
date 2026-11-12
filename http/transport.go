@@ -80,6 +80,16 @@ func (s *Server) Stop(ctx context.Context) error {
 		if run == nil {
 			return
 		}
+		if d := s.cfg.Server.ShutdownDelay; d > 0 {
+			s.draining.Store(true)
+			s.logger.InfoContext(ctx, "[HTTPModule] Draining: still serving, not ready", "delay", d)
+			t := time.NewTimer(d)
+			select {
+			case <-t.C:
+			case <-ctx.Done():
+				t.Stop()
+			}
+		}
 		s.logger.InfoContext(ctx, "[HTTPModule] Shutting down server...")
 		sctx, cancel := context.WithTimeout(ctx, shutdownTimeout)
 		defer cancel()
@@ -353,7 +363,7 @@ func altSvc(next stdhttp.Handler, h3 *http3.Server) stdhttp.Handler {
 func streamTimeout(next stdhttp.Handler, d time.Duration) stdhttp.Handler {
 	return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		ctx, ex := withExemptions(r.Context())
-		rd, cancel := newReleasableDeadline(ctx, d)
+		rd, cancel := newDeadlineCtx(ctx, d)
 		defer cancel()
 		ex.add(rd.release)
 		rc := stdhttp.NewResponseController(w)

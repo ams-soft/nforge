@@ -157,7 +157,7 @@ func parseSVGColor(s string) (c color.NRGBA, none bool, err error) {
 		}
 		n, perr := strconv.ParseUint(h, 16, 32)
 		if perr == nil {
-			return color.NRGBA{uint8(n >> 16), uint8(n >> 8), uint8(n), 255}, false, nil
+			return color.NRGBA{uint8(n >> 16), uint8(n >> 8), uint8(n), 255}, false, nil //nolint:gosec // G115: n is a 24-bit color, each shifted byte fits uint8
 		}
 	}
 	return c, false, unsupportedLogo("unsupported SVG color")

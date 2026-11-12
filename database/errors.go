@@ -23,7 +23,7 @@ var (
 	ErrNoTenant = errors.New("database: no tenant in scope")
 	// ErrInvalidTenantID is returned for a tenant ID that is not a canonical
 	// UUID version 4.
-	ErrInvalidTenantID = errors.New("database: tenant id must be a canonical uuid v4")
+	ErrInvalidTenantID = errors.New("database: tenant id must be a canonical uuid (RFC 9562, version 1 to 8)")
 	// ErrTenantInTransaction is returned by ForTenant on a transaction-scoped
 	// DB: scope first, then begin the transaction on the tenant DB.
 	ErrTenantInTransaction = errors.New("database: cannot scope a running transaction to a tenant")

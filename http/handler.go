@@ -2,8 +2,10 @@ package nhttp
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	stdhttp "net/http"
 	"reflect"
 )
@@ -90,6 +92,9 @@ func route[Req, Res any](tr *TypedRouter, method, pattern string, h Handler[Req,
 				_ = SendJSON(w, r, se.Status, se.Message)
 				return
 			}
+			if contextFailure(w, r, err, logger) {
+				return
+			}
 			logger.ErrorContext(r.Context(), "handler failed", "error", err)
 			_ = SendJSON(w, r, stdhttp.StatusInternalServerError, "internal error")
 			return
@@ -100,4 +105,28 @@ func route[Req, Res any](tr *TypedRouter, method, pattern string, h Handler[Req,
 		}
 		_ = SendJSON(w, r, cmp.Or(o.Status, stdhttp.StatusOK), res)
 	}, opts)
+}
+
+// StatusClientClosedRequest is the non-standard 499 (nginx's convention) the
+// access log records when the client went away before the handler answered. No
+// body is written: nobody is listening.
+const StatusClientClosedRequest = 499
+
+// contextFailure answers a handler error that is a context error and reports
+// whether it did. These are not server faults: a deadline (the server's own
+// handler_timeout, a route Timeout, a downstream call) is a 504 logged as a
+// warning, and a client that disconnected is a 499 at debug level, so client
+// aborts, which are everyday traffic, neither raise ERROR logs nor fake 500s.
+func contextFailure(w stdhttp.ResponseWriter, r *stdhttp.Request, err error, logger *slog.Logger) bool {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		logger.WarnContext(r.Context(), "request deadline exceeded", "error", err)
+		_ = SendJSON(w, r, stdhttp.StatusGatewayTimeout, "request timed out")
+		return true
+	case errors.Is(err, context.Canceled) && r.Context().Err() != nil:
+		logger.DebugContext(r.Context(), "client closed the request")
+		_ = SendJSON(w, r, StatusClientClosedRequest, "client closed request")
+		return true
+	}
+	return false
 }

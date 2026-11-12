@@ -27,6 +27,7 @@ func Middleware(logger *slog.Logger) func(stdhttp.Handler) stdhttp.Handler {
 			switch {
 			case sw.status >= 500:
 				level = slog.LevelError
+			case sw.status == 499: // the client went away: everyday traffic, not a failure
 			case sw.status >= 400:
 				level = slog.LevelWarn
 			}

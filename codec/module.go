@@ -20,7 +20,8 @@ type Settings struct {
 	Formats             FormatSettings `yaml:"formats"`
 	Default             string         `yaml:"default"`               // default: "json"; must be enabled
 	StrictUnknownFields bool           `yaml:"strict_unknown_fields"` // default: false
-	MaxPayloadBytes     ByteSize       `yaml:"max_payload_bytes"`     // e.g. 5mb, 512kb, 1048576; default: 5mb; at most 256mb
+	MaxPayloadBytes     ByteSize       `yaml:"max_payload_bytes"`     // e.g. 5mb, 512kb, 1048576; default: 1mb; at most 256mb
+	MaxElements         int            `yaml:"max_elements"`          // values per document (JSON tokens, XML elements and attributes); default: 250000
 	XML                 XMLSettings    `yaml:"xml"`
 }
 
@@ -58,6 +59,7 @@ func (s Settings) Config() Config {
 		Default:             s.Default,
 		StrictUnknownFields: s.StrictUnknownFields,
 		MaxPayloadBytes:     int64(s.MaxPayloadBytes),
+		MaxElements:         s.MaxElements,
 		AllowDTD:            s.XML.DisallowDTD != nil && !*s.XML.DisallowDTD,
 	}
 }

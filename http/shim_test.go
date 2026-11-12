@@ -7,6 +7,7 @@ import (
 	"github.com/ams-soft/nforge/codec"
 	"github.com/ams-soft/nforge/jose"
 	"github.com/ams-soft/nforge/logs"
+	"github.com/ams-soft/nforge/metrics"
 	"github.com/ams-soft/nforge/module"
 	"github.com/ams-soft/nforge/telemetry"
 	"go.opentelemetry.io/otel"
@@ -29,11 +30,12 @@ type testConfig struct {
 
 // testDeps are the collaborators of a server built without an application.
 type testDeps struct {
-	Config testConfig
-	Logger *slog.Logger
-	JOSE   *jose.Service
-	Codec  *codec.Registry
-	Status module.Introspection
+	Config  testConfig
+	Logger  *slog.Logger
+	JOSE    *jose.Service
+	Codec   *codec.Registry
+	Status  module.Introspection
+	Metrics *metrics.Registry
 }
 
 // buildServer builds a server from a hand-made configuration, as the module
@@ -42,7 +44,7 @@ type testDeps struct {
 func buildServer(d *testDeps) *Server {
 	app := module.App{Name: d.Config.App.Name, Version: d.Config.App.Version, Env: d.Config.Env,
 		InternalUse: d.Config.App.InternalUse, OnlineSince: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)}
-	deps := Dependencies{App: app, Logger: d.Logger, AccessLog: d.Config.Logging.Enabled(), Codec: d.Codec, JOSE: d.JOSE, Status: d.Status}
+	deps := Dependencies{App: app, Logger: d.Logger, AccessLog: d.Config.Logging.Enabled(), Codec: d.Codec, JOSE: d.JOSE, Status: d.Status, Metrics: d.Metrics}
 	if d.Config.Logging.Output.Otel.Enabled && d.Config.Tracing.Otel.IsEnabled() {
 		deps.Tracing = &telemetry.Tracing{Provider: otel.GetTracerProvider(), TrustIncoming: d.Config.Tracing.Otel.TrustsIncoming()}
 	}

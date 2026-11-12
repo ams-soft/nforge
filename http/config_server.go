@@ -266,11 +266,18 @@ func validateTimeouts(s ServerConfig) error {
 		{"write_timeout", s.WriteTimeout},
 		{"idle_timeout", s.IdleTimeout},
 		{"handler_timeout", s.HandlerTimeout},
+		{"shutdown_delay", s.ShutdownDelay},
 	}
 	for _, t := range timeouts {
 		if t.value < 0 {
 			return fmt.Errorf("http.server.%s must be positive, got %s", t.field, t.value)
 		}
+	}
+	if s.MaxInflightRequests < 0 || s.MaxInflightRequests > 1_000_000 {
+		return fmt.Errorf("http.server.max_inflight_requests must be between 0 and 1000000, got %d", s.MaxInflightRequests)
+	}
+	if s.ShutdownDelay > 5*time.Minute {
+		return fmt.Errorf("http.server.shutdown_delay must be at most 5m, got %s", s.ShutdownDelay)
 	}
 	if s.MaxBodyBytes < 0 || s.MaxBodyBytes > maxBodyCeiling {
 		return fmt.Errorf("http.server.max_body_bytes must be between 0 and 1gb, got %d", int64(s.MaxBodyBytes))

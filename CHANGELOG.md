@@ -6,6 +6,103 @@ All notable changes to nForge are documented here. The format follows
 
 ## [Unreleased]
 
+An adversarial review of v0.6.0 (delayed and killed brokers, derived contexts,
+decoder bombs, fuzzing, load) found the problems fixed here. **Read Upgrading:
+several defaults changed.**
+
+### Fixed
+
+- **`message`: a publish could report success for a message the broker did not
+  accept.** Confirmations were read from one shared channel without matching them
+  to their publish, so one that arrived after a publish gave up (timeout, caller
+  gone) satisfied the next publish. Each publish now waits for its own
+  confirmation, and a `mandatory` return is attributed to its publish through an
+  internal header. This also fixes `Reprocess`, which could ack a message out of
+  the DLQ and deliver it nowhere, and the retry path.
+- **`message`: publishers no longer serialize.** The client lock was held across
+  the confirmation round trip, so throughput was exactly `1/RTT` (406 msg/s at
+  2 ms) and `Status()`, used by readiness, queued behind it. Publishers pipeline
+  (≈10.7 k msg/s at 2 ms with 32 publishers) and `Status()` never waits.
+- `message`: `Reprocess` stops at the first message it cannot republish and
+  leaves it in the DLQ; consumer reconnection no longer waits for in-flight
+  handlers; `PublishFanout` could spin forever holding the lock if the publisher
+  channel closed while it drained stale confirmations (latent).
+- **`nhttp`: contexts derived from the request reported `context canceled`
+  instead of `deadline exceeded`** when `handler_timeout`, `nhttp.Timeout` or the
+  HTTP/3 stream timeout fired (a v0.6.0 regression). The deadline guard is now its
+  own `context.Context`.
+- **`nhttp`: a handler returning a context error answered 500 and logged ERROR.**
+  A deadline is now 504 (WARN) and a client that went away is 499 (DEBUG);
+  `handler_timeout` therefore no longer produces 500s.
+- `nhttp`: unmatched paths and methods answer the standard envelope (and an unknown
+  route under a root SPA's reserved prefix), not net/http's text or an empty 405.
+- `codec`: duplicate JSON object members (exact, or differing only in case) are
+  refused in every mode; before, `{"role":"user","role":"admin"}` decoded as
+  `admin` even with `strict_unknown_fields: true`, a parser-differential risk.
+- `module`: a Ready hook that blocks ignoring its context is not started again by
+  the next probe, so probes no longer pile up goroutines behind it.
+- `config`: `app.name` rejects control characters and more than 128 bytes; the
+  YAML error for a `${VAR}` inside a flow mapping explains what to do.
+- `helper/qrcode`: the `FuzzLogo` oracle no longer flags the substring `http`
+  inside a logo's base64 (the failing corpus input is kept as a regression test).
+
+### Added
+
+- **`metrics`**: a dependency-free registry and module (Prometheus text format).
+  HTTP (requests and duration by route, in flight), SSE, Messaging, the database
+  pool and the cache register their instruments when it is present;
+  `http.routes.metrics` serves it.
+- **`nhttp.RateLimit`** (fixed window per client, in-process or on a
+  `*cache.Cache`, 429 + `Retry-After` + `RateLimit-*`) and
+  `http.server.max_inflight_requests` (503 load shedding; streams give their slot back).
+- `http.server.shutdown_delay`: keep serving, already not ready, before the
+  listeners close, so load balancers can drain the instance without refused connections.
+- `message`: W3C trace context across the broker (producer and consumer spans,
+  the producer is a link unless `tracing.otel.trust_incoming`); per-queue
+  `on_failure: drop` and a startup warning for consumers on queues without a
+  dead-letter queue; metrics.
+- `nhttp`: `Server.Authenticate` (bound to the application logger),
+  `WithScopeClaims` (`scp`-style claims), `Principal.ExpiresAt`,
+  `StatusClientClosedRequest`.
+- `codec.max_elements` (default 250,000) bounds the work a payload inside the size
+  limit can cause (a 4.7 MB array used ~300 MB), `ErrTooComplex` → 413.
+- `sse`: `UserKey`/`UserKeyOf`, `WithExpiry`, a final `event: reauth` when a stream
+  ends at the token's expiry or `max_lifetime`, `sse.send_buffer_bytes`.
+- Regression and chaos tests from the review: stale confirmations, `Reprocess`,
+  pipelining, at-least-once through connection cuts, derived-context errors, decoder
+  limits, duplicate members, drain, rate limits.
+
+### Changed (breaking)
+
+- `codec.max_payload_bytes` defaults to **1 MiB** (was 5 MiB).
+- `http.cors.enabled` with no `origins` and no `origin_patterns` is an error; write
+  `origins: ["*"]` or `allow_any_origin: true` to allow every website.
+- Duplicate JSON object members are refused (400).
+- `message` queue `retry.max_attempts` counts **handler invocations** (3 = three
+  runs, was four).
+- `sse` identifies a user by `sse.UserKey(principal)` (issuer + tenant + subject),
+  not the bare subject; `PublishToUser` takes that key. `max_user_id_bytes` defaults to 512.
+- Tenant IDs accept any RFC 9562 UUID (version 1 to 8), not only v4.
+- Dependencies: go-jose 4.1.9, pgx 5.13.0, quic-go 0.65.0, x/crypto 0.59.0,
+  x/image 0.48.0 (`govulncheck` reports no vulnerabilities, including GO-2026-5932).
+
+### Upgrading
+
+- If you raised no payload limit and accepted bodies between 1 and 5 MiB, set
+  `codec.max_payload_bytes` (keep `cache.limits.max_value_bytes` and
+  `message.publisher.max_payload_bytes` at or below it).
+- Add `origins` (or `allow_any_origin: true`) to every enabled `http.cors` section.
+- Publishers to SSE users: replace `PublishToUser(ctx, subject, …)` by
+  `PublishToUser(ctx, sse.UserKey(principal), …)` or `sse.UserKeyOf(iss, tenant, sub)`.
+- Queues you consume without `dead_letter` drop a message whose handler fails: add
+  `dead_letter: true` (and `retry`) or `on_failure: drop` to say so. Raise
+  `max_attempts` by one to keep the old number of runs.
+- Behind Kubernetes or a load balancer set `http.server.shutdown_delay` (and an
+  `app.WithShutdownTimeout` above it plus 10 s).
+- Pages that use SSE should handle `event: reauth` (see `_examples/sse`).
+- Not addressed: SSE over RabbitMQ is still O(instances × events), a per-user routing
+  mode is not implemented (documented in AGENTS.md section 11B).
+
 ## [v0.6.0] - 2026-11-12
 
 ### Added

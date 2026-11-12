@@ -8,12 +8,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	router "github.com/ams-soft/go-ams-router"
 	"github.com/ams-soft/go-ams-router/middleware"
 	"github.com/ams-soft/nforge"
 	"github.com/ams-soft/nforge/codec"
 	"github.com/ams-soft/nforge/jose"
+	"github.com/ams-soft/nforge/metrics"
 	"github.com/ams-soft/nforge/module"
 	"github.com/ams-soft/nforge/telemetry"
 )
@@ -39,16 +41,18 @@ type Server struct {
 	tracing  *telemetry.Tracing
 	status   module.Introspection
 	failed   func(error)
+	metrics  *metrics.Registry
 	accessed bool // request logging is on
 
 	files fileMounts // Static/SPA mounts (static.go)
 	specs specCache
 	graph graphPage //nolint:unused // used by graph.go, which only the nforge_graph build compiles
 
-	mu   sync.Mutex
-	run  *running
-	wg   sync.WaitGroup
-	stop sync.Once
+	mu       sync.Mutex
+	draining atomic.Bool // Stop began: answers carry Connection: close
+	run      *running
+	wg       sync.WaitGroup
+	stop     sync.Once
 }
 
 // Dependencies are the collaborators of a Server. Module fills them from the
@@ -74,6 +78,9 @@ type Dependencies struct {
 	Status module.Introspection
 	// Failed is told when a listener fails after Start; nil ignores it.
 	Failed func(error)
+	// Metrics receives the request instruments and is served at
+	// http.routes.metrics; nil means none.
+	Metrics *metrics.Registry
 }
 
 // New builds the server of cfg, with the defaults applied to a copy. Routes
@@ -86,7 +93,7 @@ func New(cfg Config, d Dependencies) *Server {
 	}
 	s := &Server{
 		cfg: cfg, app: d.App, logger: logger, codec: d.Codec, jose: d.JOSE, tracing: d.Tracing,
-		status: d.Status, failed: d.Failed,
+		status: d.Status, failed: d.Failed, metrics: d.Metrics,
 		accessed: d.AccessLog,
 		Srv: &stdhttp.Server{
 			Addr:              cfg.Server.Host + ":" + strconv.Itoa(cfg.Server.Port),
@@ -126,7 +133,16 @@ func (s *Server) setStandardHandler() {
 	if s.accessed {
 		handler.Use(Logger(s.logger))
 	}
+	handler.Use(s.drainHeader)
+	if s.metrics != nil {
+		handler.Use(s.requestMetrics())
+	}
+	if n := s.cfg.Server.MaxInflightRequests; n > 0 {
+		handler.Use(inflightLimit(n))
+	}
 	handler.Use(middleware.Recoverer)
+	handler.NotFound(routeNotFound)
+	handler.MethodNotAllowed(routeMethodNotAllowed)
 	if s.codec != nil && s.codec != codec.Default() {
 		handler.Use(withRegistry(s.codec))
 	}
@@ -149,6 +165,12 @@ func (s *Server) setStandardHandler() {
 	}
 	if s.cfg.Routes.Graph.Enabled {
 		s.registerGraph(handler)
+	}
+	if s.cfg.Routes.Metrics.Enabled {
+		if s.metrics == nil {
+			panic("nhttp: http.routes.metrics is enabled but no metrics registry was given (register metrics.Module)")
+		}
+		handler.Get(s.cfg.Routes.Metrics.Path, s.metrics.Handler().ServeHTTP)
 	}
 	if s.cfg.Routes.Health.Enabled || s.cfg.Routes.Readiness.Enabled {
 		s.Typed().Route("/", func(api *TypedRouter) {
@@ -195,4 +217,15 @@ func (s *Server) maxBodyBytes() int64 {
 		return int64(s.cfg.Server.MaxBodyBytes)
 	}
 	return s.registry().MaxPayloadBytes()
+}
+
+// drainHeader tells keep-alive clients to go elsewhere once the shutdown delay
+// started, so load balancers and clients stop reusing this instance.
+func (s *Server) drainHeader(next stdhttp.Handler) stdhttp.Handler {
+	return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		if s.draining.Load() && r.ProtoMajor == 1 {
+			w.Header().Set("Connection", "close")
+		}
+		next.ServeHTTP(w, r)
+	})
 }

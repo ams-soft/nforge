@@ -35,6 +35,14 @@ type ReadinessConfig struct {
 	Path    string `yaml:"path"`    // default /ready when enabled
 }
 
+// MetricsConfig serves the metrics registry (the metrics module) in the
+// Prometheus text format. The page is unauthenticated: keep it on an internal
+// network or restrict the path at the gateway.
+type MetricsConfig struct {
+	Enabled bool   `yaml:"enabled"` // default: false; requires the metrics module
+	Path    string `yaml:"path"`    // default /metrics when enabled
+}
+
 // GraphConfig enables the module graph inspection page. It is unauthenticated
 // and shows the application's topology: restrict it at the gateway.
 type GraphConfig struct {
@@ -46,6 +54,7 @@ type RoutesConfig struct {
 	Health    HealthConfig    `yaml:"health"`
 	Readiness ReadinessConfig `yaml:"readiness"`
 	Graph     GraphConfig     `yaml:"graph"`
+	Metrics   MetricsConfig   `yaml:"metrics"`
 }
 
 // SecurityConfig enables go-ams-router's middleware.Security: the security
@@ -93,9 +102,14 @@ type HSTSConfig struct {
 // answered (204) for every path, private routes included.
 type CORSConfig struct {
 	Enabled bool `yaml:"enabled"` // default: false
-	// Origins are exact origins ("https://app.example.com"); empty or ["*"]
-	// allows any origin with Access-Control-Allow-Origin: *.
+	// Origins are exact origins ("https://app.example.com"). Allowing every
+	// origin (Access-Control-Allow-Origin: *) must be explicit: ["*"] or
+	// allow_any_origin: true. Enabled with neither origins nor patterns is a
+	// configuration error, so turning CORS on can never silently open the API
+	// to every website.
 	Origins []string `yaml:"origins"`
+	// AllowAnyOrigin is the explicit form of origins: ["*"].
+	AllowAnyOrigin bool `yaml:"allow_any_origin"` // default: false
 	// OriginPatterns are regexps allowed in addition to Origins; they must be
 	// anchored (^…$) so "https://example.com.evil.net" cannot match.
 	OriginPatterns       []string      `yaml:"origin_patterns"`
@@ -149,6 +163,17 @@ type ServerConfig struct {
 	ReadTimeout       time.Duration `yaml:"read_timeout"`        // time to read the whole request, body included; default: 30s
 	WriteTimeout      time.Duration `yaml:"write_timeout"`       // from the end of the request headers to the end of the response; default: 30s
 	IdleTimeout       time.Duration `yaml:"idle_timeout"`        // keep-alive wait for the next request; default: 120s
+	// MaxInflightRequests sheds load: when this many requests are running, the
+	// next ones are answered 503 with Retry-After at once. Long-lived responses
+	// give their slot back with BeginStream. Zero (default) means unlimited.
+	MaxInflightRequests int `yaml:"max_inflight_requests"` // default: 0 (unlimited); at most 1000000
+	// ShutdownDelay keeps the server up, still accepting, for this long after
+	// the shutdown began and before the listeners close. The application is
+	// already not ready (/ready answers 503) so load balancers and Kubernetes
+	// can take the instance out of rotation without refused connections. It
+	// counts against the shutdown deadline (app.WithShutdownTimeout, 15s by
+	// default): set that to at least shutdown_delay plus the drain (10s).
+	ShutdownDelay time.Duration `yaml:"shutdown_delay"` // default: 0s (close at once); at most 5m
 	// HandlerTimeout is the deadline of every request context, so handlers,
 	// queries and loaders that honor ctx stop when it passes (the write
 	// timeout alone closes the connection but leaves the handler running).
@@ -235,6 +260,9 @@ func (c *Config) ApplyDefaults(app module.App) {
 	}
 	if c.Routes.Readiness.Enabled && c.Routes.Readiness.Path == "" {
 		c.Routes.Readiness.Path = "/ready"
+	}
+	if c.Routes.Metrics.Enabled && c.Routes.Metrics.Path == "" {
+		c.Routes.Metrics.Path = "/metrics"
 	}
 	if c.Routes.Graph.Enabled && c.Routes.Graph.Path == "" {
 		c.Routes.Graph.Path = DefaultGraphPath

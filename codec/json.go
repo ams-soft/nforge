@@ -11,13 +11,14 @@ import (
 )
 
 type jsonCodec struct {
-	strict bool
+	strict      bool
+	maxElements int
 }
 
 // NewJSON creates the JSON codec. Numbers in `any` fields become json.Number,
 // so 64-bit integers do not lose precision (nothing goes through float64).
 func NewJSON(opts Options) StreamCodec {
-	return &jsonCodec{strict: opts.StrictUnknownFields}
+	return &jsonCodec{strict: opts.StrictUnknownFields, maxElements: opts.MaxElements}
 }
 
 func (c *jsonCodec) ContentType() string { return JSON }
@@ -51,6 +52,9 @@ func (c *jsonCodec) Decode(data []byte, v any) error {
 	if err := analyze(t); err != nil {
 		return err
 	}
+	if err := scanJSON(data, c.maxElements); err != nil {
+		return err
+	}
 	if c.strict || hasRequired(t) {
 		if err := checkPresenceJSON(data, t, c.strict); err != nil {
 			return err
@@ -66,18 +70,14 @@ func (c *jsonCodec) DecodeFrom(r io.Reader, v any) error {
 	if err := checkTarget(v); err != nil {
 		return err
 	}
-	t := reflect.TypeOf(v).Elem()
-	if c.strict || hasRequired(t) {
-		data, err := io.ReadAll(r)
-		if err != nil {
-			return err
-		}
-		return c.Decode(data, v)
-	}
-	if err := analyze(t); err != nil {
+	// The document is scanned (duplicate members, element count) before it is
+	// decoded, so it is read in full first; the Registry already bounds it by
+	// the payload limit.
+	data, err := io.ReadAll(r)
+	if err != nil {
 		return err
 	}
-	return jsonDecodeAll(r, v)
+	return c.Decode(data, v)
 }
 
 // jsonDecodeBytes decodes data into v. json.Unmarshal is markedly cheaper than

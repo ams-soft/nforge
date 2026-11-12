@@ -25,6 +25,10 @@ type Config struct {
 	MaxPayloadBytes int64
 	// AllowDTD allows <!DOCTYPE> in XML (config: codec.xml.disallow_dtd = false).
 	AllowDTD bool
+	// MaxElements bounds the values of one document, so a payload inside
+	// MaxPayloadBytes cannot still cost hundreds of times its size to decode.
+	// Zero uses DefaultMaxElements.
+	MaxElements int
 	// Validate, if set, runs after every successful decode (e.g. a
 	// go-playground/validator). It runs after Validator.Validate.
 	Validate func(v any) error
@@ -43,7 +47,7 @@ type Registry struct {
 }
 
 // DefaultMaxPayloadBytes is the payload limit when none is configured.
-const DefaultMaxPayloadBytes = 5 << 20 // 5 MiB
+const DefaultMaxPayloadBytes = 1 << 20 // 1 MiB; raise it per application (codec.max_payload_bytes)
 
 var aliases = map[string]string{
 	"json":     JSON,
@@ -67,7 +71,13 @@ func New(cfg Config, extra ...Codec) (*Registry, error) {
 		formats = []string{"json"}
 	}
 
-	opts := Options{StrictUnknownFields: cfg.StrictUnknownFields, AllowDTD: cfg.AllowDTD}
+	if cfg.MaxElements < 0 || cfg.MaxElements > MaxElementsCeiling {
+		return nil, fmt.Errorf("codec: MaxElements must be between 0 and %d", MaxElementsCeiling)
+	}
+	if cfg.MaxElements == 0 {
+		cfg.MaxElements = DefaultMaxElements
+	}
+	opts := Options{StrictUnknownFields: cfg.StrictUnknownFields, AllowDTD: cfg.AllowDTD, MaxElements: cfg.MaxElements}
 	available := map[string]Codec{
 		JSON: NewJSON(opts),
 		CBOR: NewCBOR(opts),

@@ -271,6 +271,19 @@ func checkSVG(t *testing.T, data []byte) map[string]string {
 			if (n == "href") && !strings.HasPrefix(v, "data:image/png;base64,") {
 				t.Errorf("external reference %q", a.Value)
 			}
+			if n == "href" {
+				// A re-encoded raster logo: only the base64 alphabet may follow the prefix. The
+				// substring heuristics below do not apply to it: ~3 KB of base64 contains "http"
+				// by chance in about 0.14% of logos, which is not a reference.
+				payload := strings.TrimPrefix(a.Value, "data:image/png;base64,")
+				for _, c := range payload {
+					if (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '+' && c != '/' && c != '=' {
+						t.Errorf("non-base64 byte %q in an embedded image", c)
+						break
+					}
+				}
+				continue
+			}
 			if strings.Contains(v, "javascript:") || (strings.Contains(v, "http") && a.Name.Space != "xmlns" && n != "xmlns:xlink" && n != "xmlns") {
 				t.Errorf("suspicious attribute %s=%q", n, a.Value)
 			}

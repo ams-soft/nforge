@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ams-soft/nforge/codec"
@@ -30,14 +31,15 @@ import (
 // Cache is safe for concurrent use. Create it with Open and release it with
 // Shutdown; after Shutdown every method returns ErrClosed.
 type Cache struct {
-	backend     backend
-	keys        keyspace
-	registry    *codec.Registry
-	format      string
-	maxValue    int64
-	loadTimeout time.Duration
-	maxFlights  int
-	logger      *slog.Logger
+	hits, misses, errs atomic.Uint64 // read outcomes and failed operations (metrics)
+	backend            backend
+	keys               keyspace
+	registry           *codec.Registry
+	format             string
+	maxValue           int64
+	loadTimeout        time.Duration
+	maxFlights         int
+	logger             *slog.Logger
 
 	mu            sync.Mutex
 	closed        bool
@@ -150,6 +152,9 @@ func (c *Cache) fail(op string, err error) error {
 	if err == nil {
 		return nil
 	}
+	if !errors.Is(err, ErrNotFound) {
+		c.errs.Add(1)
+	}
 	return withOp(err, op, c.backend.name())
 }
 
@@ -203,6 +208,7 @@ func (c *Cache) GetBytes(ctx context.Context, key string) ([]byte, error) {
 		return nil, c.fail(op, err)
 	}
 	data, err := c.backend.get(ctx, full)
+	c.countRead(err)
 	return data, c.fail(op, err)
 }
 
@@ -428,6 +434,7 @@ func (c *Cache) Get(ctx context.Context, key string, target any) error {
 		return c.fail(op, err)
 	}
 	data, err := c.backend.get(ctx, full)
+	c.countRead(err)
 	if err != nil {
 		return c.fail(op, err)
 	}
@@ -490,3 +497,13 @@ func (c *Cache) prepareObject(ctx context.Context, key string, value any, ttl ti
 
 // isNotFound reports a cache miss.
 func isNotFound(err error) bool { return errors.Is(err, ErrNotFound) }
+
+// countRead records a read as a hit, a miss or neither (a failure is counted by fail).
+func (c *Cache) countRead(err error) {
+	switch {
+	case err == nil:
+		c.hits.Add(1)
+	case errors.Is(err, ErrNotFound):
+		c.misses.Add(1)
+	}
+}

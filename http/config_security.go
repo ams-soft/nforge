@@ -144,7 +144,13 @@ func validateCORS(c CORSConfig) error {
 	if !c.Enabled {
 		return nil
 	}
-	anyOrigin := len(c.Origins) == 0 && len(c.OriginPatterns) == 0
+	if len(c.Origins) == 0 && len(c.OriginPatterns) == 0 && !c.AllowAnyOrigin {
+		return fmt.Errorf("http.cors is enabled with no origins: list http.cors.origins (or origin_patterns), or set allow_any_origin: true to allow every website")
+	}
+	if c.AllowAnyOrigin && (len(c.Origins) > 0 || len(c.OriginPatterns) > 0) {
+		return fmt.Errorf("http.cors.allow_any_origin cannot be combined with origins or origin_patterns")
+	}
+	anyOrigin := c.AllowAnyOrigin
 	for _, o := range c.Origins {
 		if o == "*" {
 			if len(c.Origins) > 1 || len(c.OriginPatterns) > 0 {

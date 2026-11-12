@@ -28,6 +28,14 @@ stream ticket issued by an authenticated call. Streams end after
 `sse.max_lifetime`, so an expired or revoked token only stops a stream at its
 next reconnect; the page handles the 401 that follows.
 
+## Identity, expiry and reconnection
+
+The stream's identity is `sse.UserKey(principal)` (issuer + tenant + subject): two
+tenants that share a subject never share a stream, and `/notify` builds the target
+user's key from the caller's principal. A stream ends at `min(token exp,
+sse.max_lifetime)` after an `event: reauth`; the page listens for it, signs in
+again and reconnects.
+
 ## RabbitMQ, two instances
 
 ```bash

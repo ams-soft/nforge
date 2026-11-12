@@ -148,7 +148,7 @@ func minimalVersion(data []byte, level ErrorCorrection, from int) (int, segMode)
 func encodeData(data []byte, m segMode, version int, level ErrorCorrection) []byte {
 	var w bitBuf
 	w.put([3]uint32{1, 2, 4}[m], 4)
-	w.put(uint32(len(data)), countBits(m, version))
+	w.put(uint32(len(data)), countBits(m, version)) //nolint:gosec // G115: len(data) is bounded by the symbol capacity, far below 2^32
 	switch m {
 	case modeNumeric:
 		for i := 0; i < len(data); i += 3 {
@@ -162,9 +162,9 @@ func encodeData(data []byte, m segMode, version int, level ErrorCorrection) []by
 	case modeAlnum:
 		for i := 0; i < len(data); i += 2 {
 			if i+1 < len(data) {
-				w.put(uint32(alnumIndex(data[i])*45+alnumIndex(data[i+1])), 11)
+				w.put(uint32(alnumIndex(data[i])*45+alnumIndex(data[i+1])), 11) //nolint:gosec // G115: alphanumeric pair value is at most 45*45+44
 			} else {
-				w.put(uint32(alnumIndex(data[i])), 6)
+				w.put(uint32(alnumIndex(data[i])), 6) //nolint:gosec // G115: alphanumeric index is at most 44
 			}
 		}
 	default:

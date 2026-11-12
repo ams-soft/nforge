@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/ams-soft/nforge/codec"
+	"github.com/ams-soft/nforge/metrics"
 	"github.com/ams-soft/nforge/module"
+	"github.com/ams-soft/nforge/telemetry"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -42,7 +44,7 @@ func Module(opts ...ModuleOption) module.Descriptor {
 			cfg.RabbitMQ.ConnectionName = src.App().Name
 		}
 		if !cfg.Enabled {
-			return module.Definition{Disabled: true, Provides: []module.Handle{Capability}, Requires: []module.Handle{codec.Capability}, Optional: []module.Handle{module.Logger}, Config: cfg}, nil
+			return module.Definition{Disabled: true, Provides: []module.Handle{Capability}, Requires: []module.Handle{codec.Capability}, Optional: []module.Handle{module.Logger, telemetry.Capability}, Config: cfg}, nil
 		}
 		if cfg.Enabled {
 			if e := cfg.validate(); e != nil {
@@ -72,7 +74,7 @@ func Module(opts ...ModuleOption) module.Descriptor {
 			seen[q.name] = q
 			queues = append(queues, q)
 		}
-		return module.Definition{Disabled: !cfg.Enabled, Provides: []module.Handle{Capability}, Requires: []module.Handle{codec.Capability}, Optional: []module.Handle{module.Logger}, Config: cfg, Check: func(v *module.View) error {
+		return module.Definition{Disabled: !cfg.Enabled, Provides: []module.Handle{Capability}, Requires: []module.Handle{codec.Capability}, Optional: []module.Handle{module.Logger, telemetry.Capability, metrics.Capability}, Config: cfg, Check: func(v *module.View) error {
 			cs, _, _, e := module.ConfigOf[codec.Settings](v, codec.Capability)
 			if e != nil {
 				return e
@@ -96,7 +98,14 @@ func Module(opts ...ModuleOption) module.Descriptor {
 			if e != nil {
 				return module.Hooks{}, e
 			}
+			if tr, ok := module.Lookup(sc, telemetry.Capability); ok && tr != nil {
+				cl.tracer = tr.Provider.Tracer("github.com/ams-soft/nforge/message")
+				cl.trustIncoming = tr.TrustIncoming
+			}
 			module.Provide(sc, Capability, cl)
+			if reg, ok := module.Lookup(sc, metrics.Capability); ok {
+				cl.registerMetrics(reg)
+			}
 			cl.lifeCtx = sc.Context()
 			cl.failure = sc.ReportFailure
 			cl.consumerLogger = logger
@@ -180,8 +189,12 @@ func (c *Client) AddConsumer(queue string, handler Handler, opts ...ConsumerOpti
 	if handler == nil {
 		return fmt.Errorf("message: handler is required")
 	}
-	if _, ok := c.queues[queue]; !ok {
+	q, ok := c.queues[queue]
+	if !ok {
 		return ErrQueueNotRegistered
+	}
+	if !q.deadLetter && !q.dropOnFailure && c.logger != nil {
+		c.logger.Warn("[MessageModule] consumer on a queue without dead_letter: a message whose handler fails is discarded; declare dead_letter or set on_failure: drop", "queue", queue)
 	}
 	o := consumerOptions{concurrency: c.cfg.Consumer.Concurrency, prefetch: c.cfg.Consumer.Prefetch, timeout: c.cfg.Consumer.Timeout, manual: c.cfg.Consumer.AckMode == "manual"}
 	for _, f := range opts {
@@ -242,11 +255,14 @@ func (c *Client) startConsumers(ctx context.Context, logger *slog.Logger) error 
 			_ = ch.Close()
 			return fmt.Errorf("message: start consumer for %s", r.queue)
 		}
-		r.done = make(chan struct{})
+		done := make(chan struct{})
+		r.done = done
 		r.cancel = func() error { return ch.Cancel(consumerTag, false) }
 		workers := make(chan amqp.Delivery, prefetch)
+		c.consWG.Add(1)
 		go func() {
-			defer close(r.done)
+			defer c.consWG.Done()
+			defer close(done)
 			var wg sync.WaitGroup
 			for i := 0; i < r.opts.concurrency; i++ {
 				wg.Add(1)
@@ -255,8 +271,14 @@ func (c *Client) startConsumers(ctx context.Context, logger *slog.Logger) error 
 					for raw := range workers {
 						d := newDelivery(c, r, raw)
 						hctx, cancel := context.WithTimeout(ctx, r.opts.timeout)
+						hctx, endSpan := c.consumerContext(hctx, r.queue, raw.Headers)
 						panicStack, err := safeHandle(r.handler, hctx, d)
+						endSpan(err)
 						timed := hctx.Err() != nil
+						c.stats.consumed.Add(1)
+						if err != nil || timed {
+							c.stats.failed.Add(1)
+						}
 						if r.opts.manual {
 							if !d.settled() {
 								_ = d.Nack(false)
@@ -270,8 +292,10 @@ func (c *Client) startConsumers(ctx context.Context, logger *slog.Logger) error 
 							_ = d.Ack()
 						} else {
 							if !timed && c.retryDelivery(d, hctx) == nil {
+								c.stats.retried.Add(1)
 								_ = d.Ack()
 							} else {
+								c.stats.dropped.Add(1)
 								_ = d.Nack(false)
 							}
 							if logger != nil {
@@ -305,16 +329,14 @@ func (c *Client) stopConsumers(ctx context.Context) error {
 		}
 	}
 	c.consumersMu.Unlock()
-	for _, r := range regs {
-		if r.done == nil {
-			continue
-		}
-		select {
-		case <-r.done:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+	waited := make(chan struct{})
+	go func() { c.consWG.Wait(); close(waited) }()
+	select {
+	case <-waited:
+	case <-ctx.Done():
+		return ctx.Err()
 	}
+	_ = regs
 	return nil
 }
 

@@ -208,6 +208,9 @@ func LoadFlags(configPath, envFilePath string) (*Document, error) {
 	if d.app.Name == "" {
 		return nil, errors.New("validate config: app.name must not be empty")
 	}
+	if err := validateAppName(d.app.Name); err != nil {
+		return nil, err
+	}
 	if d.app.Version == "" {
 		return nil, errors.New("validate config: app.version must not be empty")
 	}
@@ -263,6 +266,23 @@ func (d *Document) decode(name string, dst any, used map[string]bool) error {
 	if s != nil && s.overlay != nil {
 		if err := decodeNode(name, s.overlay, dst); err != nil {
 			return fmt.Errorf("load overlay: %w", err)
+		}
+	}
+	return nil
+}
+
+// maxAppNameLen bounds app.name: it becomes the logger and OTel service name,
+// the AMQP connection name (255 bytes at most) and part of cache prefixes and
+// exchange names.
+const maxAppNameLen = 128
+
+func validateAppName(name string) error {
+	if len(name) > maxAppNameLen {
+		return fmt.Errorf("validate config: app.name must be at most %d bytes, got %d", maxAppNameLen, len(name))
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || r == 0x2028 || r == 0x2029 {
+			return errors.New("validate config: app.name must not contain control characters")
 		}
 	}
 	return nil

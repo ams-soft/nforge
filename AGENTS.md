@@ -59,6 +59,10 @@ package `app`. An application gets, from one `config.yaml`:
   Classic and Quorum queues, opt-in DLQ/retry, concurrent consumers and
   lifecycle-integrated reconnect/readiness. `message.Module()` owns the
   connection; `message.Consumers()` is ingress and drains before it closes.
+- **Metrics** (`metrics/`): a dependency-free registry (`metrics.Capability`)
+  that renders the Prometheus text format; the HTTP server, SSE, Messaging, the
+  database pool and the cache register their instruments on it when it is
+  present (§11C).
 - **Server-Sent Events** (`sse/`): an explicitly registered module with
   user-targeted delivery only (`Manager.PublishToUser`, `Manager.Handler`) over a
   `memory` or `rabbitmq` driver; authenticated streams, bounded per-connection
@@ -117,6 +121,7 @@ generics, `errors.Join`, `math/rand/v2`, `maps`/`slices` iterators.
 │   └── internal/strictjson/  # strict protocol JSON: UTF-8, depth, duplicate members, trailing data
 ├── cache/              # cache: Config, Open, Redis + memory drivers, keyspace/tenant, GetOrLoad flights, the cache module
 ├── message/            # RabbitMQ transport: queues, confirms, consumers, retry/DLQ, readiness and lifecycle modules
+├── metrics/            # metrics registry (Prometheus text format) and the metrics module (§11C)
 ├── sse/                # Server-Sent Events: Manager, Handler, memory + rabbitmq drivers, the sse module (§11B)
 ├── crypto/             # package ncrypto: AEAD (XChaCha20, AES-GCM), HMAC, password/data hashes, secure random
 ├── helper/
@@ -187,8 +192,9 @@ codec ──► module
 database ──► module
 jose ──► module (go-jose/v4 behind unexported adapters)
 cache ──► module, codec, database (tenant context only; go-redis/v9 behind unexported adapters)
-message ──► module, codec (RabbitMQ AMQP 0-9-1 driver; no AMQP types in its public API)
-sse ──► module, codec, nhttp (principal, BeginStream, SendJSON), message (fanout exchange for the rabbitmq driver)
+message ──► module, codec, telemetry (trace context), metrics (RabbitMQ AMQP 0-9-1 driver; no AMQP types in its public API)
+metrics ──► module
+sse ──► module, codec, nhttp (principal, BeginStream, SendJSON), message (fanout exchange for the rabbitmq driver), metrics
 telemetry ──► module
 logs ──► module, telemetry
 ncrypto, helper/*   (no internal deps)
@@ -382,22 +388,28 @@ still logs through `slog.Default`.
 
 1. `Tracing()` — only with the tracing module enabled. Must be first.
 2. `Logger(logger)` — only when the logger has an output (it is enabled for errors).
-3. `middleware.Recoverer` (from go-ams-router) — always, then the
+3. Drain header (`Connection: close` once `shutdown_delay` started) and, with
+   the metrics module, the request metrics middleware (§11C).
+   `http.server.max_inflight_requests` (when positive) sheds load here: past
+   the limit a request is answered 503 + `Retry-After` at once; a stream gives
+   its slot back at `BeginStream`.
+4. `middleware.Recoverer` (from go-ams-router) — always, then the
    application's `Registry` in the request context when it is not the process
-   default.
-4. Body limit — always: `http.MaxBytesReader` at `http.server.max_body_bytes`
+   default. The router's `NotFound` and `MethodNotAllowed` answer the envelope
+   (§7.2), not net/http's text (a root SPA still owns `NotFound`).
+5. Body limit — always: `http.MaxBytesReader` at `http.server.max_body_bytes`
    (default: the Registry's payload limit) + 1 byte, so raw routes that read
    `r.Body` are bounded and typed routes still get their 413 from the codec
    first (`ParseStatus` also maps `*http.MaxBytesError` to 413).
-5. Handler timeout — **opt-in**: only when `http.server.handler_timeout` is
+6. Handler timeout — **opt-in**: only when `http.server.handler_timeout` is
    positive (default: disabled) the request context gets that deadline, so
    handlers, queries and loaders that honor `ctx` stop. For one route, mount
    `nhttp.Timeout(d)` with `With`. A stream calls `nhttp.BeginStream(w, r)`,
    which releases this global deadline (not a route-level `Timeout`), the
    HTTP/3 stream timeout and the connection read/write deadlines (§7.1).
-6. `middleware.Security` (go-ams-router) — unless `http.security.enabled: false` (§7.11).
-7. `middleware.CORS` (go-ams-router) — only if `http.cors.enabled` (§7.11).
-8. App global middlewares — whatever `Server.Use` adds (application modules call it in Init).
+7. `middleware.Security` (go-ams-router) — unless `http.security.enabled: false` (§7.11).
+8. `middleware.CORS` (go-ams-router) — only if `http.cors.enabled` (§7.11).
+9. App global middlewares — whatever `Server.Use` adds (application modules call it in Init).
 
 go-ams-router builds its middleware chain lazily on the first request, so
 `Use` is valid any time **before the server serves its first request**, even
@@ -414,6 +426,7 @@ Built-in routes registered by `nhttp.New` (and so by the module's Init):
 - Module graph (`http.routes.graph.enabled`): `GET {path}`,
   `GET {path}/mermaid.min.js`; see §7.13.
 - Health/readiness (if either is enabled): see §7.6.
+- Metrics (`http.routes.metrics.enabled`, needs the metrics module): `GET {path}`, the registry in the Prometheus text format (§11C).
 
 ---
 
@@ -537,6 +550,8 @@ http:
     read_timeout: 30s         #   (Slowloris); negative → error;
     write_timeout: 30s        #   read_header_timeout <= read_timeout; a stream releases read/write
     idle_timeout: 120s        #   with BeginStream (http/config_server.go, also applied by nhttp.New)
+    max_inflight_requests: 0  # sheds load: 503 + Retry-After past N running requests; 0 = unlimited; at most 1000000
+    shutdown_delay: 0s        # keep serving (not ready) this long before the listeners close; at most 5m; counts against app.WithShutdownTimeout
     handler_timeout: 0s       # OPT-IN deadline of every request context; omitted or 0s = disabled, positive enables; streams release it
     max_body_bytes: <codec.max_payload_bytes>   # bounds every request body, raw routes too; at most 1gb
   docs:
@@ -550,6 +565,7 @@ http:
   routes:
     health:    { enabled: false, path: /health }   # path defaults only when enabled
     readiness: { enabled: false, path: /ready }
+    metrics:   { enabled: false, path: /metrics }  # Prometheus text format; needs metrics.Module(); unauthenticated: keep it internal
     graph:     { enabled: false, path: /graph }    # module graph page, §7.13; literal path, also serves {path}/mermaid.min.js
   auth:                       # bearer auth of private typed routes; see §7.9
     default_profile: ""       # jwt profile for IsPrivate routes without AuthProfile; requires jose.enabled
@@ -569,7 +585,8 @@ http:
     cross_origin_embedder_policy: ""            # not sent | require-corp | credentialless | unsafe-none
   cors:                       # router middleware.CORS (Express cors); see §7.11; validated only when enabled
     enabled: false
-    origins: []               # exact lowercase origins; [] or ["*"] = any origin
+    origins: []               # exact lowercase origins; ["*"] = any origin. Enabled with no origins and no patterns is an ERROR unless allow_any_origin
+    allow_any_origin: false   # the explicit form of origins: ["*"]; excludes origins and origin_patterns
     origin_patterns: []       # regexps, must be anchored ^…$
     methods: [GET, HEAD, PUT, PATCH, POST, DELETE]
     allowed_headers: []       # [] = echo Access-Control-Request-Headers
@@ -615,7 +632,8 @@ codec:
   formats: { enabled: [json] }      # json | cbor | xml
   default: json                     # must be one of the enabled formats
   strict_unknown_fields: false
-  max_payload_bytes: 5mb            # ByteSize; at most 256mb
+  max_payload_bytes: 1mb            # ByteSize; at most 256mb
+  max_elements: 250000              # values per document (JSON tokens, XML elements+attributes): bounds decode cost; 1..100000000
   xml: { disallow_dtd: true }       # *bool; nil = true
 
 jose:                         # jose.Config — see §10 (unknown keys inside jose are rejected)
@@ -629,6 +647,9 @@ jose:                         # jose.Config — see §10 (unknown keys inside jo
                 encryption_key, encryption_algorithm, decryption_keys, decryption_algorithms,
                 content_encryption: A256GCM, jwt: { issuer, audiences, ttl: 15m, max_ttl: 15m, clock_skew: 30s } } ]
   jwks: { enabled: false, path: /.well-known/jwks.json, cache_max_age: 60s }
+
+metrics:                      # metrics.Config — see §11C; the whole section is optional once metrics.Module() is registered
+  enabled: <true>             # *bool; omitted = true; false keeps the registered module out of the run
 
 prd_exceptions:               # insecure settings env prd accepts on purpose (default false: load error); see §4.1
   tls_key_permissions: false  # TLS key readable by group or others
@@ -674,7 +695,8 @@ message:                      # message.Config — RabbitMQ only; disabled by de
     - {name: notifications} # Classic durable
     - {name: payments, max_priority: 10} # Classic priority 1..10
     - {name: audit, type: quorum, dead_letter: true}
-    - {name: emails, dead_letter: true, retry: {delay: 10s, max_attempts: 3}}
+    - {name: emails, dead_letter: true, retry: {delay: 10s, max_attempts: 3}}  # max_attempts = total handler invocations before the DLQ
+    - {name: ephemeral, on_failure: drop}  # explicit: a failed message is discarded (silences the no-DLQ startup warning); or on_failure: dead_letter (needs dead_letter: true)
 
 sse:                          # sse.Config — see §11B; the whole section is optional once sse.Module() is registered
   enabled: <true>             # *bool; omitted = true; false keeps the registered module out of the run
@@ -687,7 +709,8 @@ sse:                          # sse.Config — see §11B; the whole section is o
   max_connects_per_second: 100   # token bucket for connection attempts of this instance
   write_timeout: 10s          # deadline of every frame write
   max_lifetime: 15m           # stream age limit (+10% jitter); >= 1m; bounds token expiry/revocation lag
-  limits: { max_payload_bytes: 64kb (≤ 1mb), max_user_id_bytes: 256, max_event_name_size: 64, max_event_id_bytes: 128 }
+  send_buffer_bytes: 0        # cap on SO_SNDBUF of HTTP/1.1 streams so a client that never reads is cut; 0 = OS default, else 4096..16mb
+  limits: { max_payload_bytes: 64kb (≤ 1mb), max_user_id_bytes: 512, max_event_name_size: 64, max_event_id_bytes: 128 }
   allowed_origins: []         # exact lowercase origins; [] = only the request's own origin; "*" rejected
   rabbitmq:
     exchange: ""              # "" → <message.namespace>.sse.<env>.<app.name> (sanitized)
@@ -697,7 +720,7 @@ sse:                          # sse.Config — see §11B; the whole section is o
 Owners of the sections: `logging` → `logs.Module` (ID `logger`), `tracing` →
 `telemetry.Module`, `codec` → `codec.Module`, `database` →
 `database.Module`, `jose` → `jose.Module`, `cache` → `cache.Module`,
-`message` → `message.Module`, `sse` → `sse.Module`, `http`
+`message` → `message.Module`, `sse` → `sse.Module`, `metrics` → `metrics.Module`, `http`
 → `nhttp.Module`; `env`, `app` and `prd_exceptions` are reserved (package
 `config`). A section of a module the application did not register is an
 error, not ignored.
@@ -915,7 +938,25 @@ deadlines) and the TCP read/write deadlines of that one request, so the stream
 is not cut at 30 s; the caller then sets a short write deadline before every
 write. A route-level `Timeout` is the application's explicit opt-in and is not
 released. The released deadlines are guards that stop their timer
-(`releasableDeadline`), not a changed config: other requests keep them.
+(`deadlineCtx`), not a changed config: other requests keep them. `deadlineCtx` is
+its own `context.Context` (not an embedded stdlib cancel context), so contexts
+derived from the request (database drivers, HTTP clients) observe
+`context.DeadlineExceeded` when it fires, exactly as with `context.WithTimeout`.
+
+**Context errors in typed handlers.** A handler returning a context error is
+not a server fault: `context.DeadlineExceeded` (the server's `handler_timeout`, a
+route `Timeout`, a downstream deadline) answers **504** logged at WARN; a
+`context.Canceled` while the request context is done (the client went away)
+answers **499** (nginx's "client closed request", `nhttp.StatusClientClosedRequest`)
+at DEBUG and the access log records it at INFO. Everything else stays 500 at ERROR.
+
+**Rate and concurrency limits.** `nhttp.RateLimit(limit, window, opts...)` is a
+fixed-window limiter per client key (`KeyByRemoteIP` by default, `KeyByPrincipal`,
+`KeyByHeader` only for headers a trusted proxy sets): 429 with `Retry-After` and
+`RateLimit-Limit/Remaining/Reset` headers, in-process memory by default or a
+`*cache.Cache` (`WithRateLimitCache`, shared across instances on Redis, built on
+`IncrementWithTTL`), fail-open on backend errors unless `WithRateLimitFailClosed`.
+`http.server.max_inflight_requests` sheds load with 503 (see §3.5).
 
 ### 7.2 Response envelope
 
@@ -933,6 +974,10 @@ is `<response>`, CBOR uses the same keys):
   `title = ErrorTitle(status)`, `instance = r.URL.Path`.
 - `Envelope(r, status, msg)` builds the `SuccessResponse`; `ErrorTitle(404)` →
   `"404 ERROR NOT FOUND"`.
+- Unmatched paths and methods answer the same envelope (`404 route not found`,
+  `405 method not allowed` with `Allow`) in the default codec, not net/http's
+  text; errors net/http produces before the router (431, malformed requests)
+  stay plain. `499` titles as "Client Closed Request".
 - Encoding happens **before** writing; on encode error nothing was sent and
   the caller can still respond with an error.
 - RFC 9110: 1xx/204/304 get headers only, no body.
@@ -1173,7 +1218,9 @@ func (q *ListUsers) Validate() error { ... }         // → 422 on failure
 nhttp.Authenticate(dps.JOSE, "access", nhttp.WithScopes("wallet:read", "wallet:write"))  // raw middleware
 nhttp.Authenticate(dps.JOSE, "access", nhttp.WithScopes(required...))                     // same, slice form
 nhttp.RequireScopes("a", "b")                     // after Authenticate; same scope check
-p, ok := nhttp.PrincipalFromContext(r.Context())   // Subject, Issuer, Audience, TokenID, TenantID, Roles, Scopes
+p, ok := nhttp.PrincipalFromContext(r.Context())   // Subject, Issuer, Audience, TokenID, TenantID, Roles, Scopes, ExpiresAt (the token's exp)
+server.Authenticate("access", opts...)             // same middleware bound to the server's logger (the free function logs through slog.Default)
+nhttp.WithScopeClaims("scope", "scp")              // option: also read scopes from array/space-separated claims such as Azure AD's scp
 p.HasScopes("a", "b")                             // every scope, exact and case-sensitive
 ```
 
@@ -1235,8 +1282,9 @@ id, ok := nhttp.TenantID(r); r, err = nhttp.WithTenantID(r, id)
 
 - `Tenant` **keeps** a tenant already in the context (set by an earlier
   middleware) and otherwise resolves one; `SetTenant` always resolves and
-  **replaces**. Both validate the ID as a canonical UUID v4 (stored
-  lowercased).
+  **replaces**. Both validate the ID as a canonical RFC 9562 UUID, version
+  1 to 8 (v4 and time-ordered v7 both work; never the nil or max UUID), stored
+  lowercased.
 - Results: missing tenant (or resolver returns `database.ErrNoTenant`) → 403
   `tenant required`; invalid ID or repeated header → 400 `invalid tenant`;
   claim resolver without a `Principal` → 401 with a Bearer challenge; any
@@ -1309,7 +1357,7 @@ unquoted `1.3`, but `1.30` or `1.1` fail.
 - **One handler.** HTTP (normal mode), HTTPS and QUIC serve `Srv.Handler`; the
   chain (§3.5) and routes exist once. HTTPS uses `ServeTLS` with only
   `Certificates`/`MinVersion` set, so `net/http` negotiates `h2` itself.
-  HTTP/3 uses `quic-go/http3` (v0.64.1) with TLS 1.3 and ALPN `h3` forced,
+  HTTP/3 uses `quic-go/http3` with TLS 1.3 and ALPN `h3` forced,
   `quic.Config{MaxIdleTimeout, Allow0RTT: false}` and `IdleTimeout` from
   `http.server.idle_timeout`.
 - **Redirect-only listener.** Its own tiny handler (not the router: no docs,
@@ -1621,8 +1669,18 @@ under `codec.Capability`; `Registry.MaxPayloadBytes()` and
   Native `encoding/json/v2` was measured and rejected (encode ties; it
   changes `time.Duration`, nil slices, key case, `any` numbers and has no
   required fields).
+- **Limits beyond the byte limit.** `max_payload_bytes` (default **1 MiB**)
+  bounds bytes, not the cost of decoding them (a 4.7 MB array of numbers used
+  ~300 MB). `codec.max_elements` (default 250,000; JSON tokens, XML elements and
+  attributes) is checked before decoding: `ErrTooComplex` → 413. CBOR keeps the
+  library's own depth (32) and element limits.
+- **Duplicate object members are refused** (`ErrDuplicateField`, 400), exact or
+  differing only in case, at any depth, in every mode: parsers disagree about
+  which duplicate wins, so a gateway that reads the first and nForge the last
+  would see different documents. A linear pre-scan (`scanJSON`) does this and the
+  element count; JSON decoding therefore reads the whole payload first.
 - Process default: initialized in `init()` with json+cbor+xml, permissive,
-  5 MiB; replaced only by the codec module of an application built with
+  1 MiB; replaced only by the codec module of an application built with
   `app.WithProcessGlobals` (`SetDefault`). Otherwise each application uses its own.
 
 ### 8.4 Errors
@@ -1726,7 +1784,7 @@ table at startup only to be self-contained).
 ### 9.1 Multi-tenancy (`tenancy.go`, `internal/rlsexec`)
 
 Opt-in through `database.tenancy` (or `New(pool, WithTenancy(cfg))`). Tenant
-IDs are canonical **UUID v4** (`ParseTenantID`, lowercased). Two modes:
+IDs are canonical **UUIDs, version 1 to 8** (`ParseTenantID`, lowercased). Two modes:
 
 | Mode | What the framework does | Isolation guaranteed by |
 |---|---|---|
@@ -2197,7 +2255,14 @@ st := cl.Status()                                         // sanitized local con
   **immutable**: type, priority and dead-letter arguments must match an existing
   queue, nForge never deletes or converts one.
 - **Publishing** is confirmed (`publisher.confirm_timeout`), persistent and
-  `mandatory`. Errors: `ErrUnroutable` (returned by the broker), `ErrNacked`,
+  `mandatory`. Each publish waits for **its own** confirmation (amqp091 deferred
+  confirms; a basic.return is attributed through the internal `x-nforge-pubid`
+  header), never a shared channel, so a confirmation that arrives after a publish
+  gave up cannot satisfy the next one. The client lock is held only to read the
+  channel, so publishers **pipeline** (≈10 k confirmed msg/s at 2 ms RTT with 32
+  publishers; it used to be `1/RTT`) and `Status()` never waits for a publish.
+  When the channel closes while waiting the outcome is `ErrPublishUncertain`, not
+  a nack. Errors: `ErrUnroutable` (returned by the broker), `ErrNacked`,
   `ErrPublishUncertain` (the reply was lost: the message may or may not be
   queued; do not blindly retry non-idempotent work), `ErrTransportUnavailable`,
   `ErrPayloadTooLarge` (`publisher.max_payload_bytes`, at most the codec limit).
@@ -2213,7 +2278,10 @@ st := cl.Status()                                         // sanitized local con
   settle is `ErrAlreadySettled`, a delivery of an older connection
   `ErrStaleDelivery`). Automatic mode acks on a nil return and nacks on an
   error; with `dead_letter`/`retry` a failing message goes to the retry queue
-  until `max_attempts`, then to the DLQ. `Delivery.Attempt` comes from a
+  until `max_attempts` handler invocations in total (3 = the handler runs at
+  most 3 times), then to the DLQ. **Without `dead_letter` a failed message is
+  discarded** (one Nack, no requeue); the module warns at consumer registration
+  unless the queue says `on_failure: drop` (`QueueSpec.DropOnFailure()`). `Delivery.Attempt` comes from a
   producer-writable header: best effort, not a business retry counter.
   Recovery: the supervisor reconnects with `reconnect` (initial delay,
   multiplier, jitter, cap) and restarts the consumers; readiness is `not_ready`
@@ -2223,7 +2291,9 @@ st := cl.Status()                                         // sanitized local con
   `Processing` (unacknowledged) is **unknown** (`nil`: no Management API is
   called), and `IsEstimate` is always true. `Reprocess(queue, limit)` moves up to
   `limit` DLQ messages back (republished with a confirm, then acked from the
-  DLQ); one run at a time per client (`ErrReprocessRunning`); a queue without
+  DLQ). A republish that is not confirmed or is unroutable puts the message back
+  in the DLQ (`Nack` requeue) and **stops the run**: a message is never acked
+  from the DLQ without a confirmation that is provably its own; one run at a time per client (`ErrReprocessRunning`); a queue without
   `dead_letter` is `ErrUnsupportedFeature`.
 - **Fanout (best effort).** `Client.PublishFanout(ctx, exchange, body)` confirms a
   transient publish to a durable fanout exchange it declares per connection
@@ -2234,6 +2304,16 @@ st := cl.Status()                                         // sanitized local con
   `Ack` on nil and `Nack` without requeue on error or an oversized message.
   A publisher channel the broker closed makes the client reconnect. Used by
   `sse`; no durable queue, retry or DLQ applies.
+- **Trace context.** With the tracing module present the client opens a
+  producer span per `Publish` and a consumer span per delivery; the W3C
+  `traceparent`/`tracestate` travel in the reserved `x-nforge-traceparent` /
+  `x-nforge-tracestate` headers (kept across retry and reprocess). The producer
+  may be outside nForge, so unless `tracing.otel.trust_incoming` is true the
+  consumer starts a new trace and attaches the producer's context as a **link**,
+  not the parent (a producer cannot pick the trace ID or sampling). Trace
+  context is never used for authorization.
+- **Metrics.** With the metrics module: `nforge_message_publishes_total{outcome}`,
+  deliveries, handler failures, retries, nacks, connection readiness and generation.
 - **Security.** `message.Config` redacts the URL in every `fmt` verb, slog and
   JSON; `amqps://` verifies the hostname (TLS 1.2+, optional `tls.ca_file`); a
   remote `amqp://` URL with credentials warns (`prd_exceptions.message_plaintext`,
@@ -2272,16 +2352,23 @@ res, err := mgr.PublishToUser(ctx, userID, sse.Event{Name: "note", Data: payload
 st := mgr.Stats()                                                                   // metrics snapshot; no user IDs
 ```
 
-- **Identity.** The default resolver is the `Subject` of the principal that
-  `nhttp.Authenticate` validated; with no principal the stream answers 401 before
+- **Identity.** The default resolver is `sse.UserKey(principal)`: issuer, tenant
+  and subject, length-delimited, of the principal that `nhttp.Authenticate`
+  validated, so tenants or issuers that share a subject ID never share a stream.
+  **`PublishToUser` takes that key**: publishers holding the principal call
+  `PublishToUser(ctx, sse.UserKey(p), ev)`, others `sse.UserKeyOf(issuer, tenant, subject)`; with no principal the stream answers 401 before
   any SSE header (never anonymous). `WithIdentityResolver` replaces it (return
   errors wrapping `ErrUnauthorized` → 401 or `ErrForbidden` → 403). A user ID the
   module cannot carry (empty, control characters, over `max_user_id_bytes`) is
   403. `nhttp.Authenticate` reads only the `Authorization` header, so a browser
   `EventSource` (no custom headers) needs a same-site HttpOnly cookie turned into
   that header by a small middleware (`_examples/sse`), or a short-lived stream
-  ticket; never a JWT in the query string. Revocation takes effect at the next
-  reconnect: streams are closed after `max_lifetime`.
+  ticket; never a JWT in the query string. A stream ends at
+  `min(token exp, max_lifetime)` (`Principal.ExpiresAt`, `WithExpiry` for custom
+  resolvers) after a final `event: reauth` whose data is `expired` or `lifetime`,
+  so the page can refresh its credential and reconnect instead of retrying with
+  one the server will refuse for good (a 401 stops `EventSource` permanently).
+  Revocation takes effect at the next reconnect.
 - **Protocol.** 200, `text/event-stream; charset=utf-8`, `Cache-Control:
   no-cache, no-transform`, `X-Accel-Buffering: no`, `Connection: keep-alive`
   only on HTTP/1.x. Frames are `id:`, `event:`, one `data:` line per payload
@@ -2294,7 +2381,11 @@ st := mgr.Stats()                                                               
 - **Connections.** One goroutine writes each stream (frames and heartbeats
   serialized), the queue holds `buffer_size` frames and a client that overflows
   it is disconnected, never partially fed. Locks guard only map membership; no
-  lock is held across a write or broker call. Limits answer: per-user 429,
+  lock is held across a write or broker call. `sse.send_buffer_bytes` caps
+  SO_SNDBUF of HTTP/1.1 streams (through `ConnContext`, installed by the module):
+  without it the kernel auto-tunes the buffer to megabytes and a client that never
+  reads absorbs everything sent for a long time without ever triggering
+  `write_timeout`. Limits answer: per-user 429,
   global 503, rate 429 (all with `Retry-After` and the same static text, so
   nothing discloses another user's presence), not started or closing 503, a
   response chain that cannot flush 500. Every write has `write_timeout`.
@@ -2325,15 +2416,63 @@ st := mgr.Stats()                                                               
   histogram, published/accepted/failed, slow-client disconnects, heartbeat and
   write errors, malformed messages, lifetime closes, reconnects); nForge has no
   metrics exporter, the application exports them.
+- **Known limits (not solved).** With rabbitmq every instance receives every
+  event of every user and filters locally: fan-in grows with instances × events,
+  and publishing is bounded by the broker confirm path (publishers now pipeline).
+  A per-user routing mode (dynamic bindings with presence handling) is not
+  implemented; measure before you scale the fleet past a handful of instances.
 - **Proxies.** Disable buffering and keep the read timeout above `heartbeat`:
   nginx `proxy_buffering off; proxy_read_timeout 1h; proxy_http_version 1.1;`
-  (`X-Accel-Buffering: no` already asks nginx to stream).
+  (`X-Accel-Buffering: no` already asks nginx to stream). Validated by hand with
+  nginx 1.30 (default buffering, `proxy_buffering off`, HTTP/1.0 upstream) and over
+  real QUIC/HTTP/2 with curl; there is no automated proxy test.
 - Tests: unit and `httptest` coverage in `sse/` (HTTP/1.1, HTTP/2, `-race`), the
   app-level tests through the real chain (`sse/app_test.go`, including a stream
   past 30 s), `BeginStream` on HTTP/1.1, HTTP/2 and a real QUIC client
   (`http/stream_test.go`), and `-tags integration` RabbitMQ tests
   (`sse/rabbitmq_integration_test.go`: two instances, isolation, auto-delete,
   outage through a TCP proxy, broker restart with `NFORGE_TEST_RABBITMQ_CONTAINER`).
+
+---
+
+## 11C. Metrics (`metrics/`)
+
+`metrics.Module()` (ID `metrics`, section `metrics`, capability
+`metrics.Capability` = `*metrics.Registry`) is optional infrastructure with no
+dependencies (imports `module` only; no third-party library). The registry holds
+counters, gauges and histograms with label sets and *collector functions* read at
+scrape time, and renders the Prometheus text format (0.0.4).
+
+```go
+reg := module.Require(scope, metrics.Capability)
+hits := reg.Counter("myapp_orders_total", "Orders by result.", "result")
+hits.Inc("ok")
+reg.Value("myapp_queue_depth", "Jobs waiting.", "gauge", func() float64 { return float64(depth()) })
+h := reg.Histogram("myapp_job_seconds", "Job duration.", nil, "kind"); h.Observe(0.2, "email")
+```
+
+- **Opt-in and wiring.** Registering the module is the opt-in. nhttp, sse, message,
+  database and cache declare the capability as *optional* and register their
+  instruments when it is present. `http.routes.metrics.enabled` serves the
+  registry at `path` (default `/metrics`); it needs the module (`app.New` fails
+  otherwise) and is unauthenticated like `/health`: keep it on an internal
+  listener or restrict it at the gateway (`env: prd` warns unless `internal_use`).
+- **Built-in instruments.** HTTP: `nforge_http_requests_total{method,route,code}`
+  (route is the matched *pattern*, `unmatched` otherwise, never the raw path),
+  `nforge_http_request_duration_seconds{method,route}` and
+  `nforge_http_requests_in_flight`; a stream that called `BeginStream` is neither
+  in flight nor in the histogram. SSE: connections, users, users-by-connection-count,
+  accepted/rejected, events published/accepted/failed, slow-client, heartbeat and
+  write errors, malformed, lifetime closes, broker reconnects. Messaging: publishes
+  by outcome, deliveries, handler failures, retries, nacks, connection readiness
+  and generation. Database: pool connections by state, max, acquire counters and
+  time. Cache: hits, misses and errors by driver. User IDs and tenants never appear
+  in a label.
+- **Cardinality.** Each instrument keeps at most 5000 label sets and drops (and
+  counts, in `nforge_metrics_dropped_series_total`) any beyond it; label values
+  are the caller's responsibility.
+- Tests: `metrics/registry_test.go` (format, escaping, cap, concurrency),
+  `http/metrics_test.go` and the end-to-end scrape in `sse/app_test.go`.
 
 ---
 
@@ -2555,7 +2694,7 @@ names are `<name>-example`.
 | `database` | database (+ tenancy column, `http.tenant.source: header`) | `docker-compose.yml` + `.env.example` own PostgreSQL; `users.go` (Squirrel/pgx CRUD, filters, batch in `Transaction`, `sendDBError`), `notes.go` (typed `Opts{Tenant}` routes and raw `server.TenantMiddleware()`, `ForContext`/`TenantEq`/tenant `Transaction`; `ensureNotesSchema` builds RLS when `mode: rls`), `rls.env` + `rls-setup.sql` (role `app_tenant`) | config + rls overlay load (unit); CRUD and tenant isolation 403/400/404 (integration) |
 | `qrcode` | none (`helper/qrcode` only; not an `app`) | `main.go` flags (`-payload` default `teste123`, `-out`, `-size`, `-logo`, `-terminal`, `-terminal-only`, `-invert`), `terminal.go` (half-block text QR, 4-module quiet zone, no ANSI), `gallery.go` (PNG, SVG, `base64.txt`, `datauri.txt`, static `index.html`), `assets/logo.svg` | terminal geometry and decode round trip, `-terminal-only` writes no files, empty payload fails, gallery PNGs decode |
 | `static` | http (`Static`, `SPA`, `StaticFS`, `SPAFS`), codec, logs | `main.go` (`-embed`, `-dist`, `-public`; `frontend` module: typed `/api/health`, `Static("/assets")`, `SPA("/")` with `WithSPAReserved("/api")` and `WithSPAImmutableDir("build")`), `frontend/dist` (a tiny hand-written build, no Node), `public/` | `/`, `/dashboard`, `/assets`, `/api/health`, 404s, cache headers, directory and embed modes, a missing entry point fails the start |
-| `sse` | http, jose, sse (memory; `config.rabbitmq.yaml` for RabbitMQ) | `main.go` (cookie login, cookie→bearer middleware, `GET /notifications/stream`, `POST /notify`, `/stats`, `/slow` with `nhttp.Timeout`), `web/index.html` (`EventSource`), `docker-compose.yml` + `.env.example` own RabbitMQ | two tabs of one user receive, another user does not, 401/403, route timeout opt-in, the RabbitMQ config builds |
+| `sse` | http, jose, sse (memory; `config.rabbitmq.yaml` for RabbitMQ) | `main.go` (cookie login, cookie→bearer middleware, `GET /notifications/stream`, `POST /notify`, `/stats`, `/slow` with `nhttp.Timeout`), `web/index.html` (`EventSource`, `reauth` handling), `docker-compose.yml` + `.env.example` own RabbitMQ | two tabs of one user receive, another user does not, 401/403, route timeout opt-in, the RabbitMQ config builds |
 | `message` | message (RabbitMQ, worker-only) | `docker-compose.yml` + `.env.example` own RabbitMQ; `-mode producer|consumer|reprocess`; Classic priority, Quorum, automatic/manual ACK, DLQ and retry | unit validation plus RabbitMQ integration tests |
 
 Each example keeps its environment examples locally; examples with Docker
@@ -2920,3 +3059,18 @@ algorithm/kid/typ, boundaries), not only round trips.
     (explicit origins, never `*`), not from `sse`.
 47. **`sse` with the rabbitmq driver makes `/ready` 503 during a broker outage**
     (the module is critical), while open streams stay up. Probe accordingly.
+48. **The SSE user key is not the bare subject**: `PublishToUser` takes
+    `sse.UserKey(principal)` / `sse.UserKeyOf(issuer, tenant, subject)`. A
+    publisher that passes a plain subject reaches nobody.
+49. **CORS must name its origins**: `http.cors.enabled` with no `origins` and no
+    `origin_patterns` fails `app.New`; every website is allowed only with
+    `origins: ["*"]` or `allow_any_origin: true`.
+50. **Defaults that were tightened**: `codec.max_payload_bytes` is 1 MiB (was 5),
+    duplicate JSON members are refused, `handler_timeout` is off, tenant IDs are any
+    RFC 9562 UUID. `message` queue `max_attempts` counts handler invocations.
+51. **A message without a dead-letter queue is dropped when its handler fails**:
+    declare `dead_letter: true` (and `retry`) or say `on_failure: drop`.
+52. **Graceful deploys need `http.server.shutdown_delay`**: without it the
+    listener closes at SIGTERM and a load balancer that has not yet removed the
+    instance gets connection refused. Set `app.WithShutdownTimeout` above
+    `shutdown_delay` plus the 10 s drain.

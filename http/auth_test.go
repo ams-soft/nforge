@@ -1,6 +1,7 @@
 package nhttp
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -14,9 +15,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	router "github.com/ams-soft/go-ams-router"
 	"github.com/ams-soft/nforge/jose"
@@ -566,3 +569,77 @@ func TestOpenAPIAuthDocumentation(t *testing.T) {
 }
 
 // --- JWKS -------------------------------------------------------------------
+
+// G16: scopes from "scp"-style claims (arrays) and merged claims.
+func TestScopeClaimsOption(t *testing.T) {
+	cases := []struct {
+		name   string
+		claims []string
+		custom map[string]any
+		want   []string
+		bad    bool
+	}{
+		{"default reads scope only", nil, map[string]any{"scope": "a b", "scp": []any{"x"}}, []string{"a", "b"}, false},
+		{"default refuses an array scope", nil, map[string]any{"scope": []any{"a"}}, nil, true},
+		{"scp array", []string{"scp"}, map[string]any{"scp": []any{"read", "write"}}, []string{"read", "write"}, false},
+		{"merged claims", []string{"scope", "scp"}, map[string]any{"scope": "a", "scp": []any{"b"}}, []string{"a", "b"}, false},
+		{"scp as string", []string{"scp"}, map[string]any{"scp": "r w"}, []string{"r", "w"}, false},
+		{"wrong element type", []string{"scp"}, map[string]any{"scp": []any{1}}, nil, true},
+		{"wrong claim type", []string{"scp"}, map[string]any{"scp": 7.0}, nil, true},
+	}
+	for _, c := range cases {
+		claims := c.claims
+		if claims == nil {
+			claims = []string{"scope"}
+		}
+		p, err := mapPrincipal(c.custom, claims, c.claims != nil)
+		if (err != nil) != c.bad {
+			t.Errorf("%s: err = %v", c.name, err)
+			continue
+		}
+		if !c.bad && !slices.Equal(p.Scopes, c.want) {
+			t.Errorf("%s: scopes %v, want %v", c.name, p.Scopes, c.want)
+		}
+	}
+}
+
+// G7 support: the principal carries the token's expiry, from the validated claims.
+func TestPrincipalCarriesTheTokenExpiry(t *testing.T) {
+	var got Principal
+	h := Authenticate(sharedJOSE(), "access")(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		got, _ = PrincipalFromContext(r.Context())
+	}))
+	before := time.Now()
+	token := issue(t, "access", "", nil)
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	if got.ExpiresAt.IsZero() || got.ExpiresAt.Before(before) || got.ExpiresAt.After(before.Add(time.Hour)) {
+		t.Fatalf("ExpiresAt = %v", got.ExpiresAt)
+	}
+}
+
+// G15: the server-bound middleware logs through the application's logger.
+func TestServerAuthenticateUsesTheApplicationLogger(t *testing.T) {
+	var logs bytes.Buffer
+	s := capturedServer(t, &logs, nil)
+	s.jose = sharedJOSE()
+	called := false
+	s.Router().With(s.Authenticate("access")).Get("/p", func(w stdhttp.ResponseWriter, r *stdhttp.Request) { called = true })
+	rec := serveReq(s, httptest.NewRequest("GET", "/p", nil))
+	if rec.Code != 401 || called {
+		t.Fatalf("status %d", rec.Code)
+	}
+	req := httptest.NewRequest("GET", "/p", nil)
+	req.Header.Set("Authorization", "Bearer not.a.token")
+	serveReq(s, req)
+	if !strings.Contains(logs.String(), "authentication failed") {
+		t.Errorf("the failure must be logged through the server's logger:\n%s", logs.String())
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("Server.Authenticate with an unknown profile must panic at construction")
+		}
+	}()
+	s.Authenticate("nope")
+}

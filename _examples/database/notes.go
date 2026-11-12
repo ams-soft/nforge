@@ -165,7 +165,7 @@ func noteHandler(db *database.DB, logger *slog.Logger, fn func(w stdhttp.Respons
 
 // registerNoteRoutes registers the typed notes routes; api is the /api/v1
 // router. Opts.Tenant resolves the tenant from http.tenant (the X-Tenant-ID
-// header here) before decoding: missing → 403, not a UUID v4 → 400.
+// header here) before decoding: missing → 403, not a UUID → 400.
 func registerNoteRoutes(api *nhttp.TypedRouter, db *database.DB, logger *slog.Logger) {
 	tenantRoute := func(description string) nhttp.Opts {
 		return nhttp.Opts{DocTag: "notes", Description: description, Tenant: true}

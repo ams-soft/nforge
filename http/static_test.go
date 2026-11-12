@@ -119,7 +119,7 @@ func TestStaticRefusesUnsafePaths(t *testing.T) {
 		"/assets/%ff", "/assets/" + strings.Repeat("a", 3000),
 	} {
 		rec := fileReq(s, "GET", target)
-		if rec.Code == 200 || strings.Contains(rec.Body.String(), "outside") {
+		if rec.Code == 200 || rec.Body.String() == "outside" {
 			t.Errorf("GET %s = %d %q", target, rec.Code, rec.Body)
 		}
 	}

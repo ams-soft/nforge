@@ -17,6 +17,7 @@ import (
 	"github.com/ams-soft/nforge/codec"
 	"github.com/ams-soft/nforge/module"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Capability is the client published by Module.
@@ -72,8 +73,11 @@ type Client struct {
 	registry         *codec.Registry
 	conn             *amqp.Connection
 	pub              *amqp.Channel
-	confirm          <-chan amqp.Confirmation
-	returns          <-chan amqp.Return
+	returns          returnsHub
+	consWG           sync.WaitGroup
+	stats            counters
+	tracer           trace.Tracer // nil when the tracing module is absent
+	trustIncoming    bool
 	queues           map[string]QueueSpec
 	logger           *slog.Logger
 	mu               sync.Mutex
@@ -95,7 +99,8 @@ type Client struct {
 	shutdownOnce     sync.Once
 	shutdownDone     chan struct{}
 	shutdownErr      error
-	fanoutDeclared   map[string]bool // exchanges declared on fanoutGeneration (guarded by mu)
+	fanoutMu         sync.Mutex
+	fanoutDeclared   map[string]bool // exchanges declared on fanoutGeneration (guarded by fanoutMu)
 	fanoutGeneration uint64
 }
 
@@ -158,8 +163,7 @@ func (c *Client) connect(ctx context.Context) error {
 		_ = x.conn.Close()
 		return fmt.Errorf("%w: publisher confirms unavailable", ErrTransportUnavailable)
 	}
-	confirm := pub.NotifyPublish(make(chan amqp.Confirmation, 1))
-	returns := pub.NotifyReturn(make(chan amqp.Return, 1))
+	returns := pub.NotifyReturn(make(chan amqp.Return, maxStaleReturns))
 	if e = c.declareTopologyOn(x.conn); e != nil {
 		_ = pub.Close()
 		_ = x.conn.Close()
@@ -170,8 +174,7 @@ func (c *Client) connect(ctx context.Context) error {
 	c.closedNotify = x.conn.NotifyClose(make(chan *amqp.Error, 1))
 	c.blockedNotify = x.conn.NotifyBlocked(make(chan amqp.Blocking, 1))
 	c.pub = pub
-	c.confirm = confirm
-	c.returns = returns
+	c.returns.attach(returns)
 	c.generation.Add(1)
 	c.reconnecting.Store(false)
 	c.blocked.Store(false)
@@ -333,50 +336,18 @@ func (c *Client) Publish(ctx context.Context, queue string, payload any, opts ..
 	if int64(len(body)) > int64(c.cfg.Publisher.MaxPayloadBytes) {
 		return nil, ErrPayloadTooLarge
 	}
-	if e := ctx.Err(); e != nil {
-		return nil, e
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if e := c.usableLocked(); e != nil {
-		return nil, e
-	}
 	priority := uint8(0)
 	if q.prioritySet {
 		priority = o.priority
 	}
-	if e := c.pub.PublishWithContext(ctx, "", queue, true, false, amqp.Publishing{Headers: headers, ContentType: ct, DeliveryMode: amqp.Persistent, Priority: priority, MessageId: o.id, Timestamp: time.Now(), Body: body}); e != nil {
-		return nil, fmt.Errorf("%w: publish interrupted", ErrPublishUncertain)
+	ctx, endSpan := c.startPublishSpan(ctx, queue)
+	injectTrace(ctx, headers)
+	if e := c.publishConfirmed(ctx, "", queue, true, amqp.Publishing{Headers: headers, ContentType: ct, DeliveryMode: amqp.Persistent, Priority: priority, MessageId: o.id, Timestamp: time.Now(), Body: body}); e != nil {
+		endSpan(e)
+		return nil, e
 	}
-	t := time.NewTimer(c.cfg.Publisher.ConfirmTimeout)
-	defer t.Stop()
-	for {
-		select {
-		case r := <-c.returns:
-			if r.MessageId == o.id {
-				return nil, ErrUnroutable
-			}
-		case ack, ok := <-c.confirm:
-			if !ok {
-				return nil, ErrPublishUncertain
-			}
-			if !ack.Ack {
-				return nil, ErrNacked
-			}
-			select {
-			case r := <-c.returns:
-				if r.MessageId == o.id {
-					return nil, ErrUnroutable
-				}
-			default:
-			}
-			return &PublishResult{MessageID: o.id, Queue: queue}, nil
-		case <-ctx.Done():
-			return nil, fmt.Errorf("%w: caller stopped waiting", ErrPublishUncertain)
-		case <-t.C:
-			return nil, ErrPublishUncertain
-		}
-	}
+	endSpan(nil)
+	return &PublishResult{MessageID: o.id, Queue: queue}, nil
 }
 func (c *Client) Status() TransportStatus {
 	c.mu.Lock()
@@ -501,19 +472,12 @@ func (c *Client) supervise(ctx context.Context, report func(error), logger *slog
 }
 
 func (c *Client) restartConsumers() error {
+	// Old workers finish their in-flight handlers on their own (their
+	// deliveries are stale and fail to settle); resubscribing does not wait for
+	// them, so reconnection latency no longer depends on the handler timeout.
+	// Shutdown still waits for them through consWG.
 	c.consumersMu.Lock()
-	regs := make([]*consumerRegistration, 0, len(c.consumers))
 	for _, r := range c.consumers {
-		regs = append(regs, r)
-	}
-	c.consumersMu.Unlock()
-	for _, r := range regs {
-		if r.done != nil {
-			<-r.done
-		}
-	}
-	c.consumersMu.Lock()
-	for _, r := range regs {
 		r.done = nil
 		r.cancel = nil
 	}
@@ -573,44 +537,17 @@ func messageCount(n int) uint64 {
 
 func (c *Client) retryDelivery(d *Delivery, ctx context.Context) error {
 	q := c.queues[d.Queue]
-	if q.retryDelay <= 0 || d.Attempt >= q.maxAttempts || d.Attempt >= 1<<31-1 {
+	// max_attempts counts handler invocations: the delivery that just failed is
+	// attempt d.Attempt+1, so another one is allowed only below the maximum.
+	if q.retryDelay <= 0 || d.Attempt+1 >= q.maxAttempts || d.Attempt >= 1<<31-1 {
 		return ErrNacked
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if e := c.usableLocked(); e != nil {
-		return e
 	}
 	headers := amqp.Table{}
 	for k, v := range d.raw.Headers {
 		headers[k] = v
 	}
 	headers["x-nforge-attempt"] = int32(d.Attempt + 1)
-	if e := c.pub.PublishWithContext(ctx, "", d.Queue+"_retry", true, false, amqp.Publishing{Headers: headers, ContentType: d.raw.ContentType, DeliveryMode: amqp.Persistent, Priority: d.raw.Priority, MessageId: d.raw.MessageId, Timestamp: time.Now(), Body: d.raw.Body}); e != nil {
-		return ErrPublishUncertain
-	}
-	t := time.NewTimer(c.cfg.Publisher.ConfirmTimeout)
-	defer t.Stop()
-	for {
-		select {
-		case conf, ok := <-c.confirm:
-			if !ok {
-				return ErrPublishUncertain
-			}
-			if !conf.Ack {
-				return ErrNacked
-			}
-			return nil
-		case r := <-c.returns:
-			if r.MessageId == d.ID {
-				return ErrUnroutable
-			}
-		case <-ctx.Done():
-			return ErrPublishUncertain
-		case <-t.C:
-			return ErrPublishUncertain
-		}
-	}
+	return c.publishConfirmed(ctx, "", d.Queue+"_retry", true, amqp.Publishing{Headers: headers, ContentType: d.raw.ContentType, DeliveryMode: amqp.Persistent, Priority: d.raw.Priority, MessageId: d.raw.MessageId, Timestamp: time.Now(), Body: d.raw.Body})
 }
 
 func (c *Client) Reprocess(ctx context.Context, queue string, limit int) (ReprocessResult, error) {
@@ -669,40 +606,13 @@ func (c *Client) Reprocess(ctx context.Context, queue string, limit int) (Reproc
 		}
 		delete(headers, "x-nforge-attempt")
 		headers["x-nforge-reprocessed"] = time.Now().UTC().Format(time.RFC3339Nano)
-		c.mu.Lock()
-		e = c.pub.PublishWithContext(ctx, "", queue, true, false, amqp.Publishing{Headers: headers, ContentType: got.ContentType, DeliveryMode: amqp.Persistent, Priority: got.Priority, MessageId: got.MessageId, Timestamp: time.Now(), Body: got.Body})
-		if e == nil {
-			timer := time.NewTimer(c.cfg.Publisher.ConfirmTimeout)
-			done := false
-			for !done {
-				select {
-				case conf, ok := <-c.confirm:
-					if !ok {
-						e = ErrPublishUncertain
-					} else if !conf.Ack {
-						e = ErrNacked
-					}
-					done = true
-				case r := <-c.returns:
-					if r.MessageId == got.MessageId {
-						e = ErrUnroutable
-						done = true
-					}
-				case <-ctx.Done():
-					e = ErrPublishUncertain
-					done = true
-				case <-timer.C:
-					e = ErrPublishUncertain
-					done = true
-				}
-			}
-			timer.Stop()
-		}
-		c.mu.Unlock()
+		e = c.publishConfirmed(ctx, "", queue, true, amqp.Publishing{Headers: headers, ContentType: got.ContentType, DeliveryMode: amqp.Persistent, Priority: got.Priority, MessageId: got.MessageId, Timestamp: time.Now(), Body: got.Body})
 		if e != nil {
+			// Back to the DLQ untouched, and stop: the next Get would return this
+			// very message and fail the same way for up to confirm_timeout each.
 			_ = ch.Nack(got.DeliveryTag, false, true)
 			out.Failed++
-			continue
+			return out, nil
 		}
 		if e = ch.Ack(got.DeliveryTag, false); e != nil {
 			out.Failed++

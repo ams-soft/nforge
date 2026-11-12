@@ -22,17 +22,18 @@ var importRules = map[string][]string{
 	"config":           {},
 	"app":              {"module", "config"},
 	"codec":            {"module"},
-	"database":         {"module"},
+	"database":         {"module", "metrics"},
 	"jose":             {"module"},
-	"cache":            {"module", "codec", "database"},
-	"message":          {"module", "codec"},
-	"sse":              {"module", "codec", "message", "http"},
+	"cache":            {"module", "codec", "database", "metrics"},
+	"message":          {"module", "codec", "telemetry", "metrics"},
+	"metrics":          {"module"},
+	"sse":              {"module", "codec", "message", "http", "metrics"},
 	"telemetry":        {"module"},
 	"logs":             {"module", "telemetry"},
 	"crypto":           {},
 	"helper/safecalc":  {},
 	"helper/qrcode":    {},
-	"http":             {"", "module", "codec", "database", "jose", "cache", "telemetry", "message"},
+	"http":             {"", "module", "codec", "database", "jose", "cache", "telemetry", "message", "metrics"},
 	"internal/apptest": {"app", "config", "module"},
 }
 
@@ -116,7 +117,7 @@ func TestEveryPackageHasARule(t *testing.T) {
 			return nil
 		}
 		name := d.Name()
-		if path != "." && (strings.HasPrefix(name, "_") || strings.HasPrefix(name, ".") || name == "testdata") {
+		if path != "." && (strings.HasPrefix(name, "_") || strings.HasPrefix(name, ".") || name == "testdata" || strings.HasPrefix(name, "NFORGE_SPEC")) {
 			return filepath.SkipDir
 		}
 		if strings.Contains(path, "internal") && path != "internal/apptest" {

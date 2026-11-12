@@ -84,13 +84,15 @@ func TestSecurityAndCORSValidation(t *testing.T) {
 		"cors: {enabled: true, origins: ['a.com']}":                                                    "lowercase origin",
 		"cors: {enabled: true, origin_patterns: ['https://.*\\.a\\.com']}":                             "anchored",
 		"cors: {enabled: true, origin_patterns: ['^(https$']}":                                         "origin_patterns",
-		"cors: {enabled: true, credentials: true}":                                                     "explicit origins",
+		"cors: {enabled: true, allow_any_origin: true, credentials: true}":                             "explicit origins",
 		"cors: {enabled: true, origins: ['*'], credentials: true}":                                     "explicit origins",
-		"cors: {enabled: true, methods: ['GET POST']}":                                                 "invalid method",
-		"cors: {enabled: true, exposed_headers: ['X Bad']}":                                            "invalid header name",
+		"cors: {enabled: true, allow_any_origin: true, methods: ['GET POST']}":                         "invalid method",
+		"cors: {enabled: true, allow_any_origin: true, exposed_headers: ['X Bad']}":                    "invalid header name",
 		"cors: {enabled: true, origins: ['https://a.com'], credentials: true, allowed_headers: ['*']}": "literal with credentials",
-		"cors: {enabled: true, max_age: -1s}":                                                          "max_age",
-		"cors: {enabled: true, options_success_status: 302}":                                           "options_success_status",
+		"cors: {enabled: true}": "no origins",
+		"cors: {enabled: true, allow_any_origin: true, origins: ['https://a.com']}":  "cannot be combined",
+		"cors: {enabled: true, allow_any_origin: true, max_age: -1s}":                "max_age",
+		"cors: {enabled: true, allow_any_origin: true, options_success_status: 302}": "options_success_status",
 	}
 	for section, want := range cases {
 		_, err := loadTenantConfig(t, "http:\n  server: {port: 8080}\n  "+section+"\n", "")

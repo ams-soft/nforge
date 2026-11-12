@@ -514,7 +514,11 @@ func (f *fileServer) serveMount(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 // fallback is the router's NotFound handler of the root mount.
 func (f *fileServer) fallback(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	if r.Method != stdhttp.MethodGet && r.Method != stdhttp.MethodHead {
-		stdhttp.NotFound(w, r)
+		routeNotFound(w, r)
+		return
+	}
+	if f.reservedPath(r.URL.Path) { // an unknown API route: the envelope, never HTML or text
+		routeNotFound(w, r)
 		return
 	}
 	f.serve(w, r, r.URL.Path)
@@ -571,12 +575,20 @@ func (f *fileServer) navigation(r *stdhttp.Request, name string) bool {
 	if strings.Contains(path.Base(name), ".") {
 		return false
 	}
-	for _, p := range f.reserved {
-		if r.URL.Path == p || strings.HasPrefix(r.URL.Path, p+"/") {
-			return false
-		}
+	if f.reservedPath(r.URL.Path) {
+		return false
 	}
 	return acceptsHTML(r.Header.Values("Accept"))
+}
+
+// reservedPath reports whether p is under a reserved prefix (an API).
+func (f *fileServer) reservedPath(p string) bool {
+	for _, prefix := range f.reserved {
+		if p == prefix || strings.HasPrefix(p, prefix+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *fileServer) open(name string) (fs.File, fs.FileInfo, error) {

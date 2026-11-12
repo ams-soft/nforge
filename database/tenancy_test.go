@@ -21,14 +21,18 @@ func TestParseTenantID(t *testing.T) {
 		{testTenant, testTenant, true},
 		{"3F2B8C1E-9D4A-4E6B-BA7C-1B2C3D4E5F60", "3f2b8c1e-9d4a-4e6b-ba7c-1b2c3d4e5f60", true},
 		{"", "", false},
-		{"3f2b8c1e9d4a4e6b8a7c1b2c3d4e5f60", "", false},                // no hyphens
-		{"3f2b8c1e-9d4a-1e6b-8a7c-1b2c3d4e5f60", "", false},            // version 1
-		{"3f2b8c1e-9d4a-4e6b-ca7c-1b2c3d4e5f60", "", false},            // wrong variant
-		{"3f2b8c1e-9d4a-4e6b-8a7c-1b2c3d4e5f6g", "", false},            // not hex
-		{"3f2b8c1e-9d4a-4e6b-8a7c_1b2c3d4e5f60", "", false},            // separator
-		{"{3f2b8c1e-9d4a-4e6b-8a7c-1b2c3d4e5f60}", "", false},          // braces
-		{"00000000-0000-0000-0000-000000000000", "", false},            // nil uuid
-		{"3f2b8c1e-9d4a-4e6b-8a7c-1b2c3d4e5f60' OR '1'='1", "", false}, // injection attempt
+		{"3f2b8c1e9d4a4e6b8a7c1b2c3d4e5f60", "", false},                                        // no hyphens
+		{"3f2b8c1e-9d4a-1e6b-8a7c-1b2c3d4e5f60", "3f2b8c1e-9d4a-1e6b-8a7c-1b2c3d4e5f60", true}, // version 1
+		{"0190a0b8-5c3e-7c1a-9d3f-1b2c3d4e5f60", "0190a0b8-5c3e-7c1a-9d3f-1b2c3d4e5f60", true}, // version 7 (time-ordered)
+		{"3f2b8c1e-9d4a-0e6b-8a7c-1b2c3d4e5f60", "", false},                                    // version 0
+		{"3f2b8c1e-9d4a-9e6b-8a7c-1b2c3d4e5f60", "", false},                                    // version 9
+		{"ffffffff-ffff-ffff-ffff-ffffffffffff", "", false},                                    // max uuid
+		{"3f2b8c1e-9d4a-4e6b-ca7c-1b2c3d4e5f60", "", false},                                    // wrong variant
+		{"3f2b8c1e-9d4a-4e6b-8a7c-1b2c3d4e5f6g", "", false},                                    // not hex
+		{"3f2b8c1e-9d4a-4e6b-8a7c_1b2c3d4e5f60", "", false},                                    // separator
+		{"{3f2b8c1e-9d4a-4e6b-8a7c-1b2c3d4e5f60}", "", false},                                  // braces
+		{"00000000-0000-0000-0000-000000000000", "", false},                                    // nil uuid
+		{"3f2b8c1e-9d4a-4e6b-8a7c-1b2c3d4e5f60' OR '1'='1", "", false},                         // injection attempt
 	}
 	for _, tt := range tests {
 		got, err := ParseTenantID(tt.in)

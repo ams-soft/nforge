@@ -109,8 +109,9 @@ func (c TenancyConfig) splitTable(name string) (schema, table string, err error)
 	return schema, table, nil
 }
 
-// ParseTenantID validates a tenant ID, which must be a UUID version 4 in the
-// canonical 8-4-4-4-12 form, and returns it lowercased.
+// ParseTenantID validates a tenant ID, which must be an RFC 9562 UUID (version
+// 1 to 8, so random v4 and time-ordered v7 both work; never the nil or max
+// UUID) in the canonical 8-4-4-4-12 form, and returns it lowercased.
 func ParseTenantID(s string) (string, error) {
 	if len(s) != 36 {
 		return "", ErrInvalidTenantID
@@ -128,7 +129,7 @@ func ParseTenantID(s string) (string, error) {
 			}
 		}
 	}
-	if b[14] != '4' { // version
+	if b[14] < '1' || b[14] > '8' { // version
 		return "", ErrInvalidTenantID
 	}
 	switch b[19] { // RFC 9562 variant 10xx
@@ -188,7 +189,7 @@ func (db *DB) Tenancy() TenancyConfig {
 	return t
 }
 
-// ForTenant returns a DB scoped to tenantID (a UUID v4). In rls mode each
+// ForTenant returns a DB scoped to tenantID (a UUID, version 1 to 8). In rls mode each
 // statement on its Executor runs in its own implicit transaction with the
 // tenant setting applied, and Transaction applies it once at BEGIN; in column
 // mode the Executor is the pool and only TenantEq/TenantID carry the tenant.

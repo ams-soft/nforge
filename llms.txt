@@ -10,6 +10,8 @@ Important notes for code generation:
 - Application code is a module: `module.New("api", module.Definition{Requires: []module.Handle{nhttp.Capability, database.Capability}, Init: ...})`; read declared capabilities with `module.Require`/`module.Lookup` (undeclared access panics). A disabled module publishes nothing: `Lookup` returns `ok == false`, `Requires` fails `app.New`.
 - `Init` allocates and registers (routes, handlers) but never accepts work; `Start` returns once active. Stop hooks release only the module's own resources; HTTP and consumers are ingress modules: started last, drained first.
 - Server-Sent Events are the explicit `sse.Module()` (memory or rabbitmq driver): `Manager.Handler()` behind `nhttp.Authenticate`, `PublishToUser`; best effort, no replay, user-targeted only. Long-lived responses call `nhttp.BeginStream`; `http.server.handler_timeout` is opt-in.
+- `metrics.Module()` is an optional Prometheus-format registry; the HTTP server, SSE, Messaging, the database pool and the cache register instruments when it is present, `http.routes.metrics` serves it. `nhttp.RateLimit(limit, window)` and `http.server.max_inflight_requests` limit load.
+- SSE keys are `sse.UserKey(principal)` (issuer, tenant, subject), not the bare subject; a stream ends at the token's expiry after an `event: reauth`.
 - RabbitMQ uses `message.Module()` for the connection and `message.Consumers()` for ingress; delivery is at-least-once, queue type/arguments need manual migration, and unacknowledged counts require the Management API (not used by nForge).
 - Register every route and middleware (`Server.Use`) in an Init, **before** the server serves its first request; go-ams-router panics afterwards.
 - Programmer errors detected at startup or route registration panic; request-time errors are returned. Startup failures of enabled modules are returned by `Start`/`Run` after a full rollback; only `main` calls `os.Exit`.
@@ -38,6 +40,7 @@ Important notes for code generation:
 - [database/](database): PostgreSQL `DB` (pgx pool + Squirrel), transactions, multi-tenancy (RLS or column), the database module.
 - [jose/](jose): JWS/JWE/JWT `Service` with configured profiles, keys, JWKS, reload/rotation, the jose module.
 - [cache/](cache): `*cache.Cache` on Redis or a bounded memory LRU, `GetOrLoad`, tenant namespaces, the cache module.
+- [metrics/](metrics): the metrics registry (Prometheus text format) and the metrics module.
 - [sse/](sse): Server-Sent Events: `Manager`, `Handler`, memory and RabbitMQ drivers, the sse module.
 - [message/](message): RabbitMQ queues, confirmed publishing, concurrent ACK/NACK consumers, DLQ/retry, reprocessing and lifecycle modules.
 - [crypto/](crypto): package `ncrypto`: XChaCha20-Poly1305, AES-256-GCM, HMAC-SHA256, bcrypt/Argon2id, BLAKE3/SHA-256, secure random, ULID.
