@@ -6,6 +6,36 @@ All notable changes to nForge are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `sse`: Server-Sent Events as an explicitly registered module (`sse.Module`,
+  `sse.Capability`) with user-targeted delivery only. `Manager.PublishToUser`
+  and `Manager.Handler` work the same on the `memory` driver (this instance) and
+  the `rabbitmq` driver (every instance, through a fanout exchange and one
+  exclusive auto-delete queue per instance, filtered by user locally). Streams
+  are authenticated by the validated JWT subject (or a custom
+  `IdentityResolver`), with bounded per-connection queues (a slow client is
+  disconnected), per-user and global limits, a connection rate limit, an origin
+  check, heartbeats, `max_lifetime`, `Stats()` metrics and a shutdown that closes
+  streams before HTTP drains. Best effort: no replay, no offline delivery.
+- `nhttp.BeginStream` and `nhttp.Timeout`: a long-lived response releases the
+  global handler timeout, the HTTP/3 stream timeout and the read/write
+  deadlines of its own request; `Timeout(d)` gives one route a request deadline.
+- `message`: `Client.PublishFanout` and `Client.SubscribeFanout` (a confirmed
+  publish to a fanout exchange and an ephemeral, self-restoring per-instance
+  subscription) on the module's one connection.
+- `_examples/sse`: cookie-authenticated `EventSource`, two tabs per user, memory
+  and RabbitMQ configurations.
+
+### Changed
+
+- **`http.server.handler_timeout` is now opt-in.** It used to default to 30s and
+  put a deadline on every request context; it now defaults to disabled (omitted
+  or `0s`), and a positive duration enables it. Applications that relied on the
+  implicit deadline must set it (or mount `nhttp.Timeout` on routes). The
+  transport timeouts (`read_header_timeout`, `read_timeout`, `write_timeout`,
+  `idle_timeout`, HTTP/3 `max_stream_timeout`) are unchanged.
+
 ## [v0.5.0] - 2026-11-11
 
 ### Security

@@ -11,6 +11,7 @@ the framework. Start with `basic`, then pick the module you need.
 | [`cache`](cache) | the cache module on Redis or memory: objects, TTL, NX, counters, raw bytes, `GetOrLoad`, CBOR, outages | Redis (or `standalone.env`) |
 | [`database`](database) | the database module: Squirrel + pgx repositories, transactions, error mapping, multi-tenancy in column or Row-Level Security mode | PostgreSQL |
 | [`static`](static) | static files and a built single-page application next to the API: `Static`, `SPA`, directories and `embed.FS`, cache headers, reserved prefixes | nothing |
+| [`sse`](sse) | Server-Sent Events: authenticated, user-targeted streams (memory or RabbitMQ driver), `EventSource` with a cookie session, route timeout opt-in | `JWT_SECRET`; RabbitMQ for `config.rabbitmq.yaml` |
 | [`message`](message) | worker-only RabbitMQ publisher and consumers, Classic priority, Quorum queues, ACK/NACK, DLQ, retry and reprocessing | RabbitMQ (`rabbitmq` service in Compose) |
 
 All commands run from the **repository root**. Every example reads its own

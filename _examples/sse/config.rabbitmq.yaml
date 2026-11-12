@@ -1,0 +1,54 @@
+# The same application on the RabbitMQ driver: run two instances on different
+# ports and a user connected to both receives every event on both. Start the
+# broker first (see README.md). The HTTP port comes from HTTP_SERVER_PORT in an env file.
+env: local
+
+app:
+  name: sse-example
+  version: 1.0.0
+
+http:
+  server:
+    host: 127.0.0.1
+    port: 8080
+    header: false
+  routes:
+    readiness: {enabled: true} # 503 while the broker is unreachable (streams stay open)
+
+logging:
+  output:
+    terminal:
+      enabled: true
+
+codec:
+  formats:
+    enabled: [json]
+
+jose:
+  enabled: true
+  keys:
+    - kid: jwt-signing
+      secret: ${JWT_SECRET} # every instance needs the same secret
+  profiles:
+    - name: access
+      kind: jwt_signed
+      typ: at+jwt
+      signing_key: jwt-signing
+      verification_keys: [jwt-signing]
+      jwt:
+        issuer: https://auth.sse-example.local
+        audiences: [sse-example-api]
+
+message: # the existing Messaging module owns the one RabbitMQ connection
+  enabled: true
+  namespace: nforge
+  rabbitmq:
+    url: ${RABBITMQ_URL:-amqp://nforge:nforge@localhost:5672/}
+    reconnect: {initial_delay: 1s, max_delay: 30s, multiplier: 2, jitter: true}
+
+sse:
+  driver: rabbitmq # requires message.Module() and a reachable broker at startup
+  heartbeat: 15s
+  rabbitmq:
+    # fanout exchange; default <message.namespace>.sse.<env>.<app.name>
+    prefetch: 64

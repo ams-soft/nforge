@@ -26,6 +26,7 @@ var importRules = map[string][]string{
 	"jose":             {"module"},
 	"cache":            {"module", "codec", "database"},
 	"message":          {"module", "codec"},
+	"sse":              {"module", "codec", "message", "http"},
 	"telemetry":        {"module"},
 	"logs":             {"module", "telemetry"},
 	"crypto":           {},

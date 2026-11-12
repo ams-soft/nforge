@@ -68,33 +68,35 @@ type PublishResult struct {
 
 // Client publishes confirmed messages and owns a RabbitMQ connection.
 type Client struct {
-	cfg            Config
-	registry       *codec.Registry
-	conn           *amqp.Connection
-	pub            *amqp.Channel
-	confirm        <-chan amqp.Confirmation
-	returns        <-chan amqp.Return
-	queues         map[string]QueueSpec
-	logger         *slog.Logger
-	mu             sync.Mutex
-	consumersMu    sync.Mutex
-	consumers      map[string]*consumerRegistration
-	reprocessMu    sync.Mutex
-	reprocessing   map[string]bool
-	started        atomic.Bool
-	closed         atomic.Bool
-	generation     atomic.Uint64
-	reconnecting   atomic.Bool
-	blocked        atomic.Bool
-	lastErr        atomic.Value
-	lifeCtx        context.Context
-	consumerLogger *slog.Logger
-	failure        func(error)
-	closedNotify   <-chan *amqp.Error
-	blockedNotify  <-chan amqp.Blocking
-	shutdownOnce   sync.Once
-	shutdownDone   chan struct{}
-	shutdownErr    error
+	cfg              Config
+	registry         *codec.Registry
+	conn             *amqp.Connection
+	pub              *amqp.Channel
+	confirm          <-chan amqp.Confirmation
+	returns          <-chan amqp.Return
+	queues           map[string]QueueSpec
+	logger           *slog.Logger
+	mu               sync.Mutex
+	consumersMu      sync.Mutex
+	consumers        map[string]*consumerRegistration
+	reprocessMu      sync.Mutex
+	reprocessing     map[string]bool
+	started          atomic.Bool
+	closed           atomic.Bool
+	generation       atomic.Uint64
+	reconnecting     atomic.Bool
+	blocked          atomic.Bool
+	lastErr          atomic.Value
+	lifeCtx          context.Context
+	consumerLogger   *slog.Logger
+	failure          func(error)
+	closedNotify     <-chan *amqp.Error
+	blockedNotify    <-chan amqp.Blocking
+	shutdownOnce     sync.Once
+	shutdownDone     chan struct{}
+	shutdownErr      error
+	fanoutDeclared   map[string]bool // exchanges declared on fanoutGeneration (guarded by mu)
+	fanoutGeneration uint64
 }
 
 func openClient(ctx context.Context, cfg Config, reg *codec.Registry, logger *slog.Logger, queues []QueueSpec) (*Client, error) {

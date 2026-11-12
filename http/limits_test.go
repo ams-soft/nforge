@@ -26,15 +26,15 @@ func limitsServer(t *testing.T, mutate func(*testConfig)) *Server {
 	return buildServer(&testDeps{Config: cfg, Logger: slog.New(slog.DiscardHandler)})
 }
 
-// Every request context has a deadline, so a handler that honors ctx (and the
-// queries it starts) stops instead of outliving the connection.
-func TestRequestContextHasADeadline(t *testing.T) {
+// The handler timeout is opt-in: by default a request context has no deadline,
+// and a positive handler_timeout gives every request one.
+func TestRequestContextDeadlineIsOptIn(t *testing.T) {
 	for name, tc := range map[string]struct {
-		set  time.Duration
-		want time.Duration
+		set    time.Duration
+		wantOn bool
 	}{
-		"default":    {0, 30 * time.Second},
-		"configured": {2 * time.Second, 2 * time.Second},
+		"default":    {0, false},
+		"configured": {2 * time.Second, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := limitsServer(t, func(c *testConfig) { c.HTTP.Server.HandlerTimeout = tc.set })
@@ -47,10 +47,41 @@ func TestRequestContextHasADeadline(t *testing.T) {
 				w.WriteHeader(stdhttp.StatusNoContent)
 			})
 			serveReq(s, httptest.NewRequest("GET", "/ctx", nil))
-			if !ok || got > tc.want || got < tc.want-5*time.Second {
-				t.Fatalf("deadline in %v (set=%v), want about %v", got, ok, tc.want)
+			if ok != tc.wantOn {
+				t.Fatalf("deadline present = %v, want %v", ok, tc.wantOn)
+			}
+			if tc.wantOn && (got > tc.set || got < tc.set-time.Second) {
+				t.Fatalf("deadline in %v, want about %v", got, tc.set)
 			}
 		})
+	}
+}
+
+// BeginStream releases the global handler timeout but not a route-level
+// Timeout, which is the application's explicit opt-in.
+func TestBeginStreamReleasesTheGlobalDeadlineOnly(t *testing.T) {
+	s := limitsServer(t, func(c *testConfig) { c.HTTP.Server.HandlerTimeout = 30 * time.Millisecond })
+	var globalErr, routeErr error
+	s.Router().Get("/stream", func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		BeginStream(w, r)
+		if _, ok := r.Context().Deadline(); ok {
+			t.Error("the released context must report no deadline")
+		}
+		time.Sleep(80 * time.Millisecond)
+		globalErr = r.Context().Err()
+	})
+	s.Router().With(Timeout(30*time.Millisecond)).Get("/opted", func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		BeginStream(w, r)
+		time.Sleep(80 * time.Millisecond)
+		routeErr = r.Context().Err()
+	})
+	serveReq(s, httptest.NewRequest("GET", "/stream", nil))
+	serveReq(s, httptest.NewRequest("GET", "/opted", nil))
+	if globalErr != nil {
+		t.Errorf("a stream must outlive the global timeout, got %v", globalErr)
+	}
+	if routeErr == nil {
+		t.Errorf("an explicit route Timeout must still apply to a stream")
 	}
 }
 

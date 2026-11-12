@@ -131,7 +131,9 @@ func (s *Server) setStandardHandler() {
 		handler.Use(withRegistry(s.codec))
 	}
 	handler.Use(bodyLimit(s.maxBodyBytes()))
-	handler.Use(handlerTimeout(s.cfg.Server.HandlerTimeout))
+	if s.cfg.Server.HandlerTimeout > 0 {
+		handler.Use(handlerTimeout(s.cfg.Server.HandlerTimeout))
+	}
 	if s.cfg.Security.IsEnabled() {
 		handler.Use(middleware.Security(securityOptions(s.cfg.Security)))
 	}

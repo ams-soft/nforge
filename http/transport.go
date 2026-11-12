@@ -348,16 +348,19 @@ func altSvc(next stdhttp.Handler, h3 *http3.Server) stdhttp.Handler {
 
 // streamTimeout bounds one HTTP/3 request: its context expires after d and the
 // stream's read and write deadlines are set to the same instant. A handler
-// that legitimately runs longer extends them with http.ResponseController.
+// that legitimately runs longer extends them with http.ResponseController, and
+// a long-lived stream releases all of it with BeginStream.
 func streamTimeout(next stdhttp.Handler, d time.Duration) stdhttp.Handler {
 	return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), d)
+		ctx, ex := withExemptions(r.Context())
+		rd, cancel := newReleasableDeadline(ctx, d)
 		defer cancel()
+		ex.add(rd.release)
 		rc := stdhttp.NewResponseController(w)
-		deadline := time.Now().Add(d)
+		deadline := rd.deadline
 		_ = rc.SetReadDeadline(deadline)
 		_ = rc.SetWriteDeadline(deadline)
-		next.ServeHTTP(w, r.WithContext(ctx))
+		next.ServeHTTP(w, r.WithContext(rd))
 	})
 }
 

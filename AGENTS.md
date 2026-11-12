@@ -55,10 +55,15 @@ package `app`. An application gets, from one `config.yaml`:
   objects, raw bytes, counters, TTLs, NX, cache-aside `GetOrLoad`, tenant
   namespacing through the framework tenant context, readiness and LIFO
   shutdown.
-- **Messaging** (`message/`): RabbitMQ AMQP 0-9-1 with confirmed publishing,
+- **Messaging** (`message/`): RabbitMQ AMQP 0-9-1 with confirmed publishing, fanout publish and ephemeral subscriptions,
   Classic and Quorum queues, opt-in DLQ/retry, concurrent consumers and
   lifecycle-integrated reconnect/readiness. `message.Module()` owns the
   connection; `message.Consumers()` is ingress and drains before it closes.
+- **Server-Sent Events** (`sse/`): an explicitly registered module with
+  user-targeted delivery only (`Manager.PublishToUser`, `Manager.Handler`) over a
+  `memory` or `rabbitmq` driver; authenticated streams, bounded per-connection
+  queues, heartbeats, limits and a graceful shutdown that closes streams before
+  HTTP drains (§11B).
 - **Crypto** (`crypto/`, package `ncrypto`): standalone primitives with no
   config or module wiring: AEAD encryption (XChaCha20-Poly1305, AES-256-GCM),
   HMAC-SHA256, password hashing (bcrypt, Argon2id), data hashing (BLAKE3,
@@ -112,6 +117,7 @@ generics, `errors.Join`, `math/rand/v2`, `maps`/`slices` iterators.
 │   └── internal/strictjson/  # strict protocol JSON: UTF-8, depth, duplicate members, trailing data
 ├── cache/              # cache: Config, Open, Redis + memory drivers, keyspace/tenant, GetOrLoad flights, the cache module
 ├── message/            # RabbitMQ transport: queues, confirms, consumers, retry/DLQ, readiness and lifecycle modules
+├── sse/                # Server-Sent Events: Manager, Handler, memory + rabbitmq drivers, the sse module (§11B)
 ├── crypto/             # package ncrypto: AEAD (XChaCha20, AES-GCM), HMAC, password/data hashes, secure random
 ├── helper/
 │   ├── safecalc/       # money in integer cents: New, NewFromFloat (half-even), Format, BRL
@@ -142,7 +148,7 @@ generics, `errors.Join`, `math/rand/v2`, `maps`/`slices` iterators.
 │       ├── jwks/       # JWKS handler (GET/HEAD, ETag, 304)
 │       ├── tracing/    # Tracing middleware + request_id = trace_id
 │       └── accesslog/  # Logger middleware + statusWriter
-├── _examples/          # runnable examples (§14): basic, complete, jose, cache, database, message, static
+├── _examples/          # runnable examples (§14): basic, complete, jose, cache, database, message, static, sse
 │   ├── <example>/docker-compose.yml # local dependencies stay with each example
 │   ├── message/        # RabbitMQ worker-only producer/consumer/reprocess example
 │   └── observability/  # collector/tempo/loki configs + Grafana provisioning for complete
@@ -182,6 +188,7 @@ database ──► module
 jose ──► module (go-jose/v4 behind unexported adapters)
 cache ──► module, codec, database (tenant context only; go-redis/v9 behind unexported adapters)
 message ──► module, codec (RabbitMQ AMQP 0-9-1 driver; no AMQP types in its public API)
+sse ──► module, codec, nhttp (principal, BeginStream, SendJSON), message (fanout exchange for the rabbitmq driver)
 telemetry ──► module
 logs ──► module, telemetry
 ncrypto, helper/*   (no internal deps)
@@ -382,9 +389,12 @@ still logs through `slog.Default`.
    (default: the Registry's payload limit) + 1 byte, so raw routes that read
    `r.Body` are bounded and typed routes still get their 413 from the codec
    first (`ParseStatus` also maps `*http.MaxBytesError` to 413).
-5. Handler timeout — always: the request context gets a deadline of
-   `http.server.handler_timeout` (default 30s), so handlers, queries and
-   loaders that honor `ctx` stop (the write timeout only closes the connection).
+5. Handler timeout — **opt-in**: only when `http.server.handler_timeout` is
+   positive (default: disabled) the request context gets that deadline, so
+   handlers, queries and loaders that honor `ctx` stop. For one route, mount
+   `nhttp.Timeout(d)` with `With`. A stream calls `nhttp.BeginStream(w, r)`,
+   which releases this global deadline (not a route-level `Timeout`), the
+   HTTP/3 stream timeout and the connection read/write deadlines (§7.1).
 6. `middleware.Security` (go-ams-router) — unless `http.security.enabled: false` (§7.11).
 7. `middleware.CORS` (go-ams-router) — only if `http.cors.enabled` (§7.11).
 8. App global middlewares — whatever `Server.Use` adds (application modules call it in Init).
@@ -521,13 +531,13 @@ http:
       key_file: ""
       advertise: <true>       # *bool; Alt-Svc on HTTPS responses (effective only with tls.enabled and a bound QUIC listener)
       max_idle_timeout: 30s   # QUIC connection idle timeout
-      max_stream_timeout: 30s # one HTTP/3 request: context deadline + stream read/write deadlines
+      max_stream_timeout: 30s # one HTTP/3 request: context deadline + stream read/write deadlines; a stream releases it
       allow_0rtt: false       # reserved: true is rejected at load (0-RTT requests are replayable)
     read_header_timeout: 10s  # http.Server timeouts: 0 = default, never "none"
     read_timeout: 30s         #   (Slowloris); negative → error;
-    write_timeout: 30s        #   read_header_timeout <= read_timeout
-    idle_timeout: 120s        #   (http/config_server.go, also applied by nhttp.New)
-    handler_timeout: 30s      # deadline of every request context (handlers, queries, loaders)
+    write_timeout: 30s        #   read_header_timeout <= read_timeout; a stream releases read/write
+    idle_timeout: 120s        #   with BeginStream (http/config_server.go, also applied by nhttp.New)
+    handler_timeout: 0s       # OPT-IN deadline of every request context; omitted or 0s = disabled, positive enables; streams release it
     max_body_bytes: <codec.max_payload_bytes>   # bounds every request body, raw routes too; at most 1gb
   docs:
     enabled: false
@@ -665,12 +675,29 @@ message:                      # message.Config — RabbitMQ only; disabled by de
     - {name: payments, max_priority: 10} # Classic priority 1..10
     - {name: audit, type: quorum, dead_letter: true}
     - {name: emails, dead_letter: true, retry: {delay: 10s, max_attempts: 3}}
+
+sse:                          # sse.Config — see §11B; the whole section is optional once sse.Module() is registered
+  enabled: <true>             # *bool; omitted = true; false keeps the registered module out of the run
+  driver: memory              # memory | rabbitmq; rabbitmq requires message.Module() enabled
+  heartbeat: 15s              # ": heartbeat" comment frames; 1s..1h
+  retry: 3s                   # "retry:" advertised to browsers; 1s..1h
+  buffer_size: 64             # bounded queue per connection; a client that fills it is disconnected
+  max_connections: 10000
+  max_connections_per_user: 5 # <= max_connections
+  max_connects_per_second: 100   # token bucket for connection attempts of this instance
+  write_timeout: 10s          # deadline of every frame write
+  max_lifetime: 15m           # stream age limit (+10% jitter); >= 1m; bounds token expiry/revocation lag
+  limits: { max_payload_bytes: 64kb (≤ 1mb), max_user_id_bytes: 256, max_event_name_size: 64, max_event_id_bytes: 128 }
+  allowed_origins: []         # exact lowercase origins; [] = only the request's own origin; "*" rejected
+  rabbitmq:
+    exchange: ""              # "" → <message.namespace>.sse.<env>.<app.name> (sanitized)
+    prefetch: 64              # unacknowledged fanout messages of this instance's queue
 ```
 
 Owners of the sections: `logging` → `logs.Module` (ID `logger`), `tracing` →
 `telemetry.Module`, `codec` → `codec.Module`, `database` →
 `database.Module`, `jose` → `jose.Module`, `cache` → `cache.Module`,
-`message` → `message.Module`, `http`
+`message` → `message.Module`, `sse` → `sse.Module`, `http`
 → `nhttp.Module`; `env`, `app` and `prd_exceptions` are reserved (package
 `config`). A section of a module the application did not register is an
 error, not ignored.
@@ -873,9 +900,22 @@ application (tests, embedding). `Srv` stays the application's plain HTTP
 `IdleTimeout` from `http.server` (defaults 10s/30s/30s/120s). It applies the
 defaults (`Config.ApplyDefaults`, `ApplyServerDefaults`) to a copy of the
 section, so a `Config` built by hand also gets them. A handler that streams
-or runs longer than `write_timeout` extends its own deadline with
+or runs longer than `write_timeout` calls `nhttp.BeginStream(w, r)` (below) or
+extends its own deadline with
 `http.NewResponseController(w).SetWriteDeadline(...)`; `Srv` stays exported
 for anything else, as long as it is changed before `Start`.
+
+**Request deadlines and streams.** `handler_timeout` is **opt-in** (omitted or
+`0s` = no request deadline; the transport timeouts above are not affected and
+keep their defaults, so Slowloris protection stays). `nhttp.Timeout(d)` is the
+same deadline for one route (`router.With(nhttp.Timeout(5*time.Second))`).
+`nhttp.BeginStream(w, r)` is for long-lived responses: it releases the global
+handler timeout, the HTTP/3 `max_stream_timeout` (context and stream
+deadlines) and the TCP read/write deadlines of that one request, so the stream
+is not cut at 30 s; the caller then sets a short write deadline before every
+write. A route-level `Timeout` is the application's explicit opt-in and is not
+released. The released deadlines are guards that stop their timer
+(`releasableDeadline`), not a changed config: other requests keep them.
 
 ### 7.2 Response envelope
 
@@ -2185,6 +2225,15 @@ st := cl.Status()                                         // sanitized local con
   `limit` DLQ messages back (republished with a confirm, then acked from the
   DLQ); one run at a time per client (`ErrReprocessRunning`); a queue without
   `dead_letter` is `ErrUnsupportedFeature`.
+- **Fanout (best effort).** `Client.PublishFanout(ctx, exchange, body)` confirms a
+  transient publish to a durable fanout exchange it declares per connection
+  generation (no `mandatory`: no bound queue is a successful drop), and
+  `Client.SubscribeFanout(ctx, exchange, handler, opts...)` returns a
+  `*Subscription` on an exclusive, auto-delete, non-durable, server-named queue
+  that re-attaches by itself after an outage (the client's backoff), one worker,
+  `Ack` on nil and `Nack` without requeue on error or an oversized message.
+  A publisher channel the broker closed makes the client reconnect. Used by
+  `sse`; no durable queue, retry or DLQ applies.
 - **Security.** `message.Config` redacts the URL in every `fmt` verb, slog and
   JSON; `amqps://` verifies the hostname (TLS 1.2+, optional `tls.ca_file`); a
   remote `amqp://` URL with credentials warns (`prd_exceptions.message_plaintext`,
@@ -2193,6 +2242,98 @@ st := cl.Status()                                         // sanitized local con
 - Runnable demos: `_examples/message` (worker-only producer/consumer/reprocess)
   and the optional events of `_examples/complete` (§14). Integration tests need
   RabbitMQ (`NFORGE_TEST_RABBITMQ_URL`, §15).
+
+## 11B. Server-Sent Events (`sse/`)
+
+`sse.Module()` (ID `sse`, section `sse`, capability `sse.Capability` =
+`*sse.Manager`) is an explicitly registered module: nothing enables SSE just
+because HTTP is on, and omitting it costs nothing. It requires `nhttp` and
+`codec` (with `json` enabled) and, for `driver: rabbitmq`, the existing
+`message.Module()` (a disabled one is `ErrDisabledDependency`). With the section
+absent the defaults of §4.2 apply. It imports `module`, `codec`, `nhttp` and
+`message`.
+
+```
+sse/
+├── doc.go, errors.go  # sentinels: ErrInvalidEvent, ErrTransportUnavailable, ErrClosed, ErrUnauthorized, ...
+├── config.go          # Config, defaults, validation, default exchange name
+├── event.go           # Event, PublishResult, wire form, validation, frame encoding
+├── manager.go         # Manager: user -> connection set, bounded queues, limits, Stats, close
+├── handler.go         # Handler, IdentityResolver, origin policy, the writer loop
+├── memory.go          # memory driver: local dispatch only
+├── rabbitmq.go        # rabbitmq driver over message.Client.PublishFanout/SubscribeFanout
+└── module.go          # Module: graph, Check, hooks
+```
+
+```go
+mgr := module.Require(scope, sse.Capability)
+server.Router().With(nhttp.Authenticate(j, "access")).Get("/notifications/stream", mgr.Handler().ServeHTTP)
+res, err := mgr.PublishToUser(ctx, userID, sse.Event{Name: "note", Data: payload}) // res.Accepted: driver took it, NOT browser receipt
+st := mgr.Stats()                                                                   // metrics snapshot; no user IDs
+```
+
+- **Identity.** The default resolver is the `Subject` of the principal that
+  `nhttp.Authenticate` validated; with no principal the stream answers 401 before
+  any SSE header (never anonymous). `WithIdentityResolver` replaces it (return
+  errors wrapping `ErrUnauthorized` → 401 or `ErrForbidden` → 403). A user ID the
+  module cannot carry (empty, control characters, over `max_user_id_bytes`) is
+  403. `nhttp.Authenticate` reads only the `Authorization` header, so a browser
+  `EventSource` (no custom headers) needs a same-site HttpOnly cookie turned into
+  that header by a small middleware (`_examples/sse`), or a short-lived stream
+  ticket; never a JWT in the query string. Revocation takes effect at the next
+  reconnect: streams are closed after `max_lifetime`.
+- **Protocol.** 200, `text/event-stream; charset=utf-8`, `Cache-Control:
+  no-cache, no-transform`, `X-Accel-Buffering: no`, `Connection: keep-alive`
+  only on HTTP/1.x. Frames are `id:`, `event:`, one `data:` line per payload
+  line (CR, LF, CRLF), blank line, then flush; a first `retry:` + comment frame
+  flushes at once; `: heartbeat` every `heartbeat`. `Data` is a string/`[]byte`
+  as is, anything else JSON through the application's codec. IDs (printable, no
+  control characters) are generated per event when absent; an ID does **not**
+  imply replay. `Last-Event-ID` is validated (size, no control characters, else
+  400) and ignored: no history exists, so gaps and duplicates are possible.
+- **Connections.** One goroutine writes each stream (frames and heartbeats
+  serialized), the queue holds `buffer_size` frames and a client that overflows
+  it is disconnected, never partially fed. Locks guard only map membership; no
+  lock is held across a write or broker call. Limits answer: per-user 429,
+  global 503, rate 429 (all with `Retry-After` and the same static text, so
+  nothing discloses another user's presence), not started or closing 503, a
+  response chain that cannot flush 500. Every write has `write_timeout`.
+- **Lifecycle.** The module is **ingress**: it accepts streams only after the
+  driver is active (503 before), and stops *before* HTTP drains (ingress modules
+  stop in reverse dependency order), closing every stream, then the driver, and
+  before `message.Module()` closes the connection. HTTP therefore never waits for
+  endless streams. `Publish` after close is `ErrClosed`. `Ready` is the driver's.
+- **Memory driver.** Local dispatch to this instance's streams; no persistence,
+  replay, retry or cross-process fanout. Accepted = local dispatch ran.
+- **RabbitMQ driver.** One fanout exchange per application and environment
+  (`<namespace>.sse.<env>.<app.name>`: apps sharing a broker never see each
+  other's events) and, per instance, an exclusive auto-delete non-durable
+  server-named queue bound to it: every instance receives every event and filters
+  by user locally. The exchange publish and ephemeral subscription live in the
+  Messaging module (`Client.PublishFanout`, `Client.SubscribeFanout`, §11A), on
+  its one connection. Accepted = publisher confirm. No subscriber = a successful
+  no-op; broker down = `ErrTransportUnavailable`; lost confirm =
+  `ErrPublishUncertain`. A message is acked once it entered the local dispatch
+  path; an invalid one is rejected without requeue (counted in
+  `Stats.MalformedMessages`), so nothing loops. No durable queue, retry or DLQ:
+  events during an outage or a rebind are lost by design.
+- **Broker outage.** Open streams and their heartbeats stay up; publishes fail
+  with `ErrTransportUnavailable`; the module is `not_ready` (so `/ready` is 503
+  while the broker is down); the subscription re-creates its queue and binding
+  with the client's backoff and restores delivery (`Stats.BrokerReconnects`).
+- **Metrics** are `Manager.Stats()` (active connections, connections-per-user
+  histogram, published/accepted/failed, slow-client disconnects, heartbeat and
+  write errors, malformed messages, lifetime closes, reconnects); nForge has no
+  metrics exporter, the application exports them.
+- **Proxies.** Disable buffering and keep the read timeout above `heartbeat`:
+  nginx `proxy_buffering off; proxy_read_timeout 1h; proxy_http_version 1.1;`
+  (`X-Accel-Buffering: no` already asks nginx to stream).
+- Tests: unit and `httptest` coverage in `sse/` (HTTP/1.1, HTTP/2, `-race`), the
+  app-level tests through the real chain (`sse/app_test.go`, including a stream
+  past 30 s), `BeginStream` on HTTP/1.1, HTTP/2 and a real QUIC client
+  (`http/stream_test.go`), and `-tags integration` RabbitMQ tests
+  (`sse/rabbitmq_integration_test.go`: two instances, isolation, auto-delete,
+  outage through a TCP proxy, broker restart with `NFORGE_TEST_RABBITMQ_CONTAINER`).
 
 ---
 
@@ -2395,7 +2536,7 @@ m := qr.Modules()                                       // [][]bool, no quiet zo
 
 ## 14. Examples and local stack (`_examples/`)
 
-Eight independent `package main` applications, each focused on one part of
+Nine independent `package main` applications, each focused on one part of
 the framework, each with its own `config.yaml` (only the keys it uses,
 commented), `README.md` and tests. They share one pattern: `main` loads the
 config, calls a `newApp(cfg, opts...)` that registers the built-in modules it
@@ -2414,6 +2555,7 @@ names are `<name>-example`.
 | `database` | database (+ tenancy column, `http.tenant.source: header`) | `docker-compose.yml` + `.env.example` own PostgreSQL; `users.go` (Squirrel/pgx CRUD, filters, batch in `Transaction`, `sendDBError`), `notes.go` (typed `Opts{Tenant}` routes and raw `server.TenantMiddleware()`, `ForContext`/`TenantEq`/tenant `Transaction`; `ensureNotesSchema` builds RLS when `mode: rls`), `rls.env` + `rls-setup.sql` (role `app_tenant`) | config + rls overlay load (unit); CRUD and tenant isolation 403/400/404 (integration) |
 | `qrcode` | none (`helper/qrcode` only; not an `app`) | `main.go` flags (`-payload` default `teste123`, `-out`, `-size`, `-logo`, `-terminal`, `-terminal-only`, `-invert`), `terminal.go` (half-block text QR, 4-module quiet zone, no ANSI), `gallery.go` (PNG, SVG, `base64.txt`, `datauri.txt`, static `index.html`), `assets/logo.svg` | terminal geometry and decode round trip, `-terminal-only` writes no files, empty payload fails, gallery PNGs decode |
 | `static` | http (`Static`, `SPA`, `StaticFS`, `SPAFS`), codec, logs | `main.go` (`-embed`, `-dist`, `-public`; `frontend` module: typed `/api/health`, `Static("/assets")`, `SPA("/")` with `WithSPAReserved("/api")` and `WithSPAImmutableDir("build")`), `frontend/dist` (a tiny hand-written build, no Node), `public/` | `/`, `/dashboard`, `/assets`, `/api/health`, 404s, cache headers, directory and embed modes, a missing entry point fails the start |
+| `sse` | http, jose, sse (memory; `config.rabbitmq.yaml` for RabbitMQ) | `main.go` (cookie login, cookie→bearer middleware, `GET /notifications/stream`, `POST /notify`, `/stats`, `/slow` with `nhttp.Timeout`), `web/index.html` (`EventSource`), `docker-compose.yml` + `.env.example` own RabbitMQ | two tabs of one user receive, another user does not, 401/403, route timeout opt-in, the RabbitMQ config builds |
 | `message` | message (RabbitMQ, worker-only) | `docker-compose.yml` + `.env.example` own RabbitMQ; `-mode producer|consumer|reprocess`; Classic priority, Quorum, automatic/manual ACK, DLQ and retry | unit validation plus RabbitMQ integration tests |
 
 Each example keeps its environment examples locally; examples with Docker
@@ -2440,6 +2582,7 @@ go run ./_examples/message -config _examples/message/config.yaml -mode consumer|
 make dev                                                  # air: hot reload of _examples/complete (needs PostgreSQL)
 make run-graph                                            # complete with -tags nforge_graph and /graph on (needs PostgreSQL)
 make run-graph-standalone                                 # the same without Docker
+go run ./_examples/sse -config _examples/sse/config.yaml              # SSE, memory driver (export JWT_SECRET first); config.rabbitmq.yaml needs the compose RabbitMQ
 go run ./_examples/static -config _examples/static/config.yaml [-embed]   # API + SPA + public files on :8080
 go run ./_examples/qrcode [-terminal-only] [-payload https://example.com]   # QR in the terminal + gallery in ./qrcode-output
 ```
@@ -2457,7 +2600,7 @@ go test ./...                    # unit tests (app, cache, codec, config, crypto
 go test -race ./...
 
 # the examples (`./...` skips `_` directories, so name each one):
-EXAMPLES='./_examples/basic/... ./_examples/complete/... ./_examples/jose/... ./_examples/cache/... ./_examples/database/... ./_examples/message/... ./_examples/qrcode/... ./_examples/static/...'
+EXAMPLES='./_examples/basic/... ./_examples/complete/... ./_examples/jose/... ./_examples/cache/... ./_examples/database/... ./_examples/message/... ./_examples/qrcode/... ./_examples/static/... ./_examples/sse/...'
 go vet $EXAMPLES
 go test -race $EXAMPLES
 
@@ -2495,7 +2638,7 @@ NFORGE_TEST_DATABASE_URL=... NFORGE_TEST_REDIS_URL=... go test -race -tags integ
 NFORGE_TEST_REDIS_URL='redis://localhost:6379/15' go test -race -tags integration ./cache/
 
 # RabbitMQ integration tests use a dedicated local prefix and delete only their own queues:
-NFORGE_TEST_RABBITMQ_URL='amqp://nforge:nforge@localhost:5672/' go test -race -tags integration ./message/ ./_examples/message/...
+NFORGE_TEST_RABBITMQ_URL='amqp://nforge:nforge@localhost:5672/' go test -race -tags integration ./message/ ./sse/ ./_examples/message/...
 
 # the examples against the compose stack (§14):
 NFORGE_TEST_DATABASE_URL='postgres://app:app@localhost:5432/app?sslmode=disable' \
@@ -2563,8 +2706,10 @@ algorithm/kid/typ, boundaries), not only round trips.
 - Inside `nhttp`, import `net/http` as `stdhttp`; the router as `router`.
 - Configuration is YAML with `snake_case` keys; document the default in a
   trailing comment on the struct field.
-- Security defaults are on and must stay on: HTTP server timeouts (never
-  zero), DTD blocked, payload limit,
+- Security defaults are on and must stay on: HTTP server transport timeouts
+  (never zero; `handler_timeout` is the one opt-in deadline, streams release
+  theirs only through `BeginStream`), SSE streams only for a validated identity
+  with bounded queues, limits and a per-write deadline, DTD blocked, payload limit,
   no `WithProcess()` resource, redacted DB config, validated docs accent,
   per-render docs CSP nonce, anchored CORS patterns and no credentials with
   a wildcard origin,
@@ -2690,9 +2835,11 @@ algorithm/kid/typ, boundaries), not only round trips.
     `Int(1, 10)` returns `ErrBounds`. `ChaCha20` is the X variant (24-byte
     nonce), so other ChaCha20-Poly1305 implementations cannot read its output.
 26. **Long or streaming responses cut at 30 s**: `http.server.write_timeout`
-    (default 30s) bounds every response. Raise it in the config, or extend the
-    deadline per request with `http.NewResponseController(w).SetWriteDeadline`.
-    A timeout cannot be disabled (0 means the default).
+    (default 30s) bounds every ordinary response, and `read_timeout` and the HTTP/3
+    `max_stream_timeout` bound the request. A long-lived response calls
+    `nhttp.BeginStream(w, r)` first (what `sse.Handler` does) and then sets a
+    short write deadline before every write. The transport timeouts cannot be
+    disabled (0 means the default); `handler_timeout` is **off** unless positive.
 27. **`http.server.port` is optional** (default 8080), like `tls.port` and
     `http3.port` (8443). A config with no `http.server` section loads.
 28. **Redirect needs a trusted host**: `tls.redirect_http: true` with a
@@ -2757,3 +2904,19 @@ algorithm/kid/typ, boundaries), not only round trips.
     directory or `index.html`, an overlapping mount or route) and, like routes,
     must run before the server serves; a route added under a mounted prefix after
     the mount fails `Start` (§7.14).
+44. **SSE has no replay**: an event published while the user is offline, on
+    another instance during a broker outage, or while an instance re-binds its
+    queue is gone. `Last-Event-ID` is only validated; clients reload state on
+    reconnect. `PublishResult.Accepted` is never browser receipt.
+45. **`EventSource` cannot send `Authorization`**: authenticate it with an HttpOnly
+    SameSite cookie that a middleware lifts into the bearer header (see
+    `_examples/sse`), never a token in the URL. An expired or revoked token only
+    stops a stream at its next reconnect (`sse.max_lifetime`), and a 401 on the
+    reconnect makes the browser stop retrying: the page must sign in again.
+46. **Behind a proxy the SSE origin check sees the proxy's host**: with no
+    `sse.allowed_origins` only the request's own origin passes (`Origin` host
+    equals `Host`), so list the public origins when a gateway rewrites `Host`.
+    CORS headers for credentialed cross-origin streams come from `http.cors`
+    (explicit origins, never `*`), not from `sse`.
+47. **`sse` with the rabbitmq driver makes `/ready` 503 during a broker outage**
+    (the module is critical), while open streams stay up. Probe accordingly.

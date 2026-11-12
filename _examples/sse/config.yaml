@@ -1,0 +1,60 @@
+# Server-Sent Events example, memory driver: events reach the streams of THIS
+# process only. No Docker, database or cache. Routes are registered in Go (main.go).
+env: local
+
+app:
+  name: sse-example
+  version: 1.0.0
+
+http:
+  server:
+    host: 127.0.0.1
+    port: 8080
+    header: true
+    # handler_timeout is OFF by default: ordinary routes have no request deadline
+    # unless you set a positive duration here (global) or mount nhttp.Timeout(d)
+    # on a route (see /slow). Streams ignore the global one either way.
+    # handler_timeout: 30s
+  routes:
+    health: {enabled: true}
+    readiness: {enabled: true} # reports "sse": ready
+
+logging:
+  output:
+    terminal:
+      enabled: true
+
+codec:
+  formats:
+    enabled: [json] # sse needs json
+
+jose:
+  enabled: true
+  keys:
+    - kid: jwt-signing
+      secret: ${JWT_SECRET} # export JWT_SECRET=$(openssl rand -hex 32)
+  profiles:
+    - name: access
+      kind: jwt_signed
+      typ: at+jwt
+      signing_key: jwt-signing
+      verification_keys: [jwt-signing]
+      jwt:
+        issuer: https://auth.sse-example.local
+        audiences: [sse-example-api]
+        ttl: 15m
+        max_ttl: 15m
+
+sse: # the whole section is optional: registering sse.Module() alone uses these defaults
+  driver: memory # memory | rabbitmq
+  heartbeat: 15s # ": heartbeat" comment frames
+  retry: 3s # reconnection delay advertised to browsers
+  buffer_size: 64 # per-connection queue; a client that fills it is disconnected
+  max_connections: 10000
+  max_connections_per_user: 5
+  max_connects_per_second: 100
+  write_timeout: 10s # deadline of every frame write (a client that stops reading is dropped)
+  max_lifetime: 15m # streams are closed after this so an expired or revoked token stops authorizing; the browser reconnects
+  limits:
+    max_payload_bytes: 64kb
+  # allowed_origins: [https://app.example.com] # cross-origin pages allowed to open a stream; empty = same origin only

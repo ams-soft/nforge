@@ -5,7 +5,7 @@ built first for HTTP APIs, by AMS Software e Consultoria LTDA. An application
 is a set of explicitly registered modules: configuration, structured logs,
 distributed tracing, a multi-format codec, an HTTP server with typed routes
 and generated OpenAPI docs, PostgreSQL access, JOSE/JWT authentication, a
-cache, and your own. One orchestrator validates the whole configuration and
+cache, RabbitMQ messaging, Server-Sent Events, and your own. One orchestrator validates the whole configuration and
 the dependency graph before anything opens, initializes every module before
 any starts, opens the listeners last, drains them first on shutdown and
 closes the rest in reverse dependency order. HTTP is optional: worker-only
@@ -47,11 +47,12 @@ err = a.Run(context.Background()) // start, serve, graceful shutdown on SIGINT/S
 | JOSE | `jose` | JWT, JWS and JWE through explicit profiles, bearer authentication with scopes, JWKS, key rotation |
 | Cache | `cache` | Redis or a bounded in-process LRU behind one API: objects, bytes, counters, TTLs, NX, cache-aside `GetOrLoad`, tenant namespaces |
 | Messaging | `message` | RabbitMQ confirmed publishing and concurrent consumers, Classic priority, Quorum queues, optional dead-letter/retry handling and DLQ reprocessing |
+| Server-Sent Events | `sse` | Explicit module with **user-targeted** delivery only: authenticated streams (the validated JWT subject), `PublishToUser`, memory or RabbitMQ driver (a fanout exchange, one ephemeral queue per instance), heartbeats, bounded queues and limits, graceful shutdown; best effort, no replay |
 | Crypto | `crypto` (`ncrypto`) | Standalone primitives, no config: XChaCha20-Poly1305 and AES-256-GCM encryption, HMAC-SHA256, bcrypt/Argon2id password hashing, BLAKE3/SHA-256, secure random values and ULIDs |
 | Helpers | `helper/safecalc` | Money as integer cents: exact formatting (BRL by default, any separators), float input rounded half-to-even |
 | Helpers | `helper/qrcode` | QR Codes as PNG, SVG, Base64 and Data URI: rounded modules and finders, centered PNG/JPEG/SVG logo, level L/M/Q/H, a terminal-printable matrix |
 
-Security defaults stay on: HTTP server timeouts (no Slowloris), DTD/XXE
+Security defaults stay on: HTTP transport timeouts (no Slowloris; the per-request handler timeout is opt-in), DTD/XXE
 blocked, payload limits, a restricted
 JOSE suite (never `none`, algorithms only from config, mandatory `kid`/`typ`),
 sanitized errors that never leak tokens, keys, SQL or Redis details,
@@ -72,7 +73,7 @@ pins it with `toolchain go1.27.4`). Import the HTTP package as
 
 ## Examples
 
-[`_examples/`](_examples) has six runnable applications, each with its own
+[`_examples/`](_examples) has nine runnable applications, each with its own
 README:
 
 | Example | Shows |
@@ -84,6 +85,8 @@ README:
 | [`database`](_examples/database) | repositories, transactions, multi-tenancy (column and RLS) |
 | [`static`](_examples/static) | an API, a built SPA and public files on one server, from directories or `embed.FS` |
 | [`message`](_examples/message) | worker-only RabbitMQ producer, automatic/manual consumers, DLQ and retry |
+| [`qrcode`](_examples/qrcode) | `helper/qrcode` gallery and a QR Code printed in the terminal |
+| [`sse`](_examples/sse) | Server-Sent Events: cookie-authenticated `EventSource`, two tabs per user, memory or RabbitMQ driver, route timeout opt-in |
 
 ```bash
 go run ./_examples/basic -config _examples/basic/config.yaml

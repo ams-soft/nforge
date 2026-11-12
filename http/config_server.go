@@ -18,7 +18,6 @@ const (
 	defaultReadTimeout       = 30 * time.Second
 	defaultWriteTimeout      = 30 * time.Second
 	defaultIdleTimeout       = 120 * time.Second
-	defaultHandlerTimeout    = 30 * time.Second
 
 	// maxBodyCeiling is the largest accepted http.server.max_body_bytes.
 	maxBodyCeiling = 1 * codec.GB
@@ -43,8 +42,9 @@ const (
 // timeouts left unset (zero or nil). The module calls it at configuration;
 // New and Start call it again so a Config built by hand (tests, embedding)
 // still gets a server with timeouts. There is deliberately
-// no way to disable them: net/http treats zero as "no timeout", the unsafe
-// default this exists to avoid.
+// no way to disable the transport timeouts: net/http treats zero as "no
+// timeout", the unsafe default this exists to avoid. handler_timeout is the
+// exception: it is a request-context deadline, off unless positive.
 func ApplyServerDefaults(s *ServerConfig) {
 	setPort(&s.Port, DefaultHTTPPort)
 	setPort(&s.TLS.Port, DefaultTLSPort)
@@ -64,7 +64,7 @@ func ApplyServerDefaults(s *ServerConfig) {
 	setDuration(&s.ReadTimeout, defaultReadTimeout)
 	setDuration(&s.WriteTimeout, defaultWriteTimeout)
 	setDuration(&s.IdleTimeout, defaultIdleTimeout)
-	setDuration(&s.HandlerTimeout, defaultHandlerTimeout)
+	// HandlerTimeout stays 0 (disabled): a request deadline is an opt-in.
 }
 
 func setDuration(d *time.Duration, def time.Duration) {

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nForge SSE</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; }
+  input, button { font: inherit; padding: .4rem .6rem; }
+  #log { background: #111; color: #9f9; padding: 1rem; min-height: 10rem; overflow: auto; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>nForge Server-Sent Events</h1>
+<p>Open this page in two tabs, sign in as the same user in both, and as another user in a third.</p>
+<p>
+  <input id="user" value="alice" aria-label="user">
+  <button id="login">Sign in</button>
+  <span id="state"></span>
+</p>
+<p>
+  <input id="to" value="alice" aria-label="notify user">
+  <input id="msg" value="hello" aria-label="message">
+  <button id="send">Notify</button>
+</p>
+<div id="log" role="log"></div>
+<script>
+const log = (t) => { const l = document.getElementById('log'); l.textContent += t + '\n'; l.scrollTop = l.scrollHeight; };
+const state = (t) => { document.getElementById('state').textContent = t; };
+let source = null;
+
+// Native EventSource cannot set an Authorization header: authentication rides the
+// HttpOnly SameSite=Strict cookie set by /login (never put a JWT in the URL).
+function connect() {
+  if (source) source.close();
+  source = new EventSource('/notifications/stream'); // same-origin: cookies are sent
+  source.onopen = () => state('connected');
+  source.addEventListener('notification', (e) => log('notification ' + (e.lastEventId || '') + ': ' + e.data));
+  // EventSource reconnects by itself after a network error or a server-side close
+  // (the server ends each stream after sse.max_lifetime). Events published while
+  // disconnected are NOT replayed: reload any state you need from your API on 'open'.
+  source.onerror = async () => {
+    state('reconnecting…');
+    if (source.readyState === EventSource.CLOSED) {
+      // The browser gave up (a 401 after the token expired, a 403, a 503): sign in again.
+      state('closed — sign in again');
+    }
+  };
+}
+
+document.getElementById('login').onclick = async () => {
+  const user = document.getElementById('user').value;
+  const r = await fetch('/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user }) });
+  if (r.ok) { log('signed in as ' + user); connect(); } else { log('login failed: ' + r.status); }
+};
+document.getElementById('send').onclick = async () => {
+  const r = await fetch('/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user: document.getElementById('to').value, message: document.getElementById('msg').value }) });
+  log('notify → ' + r.status);
+};
+</script>
+</body>
+</html>

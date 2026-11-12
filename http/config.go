@@ -152,7 +152,10 @@ type ServerConfig struct {
 	// HandlerTimeout is the deadline of every request context, so handlers,
 	// queries and loaders that honor ctx stop when it passes (the write
 	// timeout alone closes the connection but leaves the handler running).
-	HandlerTimeout time.Duration `yaml:"handler_timeout"` // default: 30s
+	// It is opt-in: omitted or 0s means disabled, a positive duration enables
+	// it for every route except streams, which release it with BeginStream.
+	// For one route only, mount nhttp.Timeout(d) on it instead.
+	HandlerTimeout time.Duration `yaml:"handler_timeout"` // default: disabled (0s); positive enables
 	// MaxBodyBytes bounds every request body, including the routes that read
 	// r.Body themselves; typed routes are also bound by codec.max_payload_bytes.
 	MaxBodyBytes codec.ByteSize `yaml:"max_body_bytes"` // default: codec.max_payload_bytes; at most 1gb
