@@ -37,6 +37,27 @@ All notable changes to nForge are documented here. The format follows
   implicit deadline must set it (or mount `nhttp.Timeout` on routes). The
   transport timeouts (`read_header_timeout`, `read_timeout`, `write_timeout`,
   `idle_timeout`, HTTP/3 `max_stream_timeout`) are unchanged.
+- `http.server.read_timeout`, `write_timeout` and the HTTP/3 `max_stream_timeout`
+  still bound every ordinary request; only a response that calls
+  `nhttp.BeginStream` is released from them (see the `sse` handler).
+
+### Upgrading
+
+- If your handlers, queries or loaders relied on the implicit 30s request
+  deadline, set `http.server.handler_timeout: 30s` to keep it, or mount
+  `nhttp.Timeout(d)` on the routes that need one.
+- To use Server-Sent Events register `sse.Module()` (and `message.Module()` for
+  `sse.driver: rabbitmq`) and add an `sse` section only if you need non-default
+  values. A browser `EventSource` cannot send an `Authorization` header: use an
+  HttpOnly, SameSite cookie that a small middleware turns into the bearer header
+  (see `_examples/sse`), never a token in the URL.
+- Server-Sent Events are best effort: no replay, no offline delivery, and
+  `PublishResult.Accepted` is acceptance by the driver, not receipt by a browser.
+  Streams end after `sse.max_lifetime` (default 15m), so token expiry or
+  revocation takes effect at the next reconnect. With the rabbitmq driver a
+  broker outage keeps open streams and heartbeats, makes publishes fail with
+  `ErrTransportUnavailable` and makes `/ready` answer 503 until delivery is
+  restored.
 
 ## [v0.5.0] - 2026-11-11
 
