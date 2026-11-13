@@ -1,0 +1,29 @@
+# Email example: an application with no HTTP server, database or broker.
+# A "welcome" module renders welcome.mjml and sends it once after the start.
+#
+#   set -a; . _examples/email/.env; set +a
+#   go run ./_examples/email -config _examples/email/config.yaml -to you@example.com
+env: local
+
+app:
+  name: email-example
+  version: 1.0.0
+
+logging:
+  output:
+    terminal:
+      enabled: true
+
+email: # the whole section is optional once email.Module() is registered, except from and smtp.host
+  enabled: true # default: true; false keeps the module out of the run (and fails the modules that require it)
+  driver: smtp # default: smtp, the only one
+  timeout: 15s # default: 15s; bounds one whole Send (dial, TLS, AUTH, envelope, DATA)
+  from:
+    address: ${EMAIL_FROM_ADDRESS:-no-reply@example.com} # bare ASCII mailbox; use an address your provider lets you send from
+    name: ${EMAIL_FROM_NAME:-nForge Example} # optional display name, any Unicode text
+  smtp:
+    host: ${SMTP_HOST:-smtp.example.com} # also the name the server certificate is verified against
+    port: ${SMTP_PORT:-587} # default: 587 for starttls, 465 for tls
+    security: ${SMTP_SECURITY:-starttls} # starttls (default, 587) | tls (implicit TLS, 465); there is no plaintext mode
+    username: ${SMTP_USERNAME:-} # empty username and password: no AUTH (a relay trusted by network)
+    password: ${SMTP_PASSWORD:-}

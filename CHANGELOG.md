@@ -8,6 +8,26 @@ All notable changes to nForge are documented here. The format follows
 
 ### Added
 
+- `email`: a new independent infrastructure module (`email.Module()`, section `email`,
+  `email.Capability` = `*email.Client`) and `email.RenderMJML`. `Client.Send(ctx,
+  Message{To, Subject, Text, HTML})` submits one message synchronously over SMTP
+  (STARTTLS, which must upgrade with a verified certificate before AUTH, or implicit
+  TLS; AUTH PLAIN only over TLS; no plaintext mode) and returns nil only when the server
+  accepted it, which is not delivery. One recipient, UTF-8 subject and bodies
+  (quoted-printable; text/plain, text/html or multipart/alternative), no attachments, no
+  queue, no retry, no tracking. The whole send is bounded by `email.timeout` and the
+  context; errors are classified (`ErrUnavailable`, `ErrTransient`, `ErrRejected`,
+  `ErrOutcomeUnknown`, `ErrClosed`) without secrets, recipients or server text. Not
+  ingress: it needs no HTTP; readiness is local (it never dials or sends); Stop refuses
+  new sends and waits for those in flight. `driver: noop` validates and discards messages for tests. The SMTP transport sits behind an unexported
+  driver interface for future providers. Metrics `nforge_email_sends_total` and
+  `nforge_email_send_duration_seconds`, and a span per send, when those modules are
+  present. `RenderMJML` renders MJML 5 to HTML in pure Go with
+  `github.com/julez-dev/mjmlgo/v2` (MIT; no Node.js, no `mj-include`, bounded input and
+  output); the `go` directive of `go.mod` became `go 1.27.0`, which that dependency
+  requires.
+- `_examples/email`: an application with no HTTP that renders an MJML fixture and sends
+  it once, after the start.
 - `scheduler`: a new independent infrastructure module (`scheduler.Module()`,
   section `scheduler`, `scheduler.Capability`). `AddJob("0 7 * * *", fn)` runs
   `func(context.Context) error` handlers on five-field Cron expressions, in an IANA

@@ -1,6 +1,6 @@
 module github.com/ams-soft/nforge
 
-go 1.27
+go 1.27.0
 
 toolchain go1.27.4
 
@@ -12,6 +12,7 @@ require (
 	github.com/go-jose/go-jose/v4 v4.1.9
 	github.com/jackc/pgx/v5 v5.13.0
 	github.com/joho/godotenv v1.5.1
+	github.com/julez-dev/mjmlgo/v2 v2.0.0
 	github.com/lmittmann/tint v1.2.1
 	github.com/makiuchi-d/gozxing v0.1.1
 	github.com/oklog/ulid/v2 v2.1.2
@@ -33,12 +34,15 @@ require (
 )
 
 require (
+	github.com/aymerick/douceur v0.2.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/ericchiang/css v1.4.0 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/gorilla/css v1.0.1 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.33.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect

@@ -46,6 +46,7 @@ err = a.Run(context.Background()) // start, serve, graceful shutdown on SIGINT/S
 | Database | `database` | PostgreSQL with pgx + Squirrel, transactions, **multi-tenancy** by tenant column or Row-Level Security |
 | JOSE | `jose` | JWT, JWS and JWE through explicit profiles, bearer authentication with scopes, JWKS, key rotation |
 | Cache | `cache` | Redis or a bounded in-process LRU behind one API: objects, bytes, counters, TTLs, NX, cache-aside `GetOrLoad`, tenant namespaces |
+| Email | `email` | Synchronous SMTP sending (`Client.Send`: one recipient, text and/or HTML, STARTTLS or implicit TLS with certificate verification, no retry or queue; success means the server accepted the message, not delivery) and an independent `email.RenderMJML` helper (pure Go, no Node.js, no variable substitution) |
 | Scheduler | `scheduler` | Cron jobs (`AddJob("0 7 * * *", fn)`) in an IANA time zone, parallel executions with an optional per-job cap that skips instead of queueing, no retry or persistence, no HTTP required, stops before the resources the jobs use |
 | Messaging | `message` | RabbitMQ publishing confirmed **per message** and pipelined, concurrent consumers, Classic priority, Quorum queues, optional dead-letter/retry handling and DLQ reprocessing, W3C trace context across the broker |
 | Metrics | `metrics` | A dependency-free registry in the Prometheus text format, with ready-made instruments for HTTP, SSE, Messaging, the database pool and the cache |
@@ -86,6 +87,7 @@ README:
 | [`cache`](_examples/cache) | the cache module on Redis or memory, `GetOrLoad`, outages |
 | [`database`](_examples/database) | repositories, transactions, multi-tenancy (column and RLS) |
 | [`static`](_examples/static) | an API, a built SPA and public files on one server, from directories or `embed.FS` |
+| [`email`](_examples/email) | no-HTTP app: renders an MJML welcome email and sends it once over SMTP |
 | [`scheduler`](_examples/scheduler) | scheduler-only app: daily 07:00 job counting a PostgreSQL table |
 | [`message`](_examples/message) | worker-only RabbitMQ producer, automatic/manual consumers, DLQ and retry |
 | [`qrcode`](_examples/qrcode) | `helper/qrcode` gallery and a QR Code printed in the terminal |

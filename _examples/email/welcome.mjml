@@ -1,0 +1,20 @@
+<mjml>
+  <mj-head>
+    <mj-title>Welcome to nForge</mj-title>
+    <mj-attributes>
+      <mj-all font-family="Helvetica, Arial, sans-serif" />
+    </mj-attributes>
+  </mj-head>
+  <mj-body background-color="#f4f4f4">
+    <mj-section background-color="#ffffff">
+      <mj-column>
+        <mj-text font-size="24px" font-weight="bold" color="#222222">Welcome to nForge</mj-text>
+        <mj-text font-size="16px" color="#444444" line-height="24px">
+          This message was rendered from MJML by email.RenderMJML and handed to the
+          SMTP server by the nForge email module.
+        </mj-text>
+        <mj-button href="https://github.com/ams-soft/nforge" background-color="#007d9c">View the project</mj-button>
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>

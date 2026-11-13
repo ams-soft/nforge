@@ -12,6 +12,7 @@ the framework. Start with `basic`, then pick the module you need.
 | [`database`](database) | the database module: Squirrel + pgx repositories, transactions, error mapping, multi-tenancy in column or Row-Level Security mode | PostgreSQL |
 | [`static`](static) | static files and a built single-page application next to the API: `Static`, `SPA`, directories and `embed.FS`, cache headers, reserved prefixes | nothing |
 | [`sse`](sse) | Server-Sent Events: authenticated, user-targeted streams (memory or RabbitMQ driver), `EventSource` with a cookie session, route timeout opt-in | `JWT_SECRET`; RabbitMQ for `config.rabbitmq.yaml` |
+| [`email`](email) | an application with no HTTP: renders `welcome.mjml` with `email.RenderMJML` and sends it once over SMTP (STARTTLS 587 or TLS 465) | an SMTP server you configure |
 | [`scheduler`](scheduler) | a scheduler-only application (no HTTP): a Cron job at 07:00 America/Sao_Paulo that counts a PostgreSQL table through the database module | PostgreSQL |
 | [`message`](message) | worker-only RabbitMQ publisher and consumers, Classic priority, Quorum queues, ACK/NACK, DLQ, retry and reprocessing | RabbitMQ (`rabbitmq` service in Compose) |
 

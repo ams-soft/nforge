@@ -11,6 +11,7 @@ import (
 	"github.com/ams-soft/nforge/codec"
 	"github.com/ams-soft/nforge/config"
 	"github.com/ams-soft/nforge/database"
+	"github.com/ams-soft/nforge/email"
 	nhttp "github.com/ams-soft/nforge/http"
 	"github.com/ams-soft/nforge/jose"
 	"github.com/ams-soft/nforge/logs"
@@ -36,6 +37,7 @@ var sections = map[string]reflect.Type{
 	"message":        reflect.TypeFor[message.Config](),
 	"sse":            reflect.TypeFor[sse.Config](),
 	"scheduler":      reflect.TypeFor[scheduler.Config](),
+	"email":          reflect.TypeFor[email.Config](),
 }
 
 // yamlKeys lists the dotted keys of a config type. Slices of structs and maps

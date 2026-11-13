@@ -64,6 +64,11 @@ package `app`. An application gets, from one `config.yaml`:
   IANA time zone, parallel executions with an optional per-job cap that skips
   (never queues), no retry, no persistence; an ingress module that needs no HTTP
   (§11D).
+- **Email** (`email/`): an independent infrastructure module with a synchronous
+  SMTP `Client.Send` (one recipient, text and/or HTML, verified STARTTLS or
+  implicit TLS, no retry, no queue; success is "accepted by the server", never
+  "delivered") and `email.RenderMJML`, a pure-Go MJML-to-HTML helper that needs
+  no module (§11E).
 - **Metrics** (`metrics/`): a dependency-free registry (`metrics.Capability`)
   that renders the Prometheus text format; the HTTP server, SSE, Messaging, the
   database pool and the cache register their instruments on it when it is
@@ -128,6 +133,7 @@ generics, `errors.Join`, `math/rand/v2`, `maps`/`slices` iterators.
 ├── message/            # RabbitMQ transport: queues, confirms, consumers, retry/DLQ, readiness and lifecycle modules
 ├── metrics/            # metrics registry (Prometheus text format) and the metrics module (§11C)
 ├── scheduler/          # Cron scheduler: Config, parser, Scheduler (AddJob), the scheduler module (§11D)
+├── email/              # SMTP client (Send), MJML renderer (RenderMJML), the email module (§11E)
 ├── sse/                # Server-Sent Events: Manager, Handler, memory + rabbitmq drivers, the sse module (§11B)
 ├── crypto/             # package ncrypto: AEAD (XChaCha20, AES-GCM), HMAC, password/data hashes, secure random
 ├── helper/
@@ -159,7 +165,7 @@ generics, `errors.Join`, `math/rand/v2`, `maps`/`slices` iterators.
 │       ├── jwks/       # JWKS handler (GET/HEAD, ETag, 304)
 │       ├── tracing/    # Tracing middleware + request_id = trace_id
 │       └── accesslog/  # Logger middleware + statusWriter
-├── _examples/          # runnable examples (§14): basic, complete, jose, cache, database, message, static, sse
+├── _examples/          # runnable examples (§14): basic, complete, jose, cache, database, message, static, sse, scheduler, email
 │   ├── <example>/docker-compose.yml # local dependencies stay with each example
 │   ├── message/        # RabbitMQ worker-only producer/consumer/reprocess example
 │   └── observability/  # collector/tempo/loki configs + Grafana provisioning for complete
@@ -201,6 +207,7 @@ cache ──► module, codec, database (tenant context only; go-redis/v9 behind
 message ──► module, codec, telemetry (trace context), metrics (RabbitMQ AMQP 0-9-1 driver; no AMQP types in its public API)
 metrics ──► module
 scheduler ──► module, metrics (stdlib only otherwise; no HTTP, no broker)
+email ──► module, metrics, telemetry (stdlib net/smtp + mjmlgo; no HTTP, no broker, no database)
 sse ──► module, codec, nhttp (principal, BeginStream, SendJSON), message (fanout exchange for the rabbitmq driver), metrics
 telemetry ──► module
 logs ──► module, telemetry
@@ -711,6 +718,20 @@ scheduler:                    # scheduler.Config — see §11D; the whole sectio
   timezone: UTC               # IANA name the expressions are evaluated in; invalid or "Local" fails app.New; default UTC
   max_concurrency: 0          # cap of simultaneous executions of ONE job (a default for every job; WithMaxConcurrency overrides); 0 = unlimited; negative → error; at the cap a firing is skipped
 
+email:                        # email.Config — see §11E; registering email.Module() is the opt-in; from.address and smtp.host are required
+  enabled: <true>             # *bool; omitted = true; false keeps the registered module out of the run (a module that requires it fails app.New)
+  driver: smtp                # smtp (default) | noop (tests: validates, encodes and discards; needs no smtp section); anything else → ErrUnsupportedDriver
+  timeout: 15s                # bounds one whole Send (dial, TLS, AUTH, envelope, DATA); 0 = default; at most 5m
+  from:
+    address: no-reply@example.com   # REQUIRED; bare ASCII mailbox (no display name); the envelope sender and the From header
+    name: Example Application       # optional display name, any Unicode text without control characters, at most 128 bytes
+  smtp:
+    host: smtp.example.com    # REQUIRED; host name or IP only (no scheme, port or path); also the certificate's verified name
+    port: 587                 # default 587 for starttls, 465 for tls
+    username: ${SMTP_USERNAME}   # username and password together or both empty; empty = no AUTH (relay trusted by network)
+    password: ${SMTP_PASSWORD}   # redacted in every fmt verb, slog and JSON
+    security: starttls        # starttls (default) | tls (implicit TLS); no plaintext, no skip-verify
+
 sse:                          # sse.Config — see §11B; the whole section is optional once sse.Module() is registered
   enabled: <true>             # *bool; omitted = true; false keeps the registered module out of the run
   driver: memory              # memory | rabbitmq; rabbitmq requires message.Module() enabled
@@ -734,7 +755,7 @@ sse:                          # sse.Config — see §11B; the whole section is o
 Owners of the sections: `logging` → `logs.Module` (ID `logger`), `tracing` →
 `telemetry.Module`, `codec` → `codec.Module`, `database` →
 `database.Module`, `jose` → `jose.Module`, `cache` → `cache.Module`,
-`message` → `message.Module`, `scheduler` → `scheduler.Module`, `sse` → `sse.Module`, `metrics` → `metrics.Module`, `http`
+`message` → `message.Module`, `scheduler` → `scheduler.Module`, `email` → `email.Module`, `sse` → `sse.Module`, `metrics` → `metrics.Module`, `http`
 → `nhttp.Module`; `env`, `app` and `prd_exceptions` are reserved (package
 `config`). A section of a module the application did not register is an
 error, not ignored.
@@ -842,7 +863,7 @@ Always log with the context-aware methods (`InfoContext`, `ErrorContext`,
 `LogAttrs(ctx, ...)`) inside requests so `request_id` and trace correlation
 are attached. Module log messages use a bracketed prefix:
 `[LoggerModule]`, `[TracingModule]`, `[CodecModule]`, `[DatabaseModule]`,
-`[JOSEModule]`, `[CacheModule]`, `[SchedulerModule]`, `[HTTPModule]`, `[App]`, `[Config]`; fatal
+`[JOSEModule]`, `[CacheModule]`, `[SchedulerModule]`, `[EmailModule]`, `[HTTPModule]`, `[App]`, `[Config]`; fatal
 startup and runtime errors use `[Fatal ERROR] ...`.
 
 ---
@@ -2594,6 +2615,101 @@ s.AddJob("*/5 * * * *", h, scheduler.WithMaxConcurrency(1))   // optional per-jo
 
 ---
 
+## 11E. Email (`email/`)
+
+`email.Module()` (ID `email`, section `email`, capability `email.Capability` =
+`*email.Client`) sends one message at a time over SMTP, **synchronously**. It
+imports `module`, `metrics` and `telemetry` (both optional) and needs no HTTP,
+database, broker or scheduler: an application with `logs` + `email` + a domain
+module is valid and works under `app.Run`. It is **not** ingress. Registering the
+module is the opt-in; a disabled one publishes nothing and a module that
+`Requires` it fails `app.New`. `email.RenderMJML` is independent of the module.
+
+```
+email/
+├── doc.go       # package doc
+├── config.go    # Config, defaults, Validate, redaction (SMTPConfig Format/LogValue/MarshalJSON)
+├── message.go   # Message, validation, limits, MIME encoding (build)
+├── client.go    # Client: Send, lifecycle (start/ready/stop), metrics, tracing
+├── smtp.go      # the unexported driver interface, newDriver, the SMTP driver
+├── errors.go    # sentinels and the sanitized *Error
+├── mjml.go      # RenderMJML (mjmlgo), limits
+└── module.go    # Module: graph, Init, hooks
+```
+
+```go
+c := module.Require(scope, email.Capability)        // in a module that declared Requires
+err := c.Send(ctx, email.Message{To: "customer@example.com", Subject: "Welcome", Text: txt, HTML: html})
+html, err := email.RenderMJML(ctx, mjmlSource)       // no module needed
+```
+
+- **Semantics.** `Send` returns nil only after the server accepted the message
+  (positive answer to the end of DATA). That is **not delivery**: bounces and spam
+  filtering happen later and nothing here observes them. No queue, retry,
+  attachments, tracking or persistence. A send is allowed only after the
+  application started (a `Send` in Init gets `ErrClosed`); sending is application
+  work, never a side effect of Init.
+- **Message.** `To` is exactly one bare ASCII mailbox (no display name, spaces or
+  control characters; SMTPUTF8 is not implemented, so a non-ASCII address is
+  refused, IDN domains must be punycode). `Subject` is required, UTF-8 without
+  control characters, RFC 2047 encoded. `Text` only → `text/plain`; `HTML` only →
+  `text/html`; both → `multipart/alternative`, text first, random boundary. Bodies
+  are quoted-printable with CRLF; dot-stuffing is the SMTP writer's. Limits:
+  subject 512 bytes, 4 MiB per body, 10 MiB for the encoded message
+  (`MaxSubjectBytes`, `MaxPartBytes`, `MaxMessageBytes`). The sender is
+  `email.from` (the name is encoded with `net/mail`), never per message.
+- **SMTP transport (`smtp.go`).** One connection per send (no pool, no reuse, so
+  concurrent sends need no coordination). `net/smtp` has no context, so the driver
+  dials with `DialContext`, sets the connection deadline from the context and runs
+  one watcher that expires the deadline on cancellation: no protocol step outlives
+  ctx and the watcher always ends. `starttls` requires the server to offer
+  STARTTLS and upgrades with `ServerName` = `smtp.host`, TLS 1.2+ and verification
+  before AUTH or data (a server that does not offer it is `ErrUnavailable`, never
+  clear text); `tls` is implicit TLS. There is no plaintext or skip-verify option.
+  AUTH PLAIN only with credentials, and `net/smtp` itself refuses it without TLS.
+  Without credentials no AUTH is attempted (a relay trusted by network; logged at
+  INFO once).
+- **Errors.** Wrap `ErrInvalidMessage` (nothing attempted), `ErrClosed`,
+  `ErrUnavailable` (dial, TLS, STARTTLS, AUTH, canceled), `ErrTransient` (4xx),
+  `ErrRejected` (5xx) or `ErrOutcomeUnknown` (the connection or deadline failed
+  after the body was sent and before the answer: the message **may** have been
+  accepted, do not resend blindly), plus the context error. `*email.Error` has the
+  phase and the SMTP code; messages never carry the server's text, the recipient,
+  the subject, a body or a credential. There is **never an automatic retry**.
+- **Timeout.** `email.timeout` bounds the whole send; a shorter caller deadline
+  wins. Cancelling or timing out ends the connection at once.
+- **Lifecycle.** Init builds the client and publishes it; Start marks it
+  operational (the SMTP server is first contacted by the first `Send`, so a wrong
+  host fails that send, not the start); `Ready` reflects local state only (it never
+  dials and never sends); `Stop` is idempotent, refuses new sends and waits for the
+  ones in flight until the shutdown deadline, then cancels them (`ErrClosed` for
+  them, the context error from Stop).
+- **Observability.** `[EmailModule]` logs carry driver, outcome and phase only
+  (never recipient or content; success at DEBUG, failure at WARN). With the metrics
+  module: `nforge_email_sends_total{driver,outcome}` (`accepted`, `rejected`,
+  `transient`, `unknown`, `closed`, `failed`, `invalid`) and
+  `nforge_email_send_duration_seconds{driver}`; "accepted" is the only success, there
+  is no "delivered". With the tracing module a span `email.send` has no message data.
+- **MJML.** `RenderMJML(ctx, source)` uses `github.com/julez-dev/mjmlgo/v2` (MIT,
+  pure Go, no Node.js, MJML 5): the one dependency added for it. Parity with the
+  JavaScript compiler is not promised for every feature. No variable substitution or
+  template storage: the caller builds the MJML and escapes untrusted values. `mj-include`
+  is not resolved (it is an error: nothing reads the filesystem or the network).
+  Source limit 1 MiB, output 4 MiB (`ErrMJMLTooLarge`). Rendering is CPU work that cannot
+  be interrupted midway: a canceled ctx returns at once and the render finishes in the
+  background, bounded by the source limit. Invalid markup is `ErrMJML`.
+- **Drivers.** The transport is the unexported `driver` interface chosen by
+  `newDriver`; `smtp` and `noop` exist (`noop` discards after validation and encoding, for tests and local runs; it logs a WARN at Init and its "accepted" means nothing was sent). A future provider adds `email.ses` or
+  `email.sendpulse` beside `email.smtp` and a case there, without touching `Message`.
+- Tests: `email/message_test.go` (MIME, injection, limits, `FuzzBuild`),
+  `smtp_test.go` against `smtpserver_test.go` (an in-process server with real TLS:
+  STARTTLS, implicit TLS, AUTH only over TLS, certificate mismatch, RCPT/DATA
+  rejections, ambiguous completion, cancellation mid-dial and mid-protocol,
+  concurrency), `client_test.go` (a fake driver, shutdown, no retry, log privacy),
+  `module_test.go`, `mjml_test.go` (`FuzzRenderMJML`) and `_examples/email`.
+
+---
+
 ## 12. Crypto (`crypto/`, package `ncrypto`)
 
 Standalone toolbox (no internal imports, no globals, no config section, not
@@ -2793,7 +2909,7 @@ m := qr.Modules()                                       // [][]bool, no quiet zo
 
 ## 14. Examples and local stack (`_examples/`)
 
-Ten independent `package main` applications, each focused on one part of
+Eleven independent `package main` applications, each focused on one part of
 the framework, each with its own `config.yaml` (only the keys it uses,
 commented), `README.md` and tests. They share one pattern: `main` loads the
 config, calls a `newApp(cfg, opts...)` that registers the built-in modules it
@@ -2813,6 +2929,7 @@ names are `<name>-example`.
 | `qrcode` | none (`helper/qrcode` only; not an `app`) | `main.go` flags (`-payload` default `teste123`, `-out`, `-size`, `-logo`, `-terminal`, `-terminal-only`, `-invert`), `terminal.go` (half-block text QR, 4-module quiet zone, no ANSI), `gallery.go` (PNG, SVG, `base64.txt`, `datauri.txt`, static `index.html`), `assets/logo.svg` | terminal geometry and decode round trip, `-terminal-only` writes no files, empty payload fails, gallery PNGs decode |
 | `static` | http (`Static`, `SPA`, `StaticFS`, `SPAFS`), codec, logs | `main.go` (`-embed`, `-dist`, `-public`; `frontend` module: typed `/api/health`, `Static("/assets")`, `SPA("/")` with `WithSPAReserved("/api")` and `WithSPAImmutableDir("build")`), `frontend/dist` (a tiny hand-written build, no Node), `public/` | `/`, `/dashboard`, `/assets`, `/api/health`, 404s, cache headers, directory and embed modes, a missing entry point fails the start |
 | `sse` | http, jose, sse (memory; `config.rabbitmq.yaml` for RabbitMQ) | `main.go` (cookie login, cookie→bearer middleware, `GET /notifications/stream`, `POST /notify`, `/stats`, `/slow` with `nhttp.Timeout`), `web/index.html` (`EventSource`, `reauth` handling), `docker-compose.yml` + `.env.example` own RabbitMQ | two tabs of one user receive, another user does not, 401/403, route timeout opt-in, the RabbitMQ config builds |
+| `email` | logger, email + a `welcome` module; no HTTP, no database, no broker | `main.go` (`-to`/`$EMAIL_TO`; start, render `welcome.mjml`, one `Send`, shutdown; exit 0/1/2), `config.yaml` (`${SMTP_*}` placeholders), `.env.example` | graph without HTTP, the fixture renders, missing/invalid recipient sends nothing |
 | `scheduler` | logger, database, scheduler + a `stock` domain module; no HTTP, no listener, no broker | `docker-compose.yml` (PostgreSQL, loads `schema.sql`); `main.go` (`-cron` overrides the expression for a quick local check), `stock.go` (`AddJob("0 7 * * *")`, `SELECT COUNT(*) FROM stock` through `db.Query`/`db.Executor`) | job and DI unit tests; `-tags integration` against PostgreSQL |
 | `message` | message (RabbitMQ, worker-only) | `docker-compose.yml` + `.env.example` own RabbitMQ; `-mode producer|consumer|reprocess`; Classic priority, Quorum, automatic/manual ACK, DLQ and retry | unit validation plus RabbitMQ integration tests |
 
@@ -2839,6 +2956,8 @@ docker compose --env-file _examples/message/.env -f _examples/message/docker-com
 go run ./_examples/message -config _examples/message/config.yaml -mode consumer|producer|reprocess
 docker compose -f _examples/scheduler/docker-compose.yml up -d    # PostgreSQL with the stock table
 go run ./_examples/scheduler -config _examples/scheduler/config.yaml [-cron "* * * * *"]   # scheduler-only app: no HTTP
+set -a; . _examples/email/.env; set +a    # copy .env.example first; placeholders only, never commit real credentials
+go run ./_examples/email -config _examples/email/config.yaml -to you@example.com   # renders MJML, one SMTP send (accepted, not delivered)
 make dev                                                  # air: hot reload of _examples/complete (needs PostgreSQL)
 make run-graph                                            # complete with -tags nforge_graph and /graph on (needs PostgreSQL)
 make run-graph-standalone                                 # the same without Docker
@@ -2860,7 +2979,7 @@ go test ./...                    # unit tests (app, cache, codec, config, crypto
 go test -race ./...
 
 # the examples (`./...` skips `_` directories, so name each one):
-EXAMPLES='./_examples/basic/... ./_examples/complete/... ./_examples/jose/... ./_examples/cache/... ./_examples/database/... ./_examples/message/... ./_examples/qrcode/... ./_examples/static/... ./_examples/sse/... ./_examples/scheduler/...'
+EXAMPLES='./_examples/basic/... ./_examples/complete/... ./_examples/jose/... ./_examples/cache/... ./_examples/database/... ./_examples/message/... ./_examples/qrcode/... ./_examples/static/... ./_examples/sse/... ./_examples/scheduler/... ./_examples/email/...'
 go vet $EXAMPLES
 go test -race $EXAMPLES
 
@@ -3206,3 +3325,14 @@ algorithm/kid/typ, boundaries), not only round trips.
     to `main` for distroless/scratch images. Expressions have exactly five fields;
     `@every`, `@daily` and seconds are rejected. A handler must honor its `ctx`: Stop
     cancels it and waits only until the shutdown deadline.
+55. **Email success is "accepted", not "delivered"**: `Send` returning nil means the
+    SMTP server took the message. `ErrOutcomeUnknown` means it may have been accepted
+    (the connection or deadline failed after the body): resending can duplicate the
+    mail, and nForge never retries. A `Send` in Init is `ErrClosed`; send after the start.
+56. **Email has no plaintext mode and a strict recipient**: `starttls` fails
+    (`ErrUnavailable`) when the server does not offer STARTTLS or its certificate does not
+    verify against `smtp.host` (use the name on the certificate, not an IP, unless the
+    certificate has that IP); there is no skip-verify option. `To` is one bare ASCII
+    address: `Name <a@b>`, two recipients and non-ASCII local parts are
+    `ErrInvalidMessage`. `email.RenderMJML` does not substitute variables or resolve
+    `mj-include`; escape untrusted values before building the MJML.

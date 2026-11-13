@@ -28,6 +28,7 @@ var importRules = map[string][]string{
 	"message":          {"module", "codec", "telemetry", "metrics"},
 	"metrics":          {"module"},
 	"scheduler":        {"module", "metrics"},
+	"email":            {"module", "metrics", "telemetry"},
 	"sse":              {"module", "codec", "message", "http", "metrics"},
 	"telemetry":        {"module"},
 	"logs":             {"module", "telemetry"},
