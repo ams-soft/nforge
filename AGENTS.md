@@ -59,6 +59,11 @@ package `app`. An application gets, from one `config.yaml`:
   Classic and Quorum queues, opt-in DLQ/retry, concurrent consumers and
   lifecycle-integrated reconnect/readiness. `message.Module()` owns the
   connection; `message.Consumers()` is ingress and drains before it closes.
+- **Scheduler** (`scheduler/`): an independent infrastructure module that runs
+  handlers on five-field Cron expressions (`AddJob("0 7 * * *", fn)`), local mode,
+  IANA time zone, parallel executions with an optional per-job cap that skips
+  (never queues), no retry, no persistence; an ingress module that needs no HTTP
+  (§11D).
 - **Metrics** (`metrics/`): a dependency-free registry (`metrics.Capability`)
   that renders the Prometheus text format; the HTTP server, SSE, Messaging, the
   database pool and the cache register their instruments on it when it is
@@ -122,6 +127,7 @@ generics, `errors.Join`, `math/rand/v2`, `maps`/`slices` iterators.
 ├── cache/              # cache: Config, Open, Redis + memory drivers, keyspace/tenant, GetOrLoad flights, the cache module
 ├── message/            # RabbitMQ transport: queues, confirms, consumers, retry/DLQ, readiness and lifecycle modules
 ├── metrics/            # metrics registry (Prometheus text format) and the metrics module (§11C)
+├── scheduler/          # Cron scheduler: Config, parser, Scheduler (AddJob), the scheduler module (§11D)
 ├── sse/                # Server-Sent Events: Manager, Handler, memory + rabbitmq drivers, the sse module (§11B)
 ├── crypto/             # package ncrypto: AEAD (XChaCha20, AES-GCM), HMAC, password/data hashes, secure random
 ├── helper/
@@ -194,6 +200,7 @@ jose ──► module (go-jose/v4 behind unexported adapters)
 cache ──► module, codec, database (tenant context only; go-redis/v9 behind unexported adapters)
 message ──► module, codec, telemetry (trace context), metrics (RabbitMQ AMQP 0-9-1 driver; no AMQP types in its public API)
 metrics ──► module
+scheduler ──► module, metrics (stdlib only otherwise; no HTTP, no broker)
 sse ──► module, codec, nhttp (principal, BeginStream, SendJSON), message (fanout exchange for the rabbitmq driver), metrics
 telemetry ──► module
 logs ──► module, telemetry
@@ -698,6 +705,12 @@ message:                      # message.Config — RabbitMQ only; disabled by de
     - {name: emails, dead_letter: true, retry: {delay: 10s, max_attempts: 3}}  # max_attempts = total handler invocations before the DLQ
     - {name: ephemeral, on_failure: drop}  # explicit: a failed message is discarded (silences the no-DLQ startup warning); or on_failure: dead_letter (needs dead_letter: true)
 
+scheduler:                    # scheduler.Config — see §11D; the whole section is optional once scheduler.Module() is registered
+  enabled: <true>             # *bool; omitted = true; false keeps the registered module out of the run (a module that requires it fails app.New)
+  mode: local                 # local (default); distributed is reserved and fails app.New with ErrUnsupportedMode, never a local fallback
+  timezone: UTC               # IANA name the expressions are evaluated in; invalid or "Local" fails app.New; default UTC
+  max_concurrency: 0          # cap of simultaneous executions of ONE job (a default for every job; WithMaxConcurrency overrides); 0 = unlimited; negative → error; at the cap a firing is skipped
+
 sse:                          # sse.Config — see §11B; the whole section is optional once sse.Module() is registered
   enabled: <true>             # *bool; omitted = true; false keeps the registered module out of the run
   driver: memory              # memory | rabbitmq; rabbitmq requires message.Module() enabled
@@ -721,7 +734,7 @@ sse:                          # sse.Config — see §11B; the whole section is o
 Owners of the sections: `logging` → `logs.Module` (ID `logger`), `tracing` →
 `telemetry.Module`, `codec` → `codec.Module`, `database` →
 `database.Module`, `jose` → `jose.Module`, `cache` → `cache.Module`,
-`message` → `message.Module`, `sse` → `sse.Module`, `metrics` → `metrics.Module`, `http`
+`message` → `message.Module`, `scheduler` → `scheduler.Module`, `sse` → `sse.Module`, `metrics` → `metrics.Module`, `http`
 → `nhttp.Module`; `env`, `app` and `prd_exceptions` are reserved (package
 `config`). A section of a module the application did not register is an
 error, not ignored.
@@ -829,7 +842,7 @@ Always log with the context-aware methods (`InfoContext`, `ErrorContext`,
 `LogAttrs(ctx, ...)`) inside requests so `request_id` and trace correlation
 are attached. Module log messages use a bracketed prefix:
 `[LoggerModule]`, `[TracingModule]`, `[CodecModule]`, `[DatabaseModule]`,
-`[JOSEModule]`, `[CacheModule]`, `[HTTPModule]`, `[App]`, `[Config]`; fatal
+`[JOSEModule]`, `[CacheModule]`, `[SchedulerModule]`, `[HTTPModule]`, `[App]`, `[Config]`; fatal
 startup and runtime errors use `[Fatal ERROR] ...`.
 
 ---
@@ -2491,6 +2504,96 @@ h := reg.Histogram("myapp_job_seconds", "Job duration.", nil, "kind"); h.Observe
 
 ---
 
+## 11D. Scheduler (`scheduler/`)
+
+`scheduler.Module()` (ID `scheduler`, section `scheduler`, capability
+`scheduler.Capability` = `*scheduler.Scheduler`) decides **when** a handler runs;
+the handler owns the business logic, the period it covers and its idempotency.
+It imports `module` and `metrics` only: no HTTP, listener, broker, database or
+cache is needed, so a scheduler-only application (`logs` + `database` + `scheduler`
++ a domain module) is a valid application and `app.Run` keeps it alive until a
+signal, exactly like a worker-only one. Registering the module is the opt-in; a
+disabled one publishes nothing and a module that `Requires` it fails `app.New`.
+
+```
+scheduler/
+├── doc.go        # package doc: expressions, DST, execution model, replicas
+├── config.go     # Config, defaults, Validate (mode, timezone, max_concurrency)
+├── cron.go       # parse (five fields), schedule.next (wall clock of the zone, DST rules)
+├── clock.go      # the injectable clock (tests use a manual one: no sleeps)
+├── scheduler.go  # Scheduler: AddJob, the single timer loop, dispatch/run, stop
+└── module.go     # Module: graph, hooks, metrics
+```
+
+```go
+s := module.Require(scope, scheduler.Capability)   // in the domain module's Init
+err := s.AddJob("0 7 * * *", func(ctx context.Context) error {
+    return countStock(ctx, db)                     // db and logger resolved through DI
+})                                                 // err: ErrInvalidSchedule, ErrNeverFires, ErrNilHandler, ErrStarted, ErrClosed
+s.AddJob("*/5 * * * *", h, scheduler.WithMaxConcurrency(1))   // optional per-job cap
+```
+
+- **Lifecycle.** The module is **ingress**: its Start (after every Init and every
+  ordinary Start) launches the timer loop; its Stop runs before the modules the
+  handlers use, so the database, cache and logger are closed only after the
+  handlers returned (§3.4). Jobs are registered in Init; `AddJob` after Start is
+  `ErrStarted`, after Stop `ErrClosed`, and an error returned from Init stops the
+  application (a wrong expression never surfaces after the start). Stop is
+  idempotent: it ends the schedule (no new firing), **cancels the context of every
+  running execution** and waits for the handlers until the shutdown deadline; a
+  handler that ignores its context past it yields `ErrStopTimeout`, and the runtime
+  leaves the modules below it open (§3.4). Readiness: running and not stopped.
+- **Expressions.** Exactly five fields (minute hour day-of-month month
+  day-of-week); `*`, values, ranges `a-b`, lists, steps `*/n` and `a-b/n`; names
+  `JAN-DEC` / `SUN-SAT`; weekday 7 = Sunday. Seconds, `@every` and `@daily` are
+  rejected, as are `5/15` (ambiguous), leading zeros and reversed ranges. When both
+  day fields are restricted a day matches if either does (Vixie); with one `*` both
+  must. An expression that matches no date in 8 years (`0 0 31 2 *`) is
+  `ErrNeverFires`. The parser is in-tree (about 200 lines, stdlib only): the
+  repository prefers stdlib, and the DST rules and the injectable clock need
+  control of `next`.
+- **Time zone.** `scheduler.timezone` (IANA, default **UTC**, `"Local"` refused) is
+  loaded with `time.LoadLocation` in Configure (reads the tz database, no network);
+  the database's zone is never used. A minimal container needs the zone data:
+  `import _ "time/tzdata"` in `main`. DST: a nonexistent wall time (spring forward)
+  fires once, shifted by the gap (02:30 runs at 03:30); a repeated wall time (fall
+  back) fires once, at its first occurrence, for a fixed-time job (minute and hour
+  both restricted), while a job with a wildcard minute or hour keeps firing on every
+  matching instant of the repeated hour.
+- **Execution.** One timer loop for all jobs (no goroutine per job); each firing
+  runs the handler in its own goroutine with its own context (child of the
+  lifecycle, canceled by Stop). Runs are **parallel**: a slow run does not delay or
+  cancel the next. No queue, no backlog, no retry, no persistence, no catch-up: a
+  firing missed because the process was down, suspended or saturated is **not**
+  recovered (after a suspension the next firing is simply the next matching instant
+  after "now"). A returned error is logged at ERROR (`[SchedulerModule] Job failed`)
+  a panic is recovered and logged with its stack, and a `context.Canceled` returned
+  because the scheduler is stopping is logged at WARN (`canceled`); none of them stops
+  the schedule nor the application. The handler gets no planned time: it reads the clock and picks
+  its own reference period.
+- **Concurrency cap.** `scheduler.max_concurrency` (0 = unlimited) is the default
+  cap **per job**, `WithMaxConcurrency(n)` overrides it for one job. At the cap the
+  firing is skipped, logged at WARN and counted (`outcome="skipped"`), never queued
+  and never replayed, so one slow job cannot starve the others.
+- **Job identity.** Each job gets a local ID `job-N` (registration order) used in
+  logs and metrics; the expression is not an identity (two jobs may share it). It is
+  not stable across instances: a future distributed mode needs stable identities.
+- **Modes and replicas.** `mode: local` is the only mode: every instance runs every
+  job, so N replicas run each job N times, with **no coordination and no
+  exactly-once guarantee**. `mode: distributed` is reserved: it fails `app.New`
+  (`ErrUnsupportedMode`) and never falls back to local. There is no database or
+  Redis lock. Handlers must be idempotent (or run one instance), and own the
+  reference period of their work.
+- **Metrics.** With the metrics module: `nforge_scheduler_runs_total{job,outcome}`
+  (`ok`, `error`, `panic`, `skipped`, `canceled`) and `nforge_scheduler_job_duration_seconds{job}`.
+- Tests: `scheduler/cron_test.go` (parser, `0 7 * * *`, DST, monotonic over years),
+  `scheduler_test.go` (a manual clock: no sleeps), `lifecycle_test.go` (shutdown
+  order against a resource) and `module_test.go` (graph, config errors, a
+  scheduler-only application under `app.Run`). Integration against PostgreSQL:
+  `_examples/scheduler` (§14).
+
+---
+
 ## 12. Crypto (`crypto/`, package `ncrypto`)
 
 Standalone toolbox (no internal imports, no globals, no config section, not
@@ -2690,7 +2793,7 @@ m := qr.Modules()                                       // [][]bool, no quiet zo
 
 ## 14. Examples and local stack (`_examples/`)
 
-Nine independent `package main` applications, each focused on one part of
+Ten independent `package main` applications, each focused on one part of
 the framework, each with its own `config.yaml` (only the keys it uses,
 commented), `README.md` and tests. They share one pattern: `main` loads the
 config, calls a `newApp(cfg, opts...)` that registers the built-in modules it
@@ -2710,6 +2813,7 @@ names are `<name>-example`.
 | `qrcode` | none (`helper/qrcode` only; not an `app`) | `main.go` flags (`-payload` default `teste123`, `-out`, `-size`, `-logo`, `-terminal`, `-terminal-only`, `-invert`), `terminal.go` (half-block text QR, 4-module quiet zone, no ANSI), `gallery.go` (PNG, SVG, `base64.txt`, `datauri.txt`, static `index.html`), `assets/logo.svg` | terminal geometry and decode round trip, `-terminal-only` writes no files, empty payload fails, gallery PNGs decode |
 | `static` | http (`Static`, `SPA`, `StaticFS`, `SPAFS`), codec, logs | `main.go` (`-embed`, `-dist`, `-public`; `frontend` module: typed `/api/health`, `Static("/assets")`, `SPA("/")` with `WithSPAReserved("/api")` and `WithSPAImmutableDir("build")`), `frontend/dist` (a tiny hand-written build, no Node), `public/` | `/`, `/dashboard`, `/assets`, `/api/health`, 404s, cache headers, directory and embed modes, a missing entry point fails the start |
 | `sse` | http, jose, sse (memory; `config.rabbitmq.yaml` for RabbitMQ) | `main.go` (cookie login, cookie→bearer middleware, `GET /notifications/stream`, `POST /notify`, `/stats`, `/slow` with `nhttp.Timeout`), `web/index.html` (`EventSource`, `reauth` handling), `docker-compose.yml` + `.env.example` own RabbitMQ | two tabs of one user receive, another user does not, 401/403, route timeout opt-in, the RabbitMQ config builds |
+| `scheduler` | logger, database, scheduler + a `stock` domain module; no HTTP, no listener, no broker | `docker-compose.yml` (PostgreSQL, loads `schema.sql`); `main.go` (`-cron` overrides the expression for a quick local check), `stock.go` (`AddJob("0 7 * * *")`, `SELECT COUNT(*) FROM stock` through `db.Query`/`db.Executor`) | job and DI unit tests; `-tags integration` against PostgreSQL |
 | `message` | message (RabbitMQ, worker-only) | `docker-compose.yml` + `.env.example` own RabbitMQ; `-mode producer|consumer|reprocess`; Classic priority, Quorum, automatic/manual ACK, DLQ and retry | unit validation plus RabbitMQ integration tests |
 
 Each example keeps its environment examples locally; examples with Docker
@@ -2733,6 +2837,8 @@ go run ./_examples/database -config _examples/database/config.yaml [-envfile _ex
 cp _examples/message/.env.example _examples/message/.env
 docker compose --env-file _examples/message/.env -f _examples/message/docker-compose.yml up -d
 go run ./_examples/message -config _examples/message/config.yaml -mode consumer|producer|reprocess
+docker compose -f _examples/scheduler/docker-compose.yml up -d    # PostgreSQL with the stock table
+go run ./_examples/scheduler -config _examples/scheduler/config.yaml [-cron "* * * * *"]   # scheduler-only app: no HTTP
 make dev                                                  # air: hot reload of _examples/complete (needs PostgreSQL)
 make run-graph                                            # complete with -tags nforge_graph and /graph on (needs PostgreSQL)
 make run-graph-standalone                                 # the same without Docker
@@ -2754,7 +2860,7 @@ go test ./...                    # unit tests (app, cache, codec, config, crypto
 go test -race ./...
 
 # the examples (`./...` skips `_` directories, so name each one):
-EXAMPLES='./_examples/basic/... ./_examples/complete/... ./_examples/jose/... ./_examples/cache/... ./_examples/database/... ./_examples/message/... ./_examples/qrcode/... ./_examples/static/... ./_examples/sse/...'
+EXAMPLES='./_examples/basic/... ./_examples/complete/... ./_examples/jose/... ./_examples/cache/... ./_examples/database/... ./_examples/message/... ./_examples/qrcode/... ./_examples/static/... ./_examples/sse/... ./_examples/scheduler/...'
 go vet $EXAMPLES
 go test -race $EXAMPLES
 
@@ -3089,3 +3195,14 @@ algorithm/kid/typ, boundaries), not only round trips.
     listener closes at SIGTERM and a load balancer that has not yet removed the
     instance gets connection refused. Set `app.WithShutdownTimeout` above
     `shutdown_delay` plus the 10 s drain.
+53. **The scheduler runs every job on every replica and never catches up**: local
+    mode has no coordination, no queue, no retry and no persistence, so N
+    instances run a job N times and a firing lost to downtime, suspension or the
+    concurrency cap is gone. Make handlers idempotent and let them compute their own
+    reference period. `scheduler.mode: distributed` fails `app.New`.
+54. **Scheduler jobs are registered in Init and need the zone data**: `AddJob`
+    after Start is `ErrStarted`; a bad expression returned from Init fails the
+    start. `scheduler.timezone` needs the tz database: add `import _ "time/tzdata"`
+    to `main` for distroless/scratch images. Expressions have exactly five fields;
+    `@every`, `@daily` and seconds are rejected. A handler must honor its `ctx`: Stop
+    cancels it and waits only until the shutdown deadline.

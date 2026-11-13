@@ -1,0 +1,34 @@
+# Scheduler example: a scheduler-only application (no HTTP, no listener, no broker).
+# A "stock" domain module counts the rows of a PostgreSQL table every day at 07:00.
+#
+#   docker compose -f _examples/scheduler/docker-compose.yml up -d
+#   go run ./_examples/scheduler -config _examples/scheduler/config.yaml
+env: local
+
+app:
+  name: scheduler-example
+  version: 1.0.0
+
+logging:
+  output:
+    terminal:
+      enabled: true
+
+database:
+  enabled: true # the stock module requires it; unreachable at startup = the app does not start
+  host: localhost
+  port: 5432
+  name: app
+  user: app
+  password: app # demo credential; in production use ${DB_PASSWORD}
+  ssl:
+    mode: disable # disable | allow | prefer (default) | require | verify-ca | verify-full
+  pool:
+    min_conns: 1
+    max_conns: 5
+
+scheduler: # the whole section is optional once scheduler.Module() is registered
+  enabled: true # default: true; false keeps the module out of the run (and fails the modules that require it)
+  mode: local # default: local. "distributed" is reserved and fails at startup; it never falls back to local
+  timezone: America/Sao_Paulo # default: UTC. IANA name; the expression "0 7 * * *" is 07:00 in this zone
+  max_concurrency: 0 # default: 0 = unlimited parallel runs of one job; N > 0 skips a firing while N runs of that job are active

@@ -6,6 +6,23 @@ All notable changes to nForge are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `scheduler`: a new independent infrastructure module (`scheduler.Module()`,
+  section `scheduler`, `scheduler.Capability`). `AddJob("0 7 * * *", fn)` runs
+  `func(context.Context) error` handlers on five-field Cron expressions, in an IANA
+  time zone (default UTC), local mode only. Executions are parallel, each with its own
+  context; an optional cap per job (`scheduler.max_concurrency`,
+  `WithMaxConcurrency`) skips a firing instead of queueing it. There is no queue, retry,
+  persistence or catch-up of missed firings, and no exactly-once guarantee across
+  replicas. `mode: distributed` is reserved and fails at startup. It is an ingress
+  module: it needs no HTTP or broker and stops first, canceling and awaiting running
+  handlers before the database or cache close. Metrics
+  `nforge_scheduler_runs_total` and `nforge_scheduler_job_duration_seconds` when the
+  metrics module is present.
+- `_examples/scheduler`: a scheduler-only application with PostgreSQL and a `stock`
+  domain module that counts rows every day at 07:00 in `America/Sao_Paulo`.
+
 ## [v0.8.0] - 2026-11-12
 
 ### Added

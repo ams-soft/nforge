@@ -42,6 +42,7 @@ Important notes for code generation:
 - [cache/](cache): `*cache.Cache` on Redis or a bounded memory LRU, `GetOrLoad`, tenant namespaces, the cache module.
 - [metrics/](metrics): the metrics registry (Prometheus text format) and the metrics module.
 - [sse/](sse): Server-Sent Events: `Manager`, `Handler`, memory and RabbitMQ drivers, the sse module.
+- [scheduler/](scheduler): Cron scheduler module: five-field expressions, IANA time zone, parallel runs with an optional per-job skip cap, local mode only (no queue, retry or exactly-once), ingress lifecycle with no HTTP needed.
 - [message/](message): RabbitMQ queues, confirmed publishing, concurrent ACK/NACK consumers, DLQ/retry, reprocessing and lifecycle modules.
 - [crypto/](crypto): package `ncrypto`: XChaCha20-Poly1305, AES-256-GCM, HMAC-SHA256, bcrypt/Argon2id, BLAKE3/SHA-256, secure random, ULID.
 - [helper/safecalc/](helper/safecalc): money as integer cents with exact formatting.
@@ -55,6 +56,7 @@ Important notes for code generation:
 - [_examples/cache](_examples/cache): the cache module on Redis or memory: objects, TTL, NX, counters, raw bytes, `GetOrLoad`, CBOR, outages.
 - [_examples/database](_examples/database): Squirrel + pgx repositories, transactions, error mapping, tenancy in column or RLS mode.
 - [_examples/sse](_examples/sse): cookie-authenticated `EventSource`, user-targeted events on memory or RabbitMQ, route timeout opt-in.
+- [_examples/scheduler](_examples/scheduler): scheduler-only app with PostgreSQL: a stock job at 07:00 America/Sao_Paulo.
 - [_examples/message](_examples/message): worker-only RabbitMQ producer, consumers and DLQ reprocessing.
 - [_examples/static](_examples/static): an API, a built SPA and public files on one server (`Server.Static`/`SPA`), from directories or `embed.FS`.
 - [_examples/qrcode](_examples/qrcode): `helper/qrcode` gallery (PNG, SVG, Base64, Data URI, logo) and a QR Code printed in the terminal.
