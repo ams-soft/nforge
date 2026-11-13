@@ -6,6 +6,8 @@ All notable changes to nForge are documented here. The format follows
 
 ## [Unreleased]
 
+## [v0.8.0] - 2026-11-12
+
 ### Added
 
 - `sse`: **per-user routing** (`sse.rabbitmq.routing: user`). The instance binds, on
@@ -744,6 +746,7 @@ tracing, the JSON/CBOR/XML codec, the HTTP server with typed routes and
 OpenAPI 3.1 docs, PostgreSQL with multi-tenancy, JOSE/JWT authentication,
 the Redis/memory cache, `ncrypto` and `safecalc`.
 
+[v0.8.0]: https://github.com/ams-soft/nforge/compare/v0.7.0...v0.8.0
 [v0.7.0]: https://github.com/ams-soft/nforge/compare/v0.6.0...v0.7.0
 [v0.6.0]: https://github.com/ams-soft/nforge/compare/v0.5.0...v0.6.0
 [v0.5.0]: https://github.com/ams-soft/nforge/compare/v0.4.0...v0.5.0
