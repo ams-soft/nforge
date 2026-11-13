@@ -91,7 +91,7 @@ package `app`. An application gets, from one `config.yaml`:
   `qrcode` (QR Codes as PNG, SVG, Base64 and Data URI, rounded styles, logo).
 
 Framework version: `version` in the **module root** `config.yaml`
-(currently `0.8.0`), embedded at build time and exposed as `nforge.Version`
+(currently `0.9.0`), embedded at build time and exposed as `nforge.Version`
 (`version.go`). This file is *not* the application's config. Releases are
 git tags `vX.Y.Z` on `main` (published on pkg.go.dev through the Go module
 proxy); bump this `version` in the commit that gets tagged, so
