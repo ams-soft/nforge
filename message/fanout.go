@@ -34,6 +34,10 @@ func validExchange(name string) error {
 // best-effort fanout. A broker outage is ErrTransportUnavailable; a lost
 // confirm is ErrPublishUncertain. No exactly-once guarantee exists.
 func (c *Client) PublishFanout(ctx context.Context, exchange string, body []byte) error {
+	return c.publishExchange(ctx, exchange, "fanout", "", body)
+}
+
+func (c *Client) publishExchange(ctx context.Context, exchange, kind, key string, body []byte) error {
 	if err := validExchange(exchange); err != nil {
 		return err
 	}
@@ -56,23 +60,23 @@ func (c *Client) PublishFanout(ctx context.Context, exchange string, body []byte
 		c.fanoutGeneration = gen
 	}
 	if !c.fanoutDeclared[exchange] {
-		if err := declareFanout(conn, exchange); err != nil {
+		if err := declareExchange(conn, exchange, kind); err != nil {
 			c.fanoutMu.Unlock()
 			return fmt.Errorf("%w: fanout exchange unavailable", ErrTransportUnavailable)
 		}
 		c.fanoutDeclared[exchange] = true
 	}
 	c.fanoutMu.Unlock()
-	return c.publishConfirmed(ctx, exchange, "", false, amqp.Publishing{ContentType: "application/octet-stream", DeliveryMode: amqp.Transient, Timestamp: time.Now(), Body: body})
+	return c.publishConfirmed(ctx, exchange, key, false, amqp.Publishing{ContentType: "application/octet-stream", DeliveryMode: amqp.Transient, Timestamp: time.Now(), Body: body})
 }
 
-func declareFanout(conn *amqp.Connection, exchange string) error {
+func declareExchange(conn *amqp.Connection, exchange, kind string) error {
 	ch, err := conn.Channel()
 	if err != nil {
 		return err
 	}
 	defer ch.Close()
-	return ch.ExchangeDeclare(exchange, "fanout", true, false, false, false, nil)
+	return ch.ExchangeDeclare(exchange, kind, true, false, false, false, nil)
 }
 
 // FanoutHandler processes one message of a fanout subscription. Returning nil
@@ -126,12 +130,32 @@ type Subscription struct {
 	ch       *amqp.Channel
 	attaches atomic.Uint64
 	rejected atomic.Uint64
+
+	// Routed subscriptions (direct exchange, bindings per key).
+	kind    string // exchange type: fanout or direct
+	applyMu sync.Mutex
+	keys    map[string]struct{} // routing keys that must be bound; guarded by applyMu
+	queue   string              // current queue name; guarded by applyMu
 }
 
 // SubscribeFanout attaches to the fanout exchange and starts consuming. It
 // returns once the first attachment succeeded, so a caller can open its own
 // ingress after it. The client must be started.
 func (c *Client) SubscribeFanout(ctx context.Context, exchange string, h FanoutHandler, opts ...FanoutOption) (*Subscription, error) {
+	return c.subscribe(exchange, "fanout", h, opts)
+}
+
+// SubscribeRouted is SubscribeFanout on a direct exchange: the instance's
+// ephemeral queue starts with no bindings and receives only the messages
+// published with a routing key it has bound (Sync). The bindings are kept, so
+// after an outage the new queue is bound again with every key still wanted.
+// It is how an instance receives the events of the users it actually serves
+// instead of every event of every user.
+func (c *Client) SubscribeRouted(ctx context.Context, exchange string, h FanoutHandler, opts ...FanoutOption) (*Subscription, error) {
+	return c.subscribe(exchange, "direct", h, opts)
+}
+
+func (c *Client) subscribe(exchange, kind string, h FanoutHandler, opts []FanoutOption) (*Subscription, error) {
 	if err := validExchange(exchange); err != nil {
 		return nil, err
 	}
@@ -153,7 +177,7 @@ func (c *Client) SubscribeFanout(ctx context.Context, exchange string, h FanoutH
 		base = context.Background()
 	}
 	sctx, cancel := context.WithCancel(base)
-	s := &Subscription{c: c, exchange: exchange, handler: h, opts: o, ctx: sctx, cancel: cancel, done: make(chan struct{})}
+	s := &Subscription{c: c, exchange: exchange, handler: h, opts: o, ctx: sctx, cancel: cancel, done: make(chan struct{}), kind: kind, keys: map[string]struct{}{}}
 	deliveries, err := s.attach()
 	if err != nil {
 		cancel()
@@ -211,15 +235,25 @@ func (s *Subscription) attach() (<-chan amqp.Delivery, error) {
 		_ = ch.Close()
 		return nil, fmt.Errorf("%w: fanout %s failed", ErrTransportUnavailable, what)
 	}
-	if err = ch.ExchangeDeclare(s.exchange, "fanout", true, false, false, false, nil); err != nil {
+	if err = ch.ExchangeDeclare(s.exchange, s.kind, true, false, false, false, nil); err != nil {
 		return fail("exchange declaration")
 	}
 	q, err := ch.QueueDeclare("", false, true, true, false, nil)
 	if err != nil {
 		return fail("queue declaration")
 	}
-	if err = ch.QueueBind(q.Name, "", s.exchange, false, nil); err != nil {
-		return fail("binding")
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+	if s.kind == "fanout" {
+		if err = ch.QueueBind(q.Name, "", s.exchange, false, nil); err != nil {
+			return fail("binding")
+		}
+	} else {
+		for key := range s.keys { // every key still wanted, on the new queue
+			if err = ch.QueueBind(q.Name, key, s.exchange, false, nil); err != nil {
+				return fail("binding")
+			}
+		}
 	}
 	if err = ch.Qos(s.opts.prefetch, 0, false); err != nil {
 		return fail("qos")
@@ -231,6 +265,7 @@ func (s *Subscription) attach() (<-chan amqp.Delivery, error) {
 	s.closeMu.Lock()
 	s.ch = ch
 	s.closeMu.Unlock()
+	s.queue = q.Name
 	s.attaches.Add(1)
 	s.setActive(true)
 	return deliveries, nil
@@ -311,4 +346,48 @@ func (s *Subscription) safeHandle(ctx context.Context, body []byte) (err error) 
 		}
 	}()
 	return s.handler(ctx, body)
+}
+
+// Sync binds or unbinds the routing key of a routed subscription so that it
+// matches want() (evaluated under the subscription's apply lock). Because the
+// state is read at apply time, concurrent Syncs of one key converge on the
+// latest truth whatever order they run in. The wanted set is remembered even
+// when the broker call fails (outage): the next attachment binds it.
+func (s *Subscription) Sync(key string, want func() bool) error {
+	if s.kind != "direct" {
+		return &Error{Op: "fanout", Reason: "Sync needs a routed subscription"}
+	}
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+	wanted := want()
+	if wanted {
+		s.keys[key] = struct{}{}
+	} else {
+		delete(s.keys, key)
+	}
+	s.closeMu.Lock()
+	ch, queue := s.ch, s.queue
+	s.closeMu.Unlock()
+	if ch == nil || ch.IsClosed() || queue == "" {
+		return ErrTransportUnavailable
+	}
+	var err error
+	if wanted {
+		err = ch.QueueBind(queue, key, s.exchange, false, nil)
+	} else {
+		err = ch.QueueUnbind(queue, key, s.exchange, nil)
+	}
+	if err != nil {
+		// a channel error closes the channel: the run loop re-attaches and rebinds from keys
+		return fmt.Errorf("%w: binding change failed", ErrTransportUnavailable)
+	}
+	return nil
+}
+
+// PublishRouted publishes body to a direct exchange with a routing key and waits
+// for the broker's confirm. Like PublishFanout it is transient and not
+// mandatory: with no queue bound to the key the broker drops the message and the
+// publish still succeeds (nobody is listening).
+func (c *Client) PublishRouted(ctx context.Context, exchange, key string, body []byte) error {
+	return c.publishExchange(ctx, exchange, "direct", key, body)
 }

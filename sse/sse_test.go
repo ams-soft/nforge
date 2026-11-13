@@ -289,10 +289,10 @@ func TestSlowClientIsDisconnectedNotPartiallyFed(t *testing.T) {
 	m := startManager(t, func(c *Config) { c.BufferSize = 2 })
 	// a connection nobody drains: queue of 2, the third event overflows it
 	c := newConn("slow", 2)
-	if err := m.register(c); err != nil {
+	if _, err := m.register(c); err != nil {
 		t.Fatal(err)
 	}
-	defer m.unregister(c)
+	defer func() { m.unregister(c) }()
 	for i := range 3 {
 		m.deliver(wire{User: "slow", ID: fmt.Sprint(i), Data: "x"})
 	}
@@ -381,7 +381,7 @@ func TestPublishCloseRaces(t *testing.T) {
 		wg.Go(func() {
 			for range 300 {
 				c := newConn("u", 4)
-				if m.register(c) != nil {
+				if _, err := m.register(c); err != nil {
 					continue
 				}
 				if published.Load()%2 == 0 {
@@ -515,5 +515,22 @@ func TestConfigValidation(t *testing.T) {
 	}
 	if err := testConfig(nil).Validate(); err != nil {
 		t.Fatalf("defaults must validate: %v", err)
+	}
+}
+
+func TestRoutingConfigValidation(t *testing.T) {
+	for _, r := range []string{"fanout", "user"} {
+		if err := testConfig(func(c *Config) { c.RabbitMQ.Routing = r }).Validate(); err != nil {
+			t.Errorf("routing %q: %v", r, err)
+		}
+	}
+	if err := testConfig(func(c *Config) { c.RabbitMQ.Routing = "topic" }).Validate(); err == nil {
+		t.Error("an unknown routing must be refused")
+	}
+	if c := testConfig(nil); c.RabbitMQ.Routing != RoutingFanout {
+		t.Errorf("default routing = %q, want fanout", c.RabbitMQ.Routing)
+	}
+	if routingKey("a") == routingKey("b") || len(routingKey(strings.Repeat("x", 5000))) != 64 {
+		t.Error("routing keys are fixed-size digests")
 	}
 }

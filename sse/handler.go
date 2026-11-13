@@ -149,7 +149,8 @@ func (m *Manager) serve(w http.ResponseWriter, r *http.Request, o handlerOptions
 	}
 
 	c := newConn(user, m.cfg.BufferSize)
-	switch err := m.register(c); {
+	first, regErr := m.register(c)
+	switch err := regErr; {
 	case errors.Is(err, errRejectClosed):
 		m.stats.rejected.Add(1)
 		refuse(w, r, http.StatusServiceUnavailable, "service unavailable", m.cfg.Retry)
@@ -164,8 +165,22 @@ func (m *Manager) serve(w http.ResponseWriter, r *http.Request, o handlerOptions
 		refuse(w, r, http.StatusTooManyRequests, "too many connections", m.cfg.Retry)
 		return
 	}
-	defer m.unregister(c)
+	defer func() {
+		if m.unregister(c) {
+			// the user's last stream is gone: stop receiving its events (best effort)
+			sctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 3*time.Second)
+			_ = m.drv.sync(sctx, user, m.present(user))
+			cancel()
+		}
+	}()
 	m.stats.connections.Add(1)
+	if first {
+		// bind before the stream opens, so events published once the client sees
+		// the stream reach it; a failure (outage) is retried when the subscription re-attaches
+		sctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		_ = m.drv.sync(sctx, user, m.present(user))
+		cancel()
+	}
 
 	nhttp.BeginStream(w, r)
 	m.capSendBuffer(r)

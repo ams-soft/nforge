@@ -15,6 +15,7 @@ func (d *memoryDriver) publish(_ context.Context, w wire) error {
 	return nil
 }
 
-func (d *memoryDriver) ready(context.Context) error { return nil }
-func (d *memoryDriver) reconnects() uint64          { return 0 }
-func (d *memoryDriver) stop(context.Context) error  { return nil }
+func (d *memoryDriver) sync(context.Context, string, func() bool) error { return nil }
+func (d *memoryDriver) ready(context.Context) error                     { return nil }
+func (d *memoryDriver) reconnects() uint64                              { return 0 }
+func (d *memoryDriver) stop(context.Context) error                      { return nil }

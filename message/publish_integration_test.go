@@ -455,3 +455,81 @@ func TestTraceContinuesAcrossTheBroker(t *testing.T) {
 	}
 	_ = c.stopConsumers(context.Background())
 }
+
+// Routed subscriptions receive exactly the keys that are bound, and the
+// bindings come back with the queue after an outage.
+func TestRoutedSubscriptionBindsOnlyWhatIsWantedAndRebinds(t *testing.T) {
+	raw := brokerURL(t)
+	p := newNetProxy(t, raw, 0)
+	c := clientVia(t, p.url(raw), nil)
+	go c.supervise(t.Context(), func(error) {}, nil)
+	exchange := fmt.Sprintf("nf_routed_%d", time.Now().UnixNano())
+	t.Cleanup(func() {
+		if co, err := amqp.Dial(raw); err == nil {
+			if ch, err := co.Channel(); err == nil {
+				_ = ch.ExchangeDelete(exchange, false, false)
+			}
+			_ = co.Close()
+		}
+	})
+	got := make(chan string, 64)
+	sub, err := c.SubscribeRouted(t.Context(), exchange, func(_ context.Context, b []byte) error { got <- string(b); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Close(context.Background())
+	want := func(v string, d time.Duration) bool {
+		deadline := time.After(d)
+		for {
+			select {
+			case m := <-got:
+				if m == v {
+					return true
+				}
+			case <-deadline:
+				return false
+			}
+		}
+	}
+	ctx := t.Context()
+	if err := sub.Sync("k1", func() bool { return true }); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.PublishRouted(ctx, exchange, "k1", []byte("one"))
+	_ = c.PublishRouted(ctx, exchange, "k2", []byte("other"))
+	if !want("one", 3*time.Second) {
+		t.Fatal("a bound key must be delivered")
+	}
+	if want("other", 400*time.Millisecond) {
+		t.Fatal("an unbound key must not be delivered")
+	}
+	if err := sub.Sync("k1", func() bool { return false }); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.PublishRouted(ctx, exchange, "k1", []byte("after-unbind"))
+	if want("after-unbind", 400*time.Millisecond) {
+		t.Fatal("an unbound key stops being delivered")
+	}
+	// a key still wanted when the connection drops is bound again on the new queue
+	if err := sub.Sync("k1", func() bool { return true }); err != nil {
+		t.Fatal(err)
+	}
+	attached := sub.Attachments()
+	p.cut()
+	time.Sleep(100 * time.Millisecond)
+	p.restore()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) && (!sub.Active() || sub.Attachments() <= attached) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !sub.Active() {
+		t.Fatal("the subscription did not re-attach")
+	}
+	for i := 0; i < 50; i++ {
+		_ = c.PublishRouted(ctx, exchange, "k1", []byte("restored"))
+		if want("restored", 200*time.Millisecond) {
+			return
+		}
+	}
+	t.Fatal("the binding was not restored with the new queue")
+}

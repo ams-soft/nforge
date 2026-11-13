@@ -25,6 +25,7 @@ func (m *Manager) registerMetrics(reg *metrics.Registry) {
 	c("nforge_sse_events_published_total", "PublishToUser calls with a valid event.", func(s Stats) uint64 { return s.Published })
 	c("nforge_sse_events_accepted_total", "Publications accepted by the driver.", func(s Stats) uint64 { return s.PublishAccepted })
 	c("nforge_sse_events_failed_total", "Publications refused or failed at the driver.", func(s Stats) uint64 { return s.PublishFailed })
+	c("nforge_sse_distribution_received_total", "Messages this instance received from the distribution.", func(s Stats) uint64 { return s.DistributionReceived })
 	c("nforge_sse_frames_enqueued_total", "Frames queued to local connections.", func(s Stats) uint64 { return s.LocalEnqueued })
 	c("nforge_sse_slow_client_disconnects_total", "Clients disconnected because their queue filled.", func(s Stats) uint64 { return s.SlowClientDisconnect })
 	c("nforge_sse_heartbeat_errors_total", "Heartbeat writes that failed.", func(s Stats) uint64 { return s.HeartbeatErrors })

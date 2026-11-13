@@ -52,3 +52,4 @@ sse:
   rabbitmq:
     # fanout exchange; default <message.namespace>.sse.<env>.<app.name>
     prefetch: 64
+    routing: fanout # or "user": each instance binds only the users it serves (see AGENTS.md section 11B)

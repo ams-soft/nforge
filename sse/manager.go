@@ -40,6 +40,10 @@ type driver interface {
 	// publish distributes w. Returning nil means accepted by the driver.
 	publish(ctx context.Context, w wire) error
 	ready(ctx context.Context) error
+	// sync is called when a user's first local connection opens or its last
+	// closes; present reports the current truth. Drivers that route per user
+	// bind or unbind the user; the others ignore it.
+	sync(ctx context.Context, user string, present func() bool) error
 	// reconnects is the number of times distribution was restored after an outage.
 	reconnects() uint64
 	stop(ctx context.Context) error
@@ -48,6 +52,7 @@ type driver interface {
 type counters struct {
 	connections, rejected                   atomic.Uint64
 	published, accepted, failed             atomic.Uint64
+	received                                atomic.Uint64
 	enqueued, slowClients, heartbeatErrors  atomic.Uint64
 	writeErrors, malformed, expiredLifetime atomic.Uint64
 }
@@ -66,6 +71,7 @@ type Stats struct {
 	PublishAccepted      uint64 // accepted by the driver
 	PublishFailed        uint64 // refused or failed at the driver
 	LocalEnqueued        uint64 // frames queued to local connections
+	DistributionReceived uint64 // messages this instance received from the distribution (rabbitmq)
 	SlowClientDisconnect uint64
 	HeartbeatErrors      uint64
 	WriteErrors          uint64
@@ -110,18 +116,20 @@ func (c *conn) close(reason string) {
 }
 
 // register adds c unless the manager is not accepting or a limit applies.
-func (m *Manager) register(c *conn) error {
+// register adds c; first reports that it is the user's first local connection.
+func (m *Manager) register(c *conn) (first bool, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	switch {
 	case !m.accepting:
-		return errRejectClosed
+		return false, errRejectClosed
 	case m.total >= m.cfg.MaxConnections:
-		return errRejectGlobal
+		return false, errRejectGlobal
 	case len(m.users[c.user]) >= m.cfg.MaxConnectionsPerUser:
-		return errRejectUser
+		return false, errRejectUser
 	}
 	set := m.users[c.user]
+	first = set == nil
 	if set == nil {
 		set = map[*conn]struct{}{}
 		m.users[c.user] = set
@@ -129,10 +137,11 @@ func (m *Manager) register(c *conn) error {
 	set[c] = struct{}{}
 	m.total++
 	m.wg.Add(1)
-	return nil
+	return first, nil
 }
 
-func (m *Manager) unregister(c *conn) {
+// unregister removes c; last reports that the user has no local connection left.
+func (m *Manager) unregister(c *conn) (last bool) {
 	m.mu.Lock()
 	if set, ok := m.users[c.user]; ok {
 		if _, in := set[c]; in {
@@ -140,11 +149,22 @@ func (m *Manager) unregister(c *conn) {
 			m.total--
 			if len(set) == 0 {
 				delete(m.users, c.user)
+				last = true
 			}
 		}
 	}
 	m.mu.Unlock()
 	m.wg.Done()
+	return last
+}
+
+// present reports whether the user has a local connection.
+func (m *Manager) present(user string) func() bool {
+	return func() bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return len(m.users[user]) > 0
+	}
 }
 
 // deliver queues the frame of w to every local connection of its user. Slow
@@ -263,6 +283,7 @@ func (m *Manager) Stats() Stats {
 		PublishAccepted:      m.stats.accepted.Load(),
 		PublishFailed:        m.stats.failed.Load(),
 		LocalEnqueued:        m.stats.enqueued.Load(),
+		DistributionReceived: m.stats.received.Load(),
 		SlowClientDisconnect: m.stats.slowClients.Load(),
 		HeartbeatErrors:      m.stats.heartbeatErrors.Load(),
 		WriteErrors:          m.stats.writeErrors.Load(),

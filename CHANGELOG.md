@@ -6,6 +6,17 @@ All notable changes to nForge are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `sse`: **per-user routing** (`sse.rabbitmq.routing: user`). The instance binds, on
+  its ephemeral queue of a direct exchange, only the users it has streams for, so it
+  receives the events of its own users instead of every event of every user. The
+  default stays `fanout`. `Stats.DistributionReceived` and
+  `nforge_sse_distribution_received_total` measure it.
+- `message`: `Client.SubscribeRouted`, `Client.PublishRouted` and
+  `Subscription.Sync` (the direct-exchange form of the fanout pair, with bindings
+  restored after an outage).
+
 ## [v0.7.0] - 2026-11-12
 
 An adversarial review of v0.6.0 (delayed and killed brokers, derived contexts,

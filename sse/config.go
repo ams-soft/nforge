@@ -8,6 +8,12 @@ import (
 	"github.com/ams-soft/nforge/codec"
 )
 
+// Routing modes accepted by sse.rabbitmq.routing.
+const (
+	RoutingFanout = "fanout"
+	RoutingUser   = "user"
+)
+
 // Driver names accepted by sse.driver.
 const (
 	DriverMemory   = "memory"
@@ -72,6 +78,15 @@ type RabbitMQConfig struct {
 	Exchange string `yaml:"exchange"`
 	// Prefetch bounds the unacknowledged messages of this instance's queue.
 	Prefetch int `yaml:"prefetch"` // default: 64
+	// Routing selects how events reach the instances. "fanout" (default): every
+	// instance receives every event and filters by user locally. "user": a direct
+	// exchange where each instance binds only the users it has connected, so an
+	// instance receives the events of its own users and nothing else (traffic
+	// per instance no longer grows with the fleet). A user's events published
+	// between its connection and the binding, or during an outage, are lost,
+	// like everything in this module. The exchange is named <exchange>.user in
+	// this mode, so switching modes never conflicts with the other type.
+	Routing string `yaml:"routing"` // fanout | user; default: fanout
 }
 
 // IsEnabled reports whether the module runs.
@@ -104,6 +119,9 @@ func (c *Config) ApplyDefaults() {
 	num(&c.Limits.MaxEventNameSize, 64)
 	num(&c.Limits.MaxEventIDBytes, 128)
 	num(&c.RabbitMQ.Prefetch, 64)
+	if c.RabbitMQ.Routing == "" {
+		c.RabbitMQ.Routing = RoutingFanout
+	}
 	if c.Limits.MaxPayloadBytes == 0 {
 		c.Limits.MaxPayloadBytes = 64 * codec.KB
 	}
@@ -151,6 +169,9 @@ func (c Config) Validate() error {
 	}
 	if c.Limits.MaxPayloadBytes < 1 || c.Limits.MaxPayloadBytes > codec.MB {
 		return fmt.Errorf("sse.limits.max_payload_bytes must be between 1b and 1mb, got %d", int64(c.Limits.MaxPayloadBytes))
+	}
+	if c.RabbitMQ.Routing != RoutingFanout && c.RabbitMQ.Routing != RoutingUser {
+		return fmt.Errorf("sse.rabbitmq.routing must be %q or %q, got %q", RoutingFanout, RoutingUser, c.RabbitMQ.Routing)
 	}
 	if c.SendBufferBytes != 0 && (c.SendBufferBytes < 4096 || c.SendBufferBytes > 16<<20) {
 		return fmt.Errorf("sse.send_buffer_bytes must be 0 or between 4096 and 16777216, got %d", c.SendBufferBytes)

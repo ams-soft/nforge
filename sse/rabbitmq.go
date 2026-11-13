@@ -2,6 +2,8 @@ package sse
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -19,13 +21,18 @@ type rabbitDriver struct {
 	client   *message.Client
 	exchange string
 	prefetch int
+	routing  string // RoutingFanout or RoutingUser
 	m        *Manager
 	sub      *message.Subscription
 }
 
 func (d *rabbitDriver) start(ctx context.Context, m *Manager) error {
 	d.m = m
-	sub, err := d.client.SubscribeFanout(ctx, d.exchange, d.handle,
+	subscribe := d.client.SubscribeFanout
+	if d.routing == RoutingUser {
+		subscribe = d.client.SubscribeRouted
+	}
+	sub, err := subscribe(ctx, d.exchange, d.handle,
 		message.WithFanoutPrefetch(d.prefetch),
 		message.WithFanoutMaxBytes(int(m.cfg.Limits.MaxPayloadBytes)+4096),
 		message.WithFanoutTimeout(2*time.Second))
@@ -41,6 +48,7 @@ func (d *rabbitDriver) start(ctx context.Context, m *Manager) error {
 // one is acknowledged after it entered the local dispatch path, which is the
 // only guarantee: no browser acknowledgment exists.
 func (d *rabbitDriver) handle(_ context.Context, body []byte) error {
+	d.m.stats.received.Add(1)
 	var w wire
 	if err := d.m.codec.DecodeAs("json", body, &w); err != nil || w.Version != wireVersion || d.m.validateWire(w) != nil || w.ID == "" {
 		d.m.stats.malformed.Add(1)
@@ -55,7 +63,13 @@ func (d *rabbitDriver) publish(ctx context.Context, w wire) error {
 	if err != nil {
 		return fmt.Errorf("%w: encode", ErrInvalidEvent)
 	}
-	if err := d.client.PublishFanout(ctx, d.exchange, body); err != nil {
+	var err2 error
+	if d.routing == RoutingUser {
+		err2 = d.client.PublishRouted(ctx, d.exchange, routingKey(w.User), body)
+	} else {
+		err2 = d.client.PublishFanout(ctx, d.exchange, body)
+	}
+	if err := err2; err != nil {
 		switch {
 		case errors.Is(err, message.ErrPublishUncertain):
 			return fmt.Errorf("%w: %w", ErrPublishUncertain, err)
@@ -92,4 +106,19 @@ func (d *rabbitDriver) stop(ctx context.Context) error {
 		return nil
 	}
 	return d.sub.Close(ctx)
+}
+
+// routingKey is the binding key of a user: a fixed-size digest, so any user key
+// (length, characters) fits the 255-byte limit and the key never leaks one.
+func routingKey(user string) string {
+	sum := sha256.Sum256([]byte(user))
+	return hex.EncodeToString(sum[:])
+}
+
+// sync binds (or unbinds) the user on this instance's queue in user routing.
+func (d *rabbitDriver) sync(_ context.Context, user string, present func() bool) error {
+	if d.routing != RoutingUser || d.sub == nil {
+		return nil
+	}
+	return d.sub.Sync(routingKey(user), present)
 }

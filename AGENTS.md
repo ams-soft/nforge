@@ -715,6 +715,7 @@ sse:                          # sse.Config — see §11B; the whole section is o
   rabbitmq:
     exchange: ""              # "" → <message.namespace>.sse.<env>.<app.name> (sanitized)
     prefetch: 64              # unacknowledged fanout messages of this instance's queue
+    routing: fanout           # fanout (every instance gets every event) | user (a direct exchange: an instance binds only the users it serves)
 ```
 
 Owners of the sections: `logging` → `logs.Module` (ID `logger`), `tracing` →
@@ -2295,6 +2296,11 @@ st := cl.Status()                                         // sanitized local con
   in the DLQ (`Nack` requeue) and **stops the run**: a message is never acked
   from the DLQ without a confirmation that is provably its own; one run at a time per client (`ErrReprocessRunning`); a queue without
   `dead_letter` is `ErrUnsupportedFeature`.
+- **Routed (best effort).** `Client.SubscribeRouted` / `PublishRouted` are the
+  direct-exchange form of the fanout pair: the ephemeral queue starts unbound,
+  `Subscription.Sync(key, want)` binds or unbinds a key from the truth `want()`
+  reports (evaluated under the subscription's lock), and the wanted keys are bound
+  again on the new queue after an outage. Used by `sse` `routing: user`.
 - **Fanout (best effort).** `Client.PublishFanout(ctx, exchange, body)` confirms a
   transient publish to a durable fanout exchange it declares per connection
   generation (no `mandatory`: no bound queue is a successful drop), and
@@ -2416,11 +2422,20 @@ st := mgr.Stats()                                                               
   histogram, published/accepted/failed, slow-client disconnects, heartbeat and
   write errors, malformed messages, lifetime closes, reconnects); nForge has no
   metrics exporter, the application exports them.
-- **Known limits (not solved).** With rabbitmq every instance receives every
-  event of every user and filters locally: fan-in grows with instances × events,
-  and publishing is bounded by the broker confirm path (publishers now pipeline).
-  A per-user routing mode (dynamic bindings with presence handling) is not
-  implemented; measure before you scale the fleet past a handful of instances.
+- **Routing (`sse.rabbitmq.routing`).** `fanout` (default): every instance receives
+  every event of every user and filters locally, so per-instance traffic grows with
+  instances × events. `user`: a **direct** exchange (`<exchange>.user`) where each
+  instance binds, on its ephemeral queue, the SHA-256 of every user key it has a
+  stream for, and `PublishToUser` publishes with that key: an instance receives only
+  the events of its own users (`Stats.DistributionReceived`,
+  `nforge_sse_distribution_received_total`). The bind happens when a user's first
+  local stream opens (before the 200 is written) and the unbind when the last one
+  closes; both read the manager's current state under a lock, so racing joins and
+  leaves converge. After an outage the new queue is bound again with every key still
+  connected. Events published between a user connecting on an instance and the bind
+  completing, or while the broker is down, are lost (best effort, as ever); a user
+  with no stream anywhere is dropped by the broker. Choose `user` when instances ×
+  event rate is high; `fanout` costs no bindings and suits small fleets.
 - **Proxies.** Disable buffering and keep the read timeout above `heartbeat`:
   nginx `proxy_buffering off; proxy_read_timeout 1h; proxy_http_version 1.1;`
   (`X-Accel-Buffering: no` already asks nginx to stream). Validated by hand with

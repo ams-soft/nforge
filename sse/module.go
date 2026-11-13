@@ -79,7 +79,11 @@ func Module() module.Descriptor {
 				_ = module.Require(sc, nhttp.Capability) // routes are the application's, registered in its own Init
 				var drv driver = &memoryDriver{}
 				if cfg.Driver == DriverRabbitMQ {
-					drv = &rabbitDriver{client: module.Require(sc, message.Capability), exchange: cfg.RabbitMQ.Exchange, prefetch: cfg.RabbitMQ.Prefetch}
+					exchange := cfg.RabbitMQ.Exchange
+					if cfg.RabbitMQ.Routing == RoutingUser {
+						exchange += ".user" // another exchange type needs another name
+					}
+					drv = &rabbitDriver{client: module.Require(sc, message.Capability), exchange: exchange, prefetch: cfg.RabbitMQ.Prefetch, routing: cfg.RabbitMQ.Routing}
 				}
 				m := newManager(cfg, module.Require(sc, codec.Capability), logger, drv)
 				if cfg.SendBufferBytes > 0 {

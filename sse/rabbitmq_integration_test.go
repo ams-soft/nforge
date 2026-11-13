@@ -154,6 +154,11 @@ type instance struct {
 
 func startInstance(t *testing.T, _, ns, brokerURL string) *instance {
 	t.Helper()
+	return startRouted(t, ns, brokerURL, "fanout")
+}
+
+func startRouted(t *testing.T, ns, brokerURL, routing string) *instance {
+	t.Helper()
 	port := freePort(t)
 	yaml := fmt.Sprintf(`http:
   server: {host: 127.0.0.1, port: %d}
@@ -168,7 +173,8 @@ message:
 sse:
   driver: rabbitmq
   heartbeat: 1s
-`, port, ns, brokerURL)
+  rabbitmq: {routing: %s}
+`, port, ns, brokerURL, routing)
 	d := apptest.Load(t, yaml, "")
 	a, err := app.New(d, app.Modules(logs.Module(), codec.Module(), message.Module(), nhttp.Module(), sse.Module(), userModule()), apptest.Quiet(), app.WithProbeInterval(time.Nanosecond, time.Second))
 	if err != nil {
@@ -427,5 +433,77 @@ func receiveAfterRetries(t *testing.T, from *instance, s *stream, user, payload 
 		case <-deadline:
 			return "", false
 		}
+	}
+}
+
+// G8: with routing: user an instance receives only the events of the users it
+// serves; in fanout mode it receives every event.
+func TestUserRoutingDeliversOnlyToInstancesThatServeTheUser(t *testing.T) {
+	broker := brokerURL(t)
+	for _, tc := range []struct {
+		routing     string
+		wantOnOther uint64
+	}{{"fanout", 40}, {"user", 0}} {
+		t.Run(tc.routing, func(t *testing.T) {
+			ns := randomNamespace()
+			a, b := startRouted(t, ns, broker, tc.routing), startRouted(t, ns, broker, tc.routing)
+			alice, bob := a.open(t, "alice"), b.open(t, "bob")
+			eventually(t, 5*time.Second, "streams", func() bool { return a.mgr.Stats().ActiveConnections == 1 && b.mgr.Stats().ActiveConnections == 1 })
+			time.Sleep(300 * time.Millisecond) // the binding is made before the stream opens; allow the broker to settle
+			for i := range 40 {
+				if _, err := a.mgr.PublishToUser(t.Context(), "alice", sse.Event{Data: fmt.Sprint("n", i)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for i := range 40 {
+				want := fmt.Sprint("data: n", i)
+				if l, ok := alice.next(5*time.Second, data); !ok || l != want {
+					t.Fatalf("alice event %d: %q %v", i, l, ok)
+				}
+			}
+			if l, ok := bob.next(400*time.Millisecond, data); ok {
+				t.Fatalf("bob received %q", l)
+			}
+			if got := b.mgr.Stats().DistributionReceived; got != tc.wantOnOther {
+				t.Fatalf("%s: the instance without alice received %d messages, want %d", tc.routing, got, tc.wantOnOther)
+			}
+			if got := a.mgr.Stats().DistributionReceived; got != 40 {
+				t.Fatalf("the instance serving alice received %d, want 40", got)
+			}
+		})
+	}
+}
+
+// A user who disconnects stops being routed to the instance, and one who
+// reconnects (even through a broker outage) is routed again.
+func TestUserRoutingFollowsConnectionsAndSurvivesAnOutage(t *testing.T) {
+	broker := brokerURL(t)
+	p := newProxy(t, broker)
+	ns := randomNamespace()
+	a := startRouted(t, ns, p.url(broker), "user")
+	s := a.open(t, "alice")
+	eventually(t, 5*time.Second, "stream", func() bool { return a.mgr.Stats().ActiveConnections == 1 })
+	if _, ok := receiveAfterRetries(t, a, s, "alice", "first", 10*time.Second); !ok {
+		t.Fatal("no delivery to a connected user")
+	}
+
+	p.cut()
+	eventually(t, 10*time.Second, "not ready", func() bool { return !ready(a.app) })
+	p.restore()
+	eventually(t, 30*time.Second, "ready again", func() bool { return ready(a.app) })
+	if _, ok := receiveAfterRetries(t, a, s, "alice", "after-outage", 15*time.Second); !ok {
+		t.Fatal("the binding was not restored after the outage")
+	}
+
+	s.resp.Body.Close()
+	eventually(t, 5*time.Second, "disconnect", func() bool { return a.mgr.Stats().ActiveConnections == 0 })
+	time.Sleep(300 * time.Millisecond)
+	before := a.mgr.Stats().DistributionReceived
+	for range 10 {
+		_, _ = a.mgr.PublishToUser(t.Context(), "alice", sse.Event{Data: "to nobody"})
+	}
+	time.Sleep(400 * time.Millisecond)
+	if got := a.mgr.Stats().DistributionReceived; got != before {
+		t.Fatalf("a user with no stream still routed %d messages here", got-before)
 	}
 }
